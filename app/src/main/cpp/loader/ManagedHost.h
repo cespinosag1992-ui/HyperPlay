@@ -25,6 +25,20 @@ inline constexpr char kWinRoot[] = "C:\\HyperPlay\\Mono";
 
 inline bool active() noexcept { return !g_runtimeDir.empty(); }
 
+/// FMOD real del usuario (propietario: no se distribuye). Si deja aquí fmod64.dll y
+/// fmodstudio64.dll de "FMOD Engine 1.10.x" para Windows, sustituyen a los shims mudos.
+inline constexpr char kUserFmodDir[] = "/storage/emulated/0/HyperPlay/fmod";
+
+/// DLL del usuario que sustituye a `lowerBase` (fmod.dll -> fmod64.dll...). Vacía si no hay.
+inline std::string userOverride(const std::string& lowerBase) {
+    if (!active()) return {};
+    if (lowerBase == "fmod.dll" || lowerBase == "fmod" || lowerBase == "fmod64.dll")
+        return std::string(kUserFmodDir) + "/fmod64.dll";
+    if (lowerBase == "fmodstudio.dll" || lowerBase == "fmodstudio" || lowerBase == "fmodstudio64.dll")
+        return std::string(kUserFmodDir) + "/fmodstudio64.dll";
+    return {};
+}
+
 inline void reset() {
     g_runtimeDir.clear();
     g_gameDir.clear();

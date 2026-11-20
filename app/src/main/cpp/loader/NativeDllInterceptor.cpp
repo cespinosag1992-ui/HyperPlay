@@ -3106,8 +3106,10 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         struct stat st{};
         bool existsOnDisk = stat((s_activeImage->gameDir + "/" + localName).c_str(), &st) == 0;
         if (!existsOnDisk && managed::active()) {
+            const std::string user = managed::userOverride(toLower(localName));
             existsOnDisk = stat((managed::g_runtimeDir + "/bin/" + localName).c_str(), &st) == 0 ||
-                           stat((managed::g_runtimeDir + "/fna/" + localName).c_str(), &st) == 0;
+                           stat((managed::g_runtimeDir + "/fna/" + localName).c_str(), &st) == 0 ||
+                           (!user.empty() && stat(user.c_str(), &st) == 0);
         }
         const bool alreadyLoaded = (s_activeImage->localDlls.find(localName) != s_activeImage->localDlls.end());
         if (existsOnDisk || alreadyLoaded) {

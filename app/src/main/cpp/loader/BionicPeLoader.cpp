@@ -513,6 +513,7 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
     std::vector<std::string> candidatePaths;
     // 0. Juego .NET: primero las DLL x64 del runtime (FNA y shims de Steam/FMOD), que sustituyen a
     //    las de 32 bits que trae el juego (CSteamworks.dll, fmod.dll...).
+    if (const std::string user = managed::userOverride(lowerBase); !user.empty()) candidatePaths.push_back(user);
     if (managed::active()) candidatePaths.push_back(managed::g_runtimeDir + "/fna/" + baseName);
 
     // 1. Si norm especifica una ruta virtual o con letra de unidad ("D:/..."), resolver con resolveVirtualPath
@@ -680,6 +681,13 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
     std::string lowerNorm = norm;
     for (char& c : lowerNorm) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     image.localDlls[lowerNorm] = reg;
+    // También por el nombre real del archivo (fmod.dll servido desde fmod64.dll): si otra DLL lo
+    // importa por ese nombre, se reutiliza en vez de cargar una segunda copia.
+    {
+        std::string fileBase = resolvedPath.substr(resolvedPath.find_last_of('/') + 1);
+        for (char& c : fileBase) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        image.localDlls.try_emplace(fileBase, reg);
+    }
     image.initOrder.push_back(lowerBase);
 
     LOGI("DLL local cargada: %s (%zu exports) en %p (tamaño 0x%zx)",

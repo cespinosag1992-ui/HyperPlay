@@ -14,8 +14,10 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   (translated) and FNA instead of XNA. The game's Vulkan renderer (FNA3D/SDL GPU) is passed to
   the phone's Vulkan almost as is (Win32 surface → Android surface, orientation handled). Tested
   on the phone: Celeste title, menus, file select and the prologue at 60 FPS with the controller.
-  Not yet: audio (FMOD is a silent shim) and downloading the runtime from the app (for now it is
-  copied to `HyperPlay/runtime/mono`, see `tools/managed-runtime`).
+  The .NET runtime (33 MB, release `runtime-mono-x64-1`) is downloaded by the app the first time
+  a .NET game opens, checked with SHA-256 and installed in the app's own folder. Not yet: audio
+  (FMOD is proprietary and the shim is silent; your own FMOD 1.10 x64 for Windows in
+  `/sdcard/HyperPlay/fmod` replaces it).
 - Engine fixes found on the way: DLL init order (dependencies first), real
   `CommandLineToArgvW`, `GetStringTypeW` (the CRT thought no character was a space),
   `ExitThread`, `ERROR_TIMEOUT` from condition variables, `NtCreateFile`/`NtQueryDirectoryFile`,
@@ -46,8 +48,10 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   (traducido) y FNA en lugar de XNA. El renderizador Vulkan del juego (FNA3D/SDL GPU) se pasa al
   Vulkan del teléfono casi tal cual (superficie Win32 → Android, orientación resuelta). Probado en
   el teléfono: título, menús, selección de partida y el prólogo de Celeste a 60 FPS con mando.
-  Falta: sonido (FMOD es un shim mudo) y descargar el runtime desde la app (por ahora se copia a
-  `HyperPlay/runtime/mono`, ver `tools/managed-runtime`).
+  La app descarga el runtime .NET (33 MB, release `runtime-mono-x64-1`) la primera vez que se abre
+  un juego .NET, lo comprueba con SHA-256 y lo instala en su propia carpeta. Falta: sonido (FMOD
+  es propietario y el shim es mudo; tu propio FMOD 1.10 x64 para Windows en
+  `/sdcard/HyperPlay/fmod` lo sustituye).
 - Arreglos del motor encontrados por el camino: orden de inicio de las DLL (dependencias
   primero), `CommandLineToArgvW` real, `GetStringTypeW` (el CRT creía que ningún carácter era un
   espacio), `ExitThread`, `ERROR_TIMEOUT` en variables de condición,

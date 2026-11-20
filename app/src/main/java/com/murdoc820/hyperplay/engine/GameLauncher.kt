@@ -18,6 +18,7 @@ import java.util.TimeZone
  * Cero Wine, Cero FEX, Cero Box64, Cero PRoot, Cero contenedores Linux.
  */
 class GameLauncher(context: Context) {
+    private val appContext = context.applicationContext
     private val logsDir = File(context.filesDir, LOGS_DIR_NAME)
 
     @Volatile private var runningDirect = false
@@ -54,9 +55,15 @@ class GameLauncher(context: Context) {
         //    (solo IL) se ejecuta con Mono x64 (ManagedRuntime).
         val managed = ManagedRuntime.isManagedExe(File(game.exePath))
         val directLoaded = if (managed) {
-            val rt = ManagedRuntime.runtimeDir()
-            check(ManagedRuntime.isInstalled(rt)) {
-                "Juego .NET: falta el runtime Mono en ${rt.absolutePath} / .NET game: Mono runtime missing"
+            var lastLogged = -10
+            val rt = ManagedRuntime.ensureInstalled(appContext) { pct ->
+                when {
+                    pct < 0 -> log.appendText("[hyperplay] Runtime .NET: descomprimiendo / extracting...\n")
+                    pct >= lastLogged + 10 -> {
+                        lastLogged = pct
+                        log.appendText("[hyperplay] Runtime .NET: descargando / downloading $pct %\n")
+                    }
+                }
             }
             log.appendText("[hyperplay] Juego .NET: Mono x64 de ${rt.absolutePath}\n")
             HyperPlayNative.nativeDirectLoadManaged(game.exePath, rt.absolutePath)

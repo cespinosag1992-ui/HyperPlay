@@ -28,8 +28,14 @@ How it was built:
    `ld.lld -flavor link /dll /noentry /nodefaultlib /out:X.dll out.obj`.
    The Steam shim reports Steam as running (fake interfaces); the FMOD shim is silent for now.
 
-Pending: download the runtime from the app (licenses: Mono MIT, FNA Ms-PL, SDL3/FNA3D/FAudio zlib,
-VC++ runtime under Microsoft's redistributable terms), real audio for FMOD.
+Distribution: `pack-runtime.ps1` builds `hyperplay-runtime-mono-x64-N.zip` (with `THIRD_PARTY.txt`
+and FNA's licenses), published as the prerelease `runtime-mono-x64-N`. The app downloads it the
+first time a .NET game opens (`ManagedRuntime.kt`, SHA-256 checked) into
+`Android/data/<package>/files/runtime/mono` (case-insensitive storage, like Windows).
+
+Audio: FMOD is proprietary and is not distributed. If you put `fmod64.dll` and
+`fmodstudio64.dll` from "FMOD Engine 1.10.x" for Windows (fmod.com, free account) in
+`/sdcard/HyperPlay/fmod/`, HyperPlay uses them instead of the silent shims.
 
 ## Español
 
@@ -59,5 +65,11 @@ Cómo se construyó:
    `ld.lld -flavor link /dll /noentry /nodefaultlib /out:X.dll out.obj`.
    El shim de Steam dice que Steam está activo (interfaces falsas); el de FMOD es mudo por ahora.
 
-Pendiente: descargar el runtime desde la app (licencias: Mono MIT, FNA Ms-PL, SDL3/FNA3D/FAudio
-zlib, runtime VC++ según los términos de redistribución de Microsoft), audio real para FMOD.
+Distribución: `pack-runtime.ps1` crea `hyperplay-runtime-mono-x64-N.zip` (con `THIRD_PARTY.txt` y
+las licencias de FNA), publicado como prerelease `runtime-mono-x64-N`. La app lo descarga la
+primera vez que se abre un juego .NET (`ManagedRuntime.kt`, con SHA-256) en
+`Android/data/<paquete>/files/runtime/mono` (almacenamiento sin mayúsculas, como Windows).
+
+Sonido: FMOD es propietario y no se distribuye. Si pones `fmod64.dll` y `fmodstudio64.dll` de
+"FMOD Engine 1.10.x" para Windows (fmod.com, cuenta gratuita) en `/sdcard/HyperPlay/fmod/`,
+HyperPlay los usa en lugar de los shims mudos.

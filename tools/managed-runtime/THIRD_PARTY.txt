@@ -1,0 +1,40 @@
+HyperPlay .NET runtime (hyperplay-runtime-mono-x64) - third-party components
+=============================================================================
+
+This archive is used by HyperPlay to run .NET Framework games (for example Celeste) on Android.
+It contains unmodified third-party binaries plus small shims written for HyperPlay.
+
+Mono 6.12.0.206 (Windows x64)          bin/mono.exe, bin/mono-2.0-sgen.dll, lib/mono/4.5, etc/mono
+  https://www.mono-project.com  -  MIT License, Copyright (c) .NET Foundation and Contributors.
+
+Microsoft Visual C++ runtime (x64)     bin/ucrtbase.dll, bin/vcruntime140.dll, bin/vcruntime140_1.dll
+  Redistributable files of Microsoft Visual C++, distributed with HyperPlay under the
+  Microsoft Visual C++ Redistributable license terms. Copyright (c) Microsoft Corporation.
+
+FNA 26.11 and FNA.NetStub              fna/FNA.dll, fna/FNA.NetStub.dll, fna/Microsoft.Xna.Framework*.dll
+  https://fna-xna.github.io  -  Microsoft Public License (Ms-PL), see licenses/FNA.LICENSE.
+  Copyright (c) 2009-2026 Ethan Lee and the MonoGame Team.
+
+SDL3, FNA3D, FAudio, Theorafile (x64)  fna/SDL3.dll, fna/FNA3D.dll, fna/FAudio.dll, fna/libtheorafile.dll
+  https://github.com/FNA-XNA/fnalibs-dailies  -  zlib License (Theorafile: BSD-style, from Xiph).
+
+HyperPlay shims                        fna/CSteamworks.dll, fna/fmod.dll, fna/fmodstudio.dll
+  Generated stubs (tools/managed-runtime/genstub.py). They contain no Valve or Firelight code.
+
+----------------------------------------------------------------------------------------------
+MIT License (Mono)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or
+substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
+OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
