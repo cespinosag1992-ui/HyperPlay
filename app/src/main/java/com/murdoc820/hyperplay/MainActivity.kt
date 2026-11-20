@@ -27,6 +27,11 @@ import com.murdoc820.hyperplay.audio.ConsoleUiSoundEngine
 import com.murdoc820.hyperplay.diag.Diagnostics
 import com.murdoc820.hyperplay.update.AppUpdater
 import com.murdoc820.hyperplay.model.PortableGame
+import com.murdoc820.hyperplay.session.GameProcess
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -121,11 +126,13 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+        handleLaunchExtra(intent)
     }
 
     override fun onResume() {
         super.onResume()
         hideSystemBars()
+        GameProcess.refresh(this)  // ¿hay un juego suspendido en memoria? (otro proceso)
         hasStorage = Environment.isExternalStorageManager()
         if (hasStorage && !LibraryRepository.state.value.scannedOnce) LibraryRepository.scan(folders)
         reportsEnabled = Diagnostics.reportsEnabled
@@ -193,10 +200,31 @@ class MainActivity : ComponentActivity() {
             return
         }
         sounds.confirm()
-        GameSessionActivity.start(this, game.exePath)
+        launchSession(game.exePath)
+    }
+
+    /** Abre [exePath] en el proceso del juego; antes cierra otro juego que siga en memoria. */
+    private fun launchSession(exePath: String) {
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) { GameProcess.prepareFor(applicationContext, exePath) }
+            GameSessionActivity.start(this@MainActivity, exePath)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleLaunchExtra(intent)
+    }
+
+    /** Una sesión abierta pidió otro juego: se abre aquí, tras cerrar su proceso. */
+    private fun handleLaunchExtra(intent: Intent?) {
+        val exe = intent?.getStringExtra(EXTRA_LAUNCH_EXE)?.takeIf { it.isNotEmpty() } ?: return
+        intent.removeExtra(EXTRA_LAUNCH_EXE)
+        launchSession(exe)
     }
 
     companion object {
+        const val EXTRA_LAUNCH_EXE = "com.murdoc820.hyperplay.extra.LAUNCH_EXE"
         private const val PREFS_NAME = "launcher"
         private const val KEY_FOLDERS = "library_folders"
     }

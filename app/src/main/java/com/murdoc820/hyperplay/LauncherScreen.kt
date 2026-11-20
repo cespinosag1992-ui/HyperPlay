@@ -79,7 +79,7 @@ import androidx.compose.ui.unit.sp
 import com.murdoc820.hyperplay.art.GameArt
 import com.murdoc820.hyperplay.engine.HyperPlayNative
 import com.murdoc820.hyperplay.model.PortableGame
-import com.murdoc820.hyperplay.session.QuickResume
+import com.murdoc820.hyperplay.session.GameProcess
 import com.murdoc820.hyperplay.session.QuickResumeLogic
 import com.murdoc820.hyperplay.ui.ArtImage
 import com.murdoc820.hyperplay.ui.ClockAndBattery
@@ -200,7 +200,7 @@ private fun jitCacheLabel(stats: Pair<Long, Long>?): String {
 }
 
 private fun isHeld(game: PortableGame): Boolean =
-    QuickResume.isHolding() && QuickResume.heldExe?.let { QuickResumeLogic.sameExe(it, game.exePath) } == true
+    GameProcess.heldExe?.let { QuickResumeLogic.sameExe(it, game.exePath) } == true
 
 private enum class Page { HOME, GAME, SETTINGS }
 
@@ -270,8 +270,21 @@ fun LauncherScreen(
     // Al volver de un juego (la ventana recupera el foco) Compose puede creer que algo sigue
     // enfocado sin que lo esté: la primera tecla del mando vuelve a colocar el foco.
     var staleFocus by remember { mutableStateOf(false) }
+    // ¿Ya se usó el mando aquí? (algo tuvo el foco). Solo entonces se recoloca el foco solo.
+    var usedKeys by remember { mutableStateOf(false) }
+    LaunchedEffect(anyFocus) { if (anyFocus) usedKeys = true }
     val windowFocused = androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused
-    LaunchedEffect(windowFocused) { if (!windowFocused) staleFocus = true }
+    LaunchedEffect(windowFocused) {
+        if (!windowFocused) {
+            staleFocus = true
+        } else if (staleFocus && usedKeys) {
+            // La ventana vuelve (de un juego, de una capa de RedMagic/Game Space, de un aviso):
+            // se recoloca el foco ya, sin gastar la siguiente pulsación del usuario en ello.
+            withFrameNanos { }
+            staleFocus = false
+            focusTick++
+        }
+    }
     // Sin nada enfocado Compose no entrega las teclas a nadie: la actividad avisa con navKeyTick.
     LaunchedEffect(navKeyTick) {
         if (navKeyTick > 0 && (!anyFocus || staleFocus)) { staleFocus = false; focusTick++ }

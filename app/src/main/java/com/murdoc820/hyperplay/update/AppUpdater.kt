@@ -10,7 +10,7 @@ import android.net.Uri
 import android.provider.Settings
 import com.murdoc820.hyperplay.BuildConfig
 import com.murdoc820.hyperplay.diag.Diagnostics
-import com.murdoc820.hyperplay.session.QuickResume
+import com.murdoc820.hyperplay.session.GameProcess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -95,7 +95,7 @@ object AppUpdater {
     /** Descarga, verifica e instala [release]. */
     fun downloadAndInstall(context: Context, release: ReleaseInfo) {
         val app = context.applicationContext
-        if (QuickResume.isHolding()) {
+        if (GameProcess.refresh(app) != null) {
             _state.value = UpdateState.Error(context.getString(R.string.update_err_held), release)
             return
         }

@@ -54,6 +54,7 @@ import com.murdoc820.hyperplay.session.ScreenFitOption
 import com.murdoc820.hyperplay.session.readBatteryTempC
 import com.murdoc820.hyperplay.session.PerfOverlayMode
 import com.murdoc820.hyperplay.session.QuickMenuItem
+import com.murdoc820.hyperplay.session.GameProcess
 import com.murdoc820.hyperplay.session.QuickResume
 import com.murdoc820.hyperplay.session.QuickResumeAction
 import com.murdoc820.hyperplay.session.QuickResumeLogic
@@ -276,6 +277,7 @@ class GameSessionActivity : ComponentActivity() {
             // proceso). Volver a abrir el mismo .exe lo reanuda al instante.
             HyperPlayNative.nativeSetPaused(true)
             QuickResume.hold(QuickResume.Held(exePath, held, logFile, startedAt))
+            GameProcess.publishHeld(this, exePath)  // el launcher (otro proceso) lo ve
             Log.i(TAG, "Quick Resume: juego suspendido en memoria")
             // En pausa no cuenta como sesión abierta: si el sistema mata el proceso en segundo
             // plano no es un fallo. Al reanudar se vuelve a abrir.
@@ -290,6 +292,12 @@ class GameSessionActivity : ComponentActivity() {
         sounds.release()
         Log.i(TAG, "sesión cerrada")
         super.onDestroy()
+        if (!(running && !state.killing && held != null)) {
+            // Juego cerrado (o forzado): sus hilos no se pueden parar uno a uno; el proceso
+            // ":game" termina para que el siguiente juego empiece limpio (GameProcess).
+            val app = applicationContext
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ GameProcess.exitGameProcess(app) }, 300)
+        }
     }
 
     // ------------------------------------------------------------------ sesión
@@ -310,7 +318,7 @@ class GameSessionActivity : ComponentActivity() {
         startedAt = SystemClock.elapsedRealtime()
         val action = QuickResumeLogic.action(QuickResume.heldExe, QuickResume.isHolding(), exePath)
         if (action == QuickResumeAction.RESUME) {
-            QuickResume.take(exePath)?.let { resumeHeld(it); return }
+            QuickResume.take(exePath)?.let { GameProcess.publishHeld(this, null); resumeHeld(it); return }
         }
         QuickResumeService.start(this, state.title, exePath)
         lifecycleScope.launch {
@@ -354,13 +362,16 @@ class GameSessionActivity : ComponentActivity() {
         super.onNewIntent(intent)
         val requested = intent.getStringExtra(EXTRA_EXE_PATH).orEmpty()
         if (requested.isEmpty() || QuickResumeLogic.sameExe(requested, exePath)) return
-        // Otro juego con esta sesión abierta (singleTask): se cierra este y se abre el nuevo.
+        // Otro juego con esta sesión abierta (singleTask): se cierra este (su proceso termina) y el
+        // launcher abre el nuevo en un proceso limpio.
         Log.i(TAG, "otro juego pedido con la sesión abierta: cerrando $exePath")
         state.killing = true
         lifecycleScope.launch {
             withContext(Dispatchers.IO) { launcher?.forceKill() }
             launcher = null
-            startActivity(Intent(intent).setClass(this@GameSessionActivity, GameSessionActivity::class.java))
+            startActivity(Intent(this@GameSessionActivity, MainActivity::class.java)
+                .putExtra(MainActivity.EXTRA_LAUNCH_EXE, requested)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
             finish()
         }
     }

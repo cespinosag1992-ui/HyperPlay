@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
+import com.murdoc820.hyperplay.session.GameProcess
 import com.murdoc820.hyperplay.session.QuickResume
 
 /**
@@ -24,7 +25,11 @@ class QuickResumeService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_KILL) {
             Log.i(TAG, "cerrar juego suspendido desde la notificación")
-            Thread({ QuickResume.killHeld() }, "hyperplay-qr-kill").start()  // para audio y despausa
+            val app = applicationContext
+            Thread({
+                QuickResume.killHeld()  // para el audio y despausa
+                GameProcess.exitGameProcess(app)  // y el proceso del juego termina
+            }, "hyperplay-qr-kill").start()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY

@@ -19,6 +19,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 - Quick menu → Image → **Screen**: Original / Stretch / Zoom, saved per game. Fills the screen
   for games that draw 16:9 with side bars (Cuphead on a 20:9 phone). Stretch widens the image;
   Zoom keeps the shape and crops top and bottom. Tested on the device in Cuphead.
+- Each game now runs in its own process. Force closing a game and opening it (or another one)
+  again no longer crashes the app. Quick Resume still works (the held game resumes instantly);
+  opening a different game closes the held one first.
+- Launcher: a D-pad press is no longer lost after the RedMagic Game Space layer shows up when
+  the app opens.
 - Quick menu: tapping ‹ now steps a setting back and › steps it forward (before, any tap moved
   forward).
 - Gamepad: very short button presses are held for at least 40 ms, so games that read the pad
@@ -36,6 +41,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   la pantalla en juegos que dibujan en 16:9 con barras a los lados (Cuphead en un teléfono 20:9).
   Estirar ensancha la imagen; Ampliar mantiene la forma y recorta arriba y abajo. Probado en el
   teléfono con Cuphead.
+- Cada juego corre ahora en su propio proceso. Forzar el cierre de un juego y volver a abrirlo
+  (o abrir otro) ya no cierra la app. Quick Resume sigue funcionando (el juego suspendido se
+  reanuda al instante); abrir otro juego cierra antes el suspendido.
+- Launcher: ya no se pierde una pulsación de la cruceta cuando aparece la capa de RedMagic Game
+  Space al abrir la app.
 - Menú rápido: tocar ‹ ahora retrocede el ajuste y › lo avanza (antes cualquier toque avanzaba).
 - Mando: las pulsaciones muy cortas se mantienen al menos 40 ms, así los juegos que leen el mando
   una vez por frame ya no las pierden.

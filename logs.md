@@ -706,3 +706,11 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - `testDebugUnitTest lintDebug assembleRelease` exit=0; `adb install -r` Success.
 - Logcat: `Panorámica: Cuphead UpdateRect 16:9 -> 2.2105 (2688x1216), 5606912 bytes en memfd`.
 - Forzar cierre + relanzar: `Fatal signal 11` en `decodeAndEmitOne` (pid 8655, 50 ms tras abrir la sesión). Tras `am force-stop`: arranca bien.
+
+## 2026-11-20 — Proceso :game y foco del launcher
+- `testDebugUnitTest lintDebug assembleRelease` exit=0; `adb install -r` Success.
+- `ps -A | grep hyperplay` en juego: `com.murdoc820.hyperplay` (launcher) + `com.murdoc820.hyperplay:game`. Tras Forzar cierre: solo el launcher.
+- Relanzar Cuphead tras Forzar cierre: sin crash (`logcat -b crash` vacío), `Panorámica: ... -> 2.2105`.
+- Quick Resume: `Quick Resume: reanudando juego en memoria tras 2 ms`.
+- Cuphead suspendido → abrir HK: `HyperPlayProc: matando el proceso del juego anterior (pid 19738)`; HK en pid 21490, título a 60 FPS.
+- Al abrir la app aparece la capa "ENERGY CUBE" de RedMagic (bloqueo de notificaciones, motor de IA) encima del launcher.

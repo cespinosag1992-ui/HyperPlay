@@ -66,7 +66,9 @@ object Diagnostics {
             previous?.uncaughtException(thread, error)
         }
         log("I", "app", "inicio ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) en ${deviceLine()}")
-        checkUncleanSession()
+        // Solo el proceso del juego (":game") abre sesiones: el launcher no debe tomar por cierre
+        // inesperado la sesión de un juego que sigue vivo en el otro proceso.
+        if (com.murdoc820.hyperplay.session.GameProcess.isGameProcess(context)) checkUncleanSession()
         refreshPending()
     }
 

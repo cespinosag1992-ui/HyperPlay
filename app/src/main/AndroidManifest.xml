@@ -13,7 +13,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Rumble XInput: vibradores de los mandos (InputDevice.getVibratorManager) y del teléfono. -->
     <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- Quick Resume: el proceso sigue vivo con el juego congelado en memoria. -->
+    <!-- Quick Resume: el proceso sigue vivo con el juego congelado en memoria. Los juegos corren
+         en su propio proceso (":game", session/GameProcess.kt); el launcher, en el principal. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -46,6 +47,7 @@
 
         <activity
             android:name=".GameSessionActivity"
+            android:process=":game"
             android:exported="false"
             android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"
@@ -54,6 +56,7 @@
 
         <service
             android:name=".QuickResumeService"
+            android:process=":game"
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property
