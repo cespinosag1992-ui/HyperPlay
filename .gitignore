@@ -1,0 +1,63 @@
+# --- Compilación de Android / Gradle
+.gradle/
+.idea/
+.kotlin/
+build/
+app/build/
+app/.cxx/
+captures/
+*.iml
+local.properties
+
+# --- Firma (NUNCA se sube: la clave de release va en los secretos de GitHub)
+*.jks
+*.keystore
+*.p12
+keystore.properties
+signing/
+
+# --- Artefactos generados y paquetes
+dist/
+*.apk
+*.aab
+
+# --- Herramientas locales del agente / IDE
+.claude/
+
+# --- Binarios de juegos de terceros (tienen copyright: no se publican)
+*.dll
+*.exe
+UnityPlayer*
+unity_*.bin
+unity_hdr.b64
+
+# --- Volcados, crashes y pruebas sueltas de depuración en la raíz
+/*.elf
+/*.bin
+/*.o
+/*.s
+/test_*.c
+/crash*
+/tombstone*
+/oryon_test
+/logcat*.txt
+/screen*.png
+/x86_code.bin
+/display_bridge.c
+/ProcessTree.cpp
+/dump_*.py
+/find_*.py
+/launch_hk.ps1
+/read_logs.ps1
+
+# --- Logs grandes de sesiones
+docs/*.log
+
+# --- Código de terceros que ya no se usa (PRoot, GPL-2.0; el motor actual no lo enlaza)
+third_party/proot/
+third_party/proot*.cmake
+
+# --- Servidor de informes (secretos de Cloudflare)
+server/report-worker/.dev.vars
+server/report-worker/node_modules/
+server/report-worker/.wrangler/

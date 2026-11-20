@@ -1,0 +1,15 @@
+name = "hyperplay-reports"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+GITHUB_REPO = "cespinosag1992-ui/HyperPlay"
+
+# Opcional (recomendado): limita envíos por IP y descarta duplicados.
+# 1) npx wrangler kv namespace create REPORTS_KV
+# 2) copia aquí el id que te devuelve y quita los '#':
+# [[kv_namespaces]]
+# binding = "REPORTS_KV"
+# id = "PEGA_AQUI_EL_ID"
+
+# El token NO va aquí: npx wrangler secret put GITHUB_TOKEN

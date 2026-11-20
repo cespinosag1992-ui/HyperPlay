@@ -1,0 +1,184 @@
+package com.murdoc820.hyperplay
+
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.content.SharedPreferences
+import android.net.Uri
+import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.core.content.edit
+import androidx.core.net.toUri
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.murdoc820.hyperplay.art.GameArtRepository
+import com.murdoc820.hyperplay.audio.ConsoleUiSoundEngine
+import com.murdoc820.hyperplay.diag.Diagnostics
+import com.murdoc820.hyperplay.update.AppUpdater
+import com.murdoc820.hyperplay.model.PortableGame
+import java.io.File
+
+/**
+ * Launcher de consola (LAUNCHER). Comprueba el permiso de almacenamiento, escanea las carpetas
+ * de la biblioteca y lanza [GameSessionActivity].
+ */
+class MainActivity : ComponentActivity() {
+
+    private lateinit var soundEngine: ConsoleUiSoundEngine
+    private lateinit var prefs: SharedPreferences
+    private lateinit var sounds: UiSounds
+
+    private var hasStorage by mutableStateOf(true)
+    private var reportsEnabled by mutableStateOf<Boolean?>(false)
+
+    private val systemActions = SystemActions(
+        checkUpdate = { AppUpdater.check(this) },
+        installUpdate = { AppUpdater.downloadAndInstall(this, it) },
+        setReports = { enabled ->
+            Diagnostics.setReportsEnabled(enabled)
+            reportsEnabled = Diagnostics.reportsEnabled
+            if (enabled) Diagnostics.uploadPending()
+        },
+        sendReports = { Diagnostics.uploadPending() },
+    )
+    private var folders by mutableStateOf(LauncherLogic.DEFAULT_FOLDERS)
+
+    private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) onFolderPicked(uri)
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        soundEngine = ConsoleUiSoundEngine(this)
+        sounds = UiSounds(
+            navigate = soundEngine::navigate,
+            confirm = soundEngine::confirm,
+            back = soundEngine::back,
+            error = soundEngine::error,
+        )
+        prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        folders = LauncherLogic.decodeFolders(prefs.getString(KEY_FOLDERS, null))
+        hideSystemBars()
+
+        GameArtRepository.init(this)
+        setContent {
+            val library by LibraryRepository.state.collectAsStateWithLifecycle()
+            val art by GameArtRepository.art.collectAsStateWithLifecycle()
+            val update by AppUpdater.state.collectAsStateWithLifecycle()
+            val pendingReports by Diagnostics.pending.collectAsStateWithLifecycle()
+            LaunchedEffect(library.games) { GameArtRepository.ensure(library.games) }
+            val system = SystemUi(
+                update = update,
+                currentVersion = AppUpdater.currentVersion,
+                reportsEnabled = reportsEnabled,
+                pendingReports = pendingReports,
+                reportsConfigured = Diagnostics.uploadConfigured,
+            )
+            if (!hasStorage) {
+                StoragePermissionScreen(sounds = sounds, onGrant = ::openStorageSettings, onExit = ::finish)
+            } else {
+                LauncherScreen(
+                    library = library,
+                    art = art,
+                    folders = folders,
+                    sounds = sounds,
+                    onScan = { LibraryRepository.scan(folders) },
+                    onAddFolder = ::launchFolderPicker,
+                    onRemoveFolder = ::removeFolder,
+                    onPlay = ::play,
+                    onExit = ::finish,
+                    system = system,
+                    actions = systemActions,
+                )
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        hideSystemBars()
+        hasStorage = Environment.isExternalStorageManager()
+        if (hasStorage && !LibraryRepository.state.value.scannedOnce) LibraryRepository.scan(folders)
+        reportsEnabled = Diagnostics.reportsEnabled
+        AppUpdater.checkIfDue(this)
+        Diagnostics.uploadPending()
+    }
+
+    override fun onDestroy() {
+        soundEngine.release()
+        super.onDestroy()
+    }
+
+    private fun hideSystemBars() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    private fun openStorageSettings() {
+        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, "package:$packageName".toUri())
+        try {
+            startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+        }
+    }
+
+    private fun launchFolderPicker() {
+        try {
+            pickFolder.launch(null)
+        } catch (_: ActivityNotFoundException) {
+            sounds.error()
+            Toast.makeText(this, "No hay selector de carpetas disponible", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun onFolderPicked(uri: Uri) {
+        val path = LauncherLogic.treeUriToPath(uri.toString())
+        if (path == null) {
+            sounds.error()
+            Toast.makeText(this, "Elige una carpeta del almacenamiento interno o de la tarjeta SD", Toast.LENGTH_LONG).show()
+            return
+        }
+        saveFolders(LauncherLogic.addFolder(folders, path))
+        LibraryRepository.scan(folders)
+    }
+
+    private fun removeFolder(path: String) {
+        saveFolders(LauncherLogic.removeFolder(folders, path))
+        LibraryRepository.scan(folders)
+    }
+
+    private fun saveFolders(list: List<String>) {
+        folders = list
+        prefs.edit { putString(KEY_FOLDERS, LauncherLogic.encodeFolders(list)) }
+    }
+
+    private fun play(game: PortableGame) {
+        if (!File(game.exePath).isFile) {
+            sounds.error()
+            Toast.makeText(this, "No se encuentra ${game.exePath}", Toast.LENGTH_LONG).show()
+            LibraryRepository.scan(folders)
+            return
+        }
+        sounds.confirm()
+        GameSessionActivity.start(this, game.exePath)
+    }
+
+    companion object {
+        private const val PREFS_NAME = "launcher"
+        private const val KEY_FOLDERS = "library_folders"
+    }
+}

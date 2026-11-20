@@ -1,0 +1,19 @@
+; Exportaciones comunes de las DLL xinput de HyperPlay (scripts/build_xinput_dlls.sh cambia
+; @DLLNAME@ por xinput1_4.dll, xinput1_3.dll, ...). Ordinales con nombre = layout de xinput1_3;
+; 100-108 sin nombre, como en las DLL de Microsoft.
+LIBRARY @DLLNAME@
+EXPORTS
+    XInputGetState @2
+    XInputSetState @3
+    XInputGetCapabilities @4
+    XInputEnable @5
+    XInputGetDSoundAudioDeviceGuids @6
+    XInputGetBatteryInformation @7
+    XInputGetKeystroke @8
+    XInputGetAudioDeviceIds @9
+    XInputGetStateEx @100 NONAME
+    XInputWaitForGuideButton @101 NONAME
+    XInputCancelGuideButtonWait @102 NONAME
+    XInputPowerOffController @103 NONAME
+    XInputGetBaseBusInformation @104 NONAME
+    XInputGetCapabilitiesEx @108 NONAME

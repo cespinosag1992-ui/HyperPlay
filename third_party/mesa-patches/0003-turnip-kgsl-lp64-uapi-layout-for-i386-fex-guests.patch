@@ -1,0 +1,828 @@
+From: HyperPlay <hyperplay@localhost>
+Subject: [PATCH] turnip/kgsl: LP64 uapi layouts for i386 builds run by FEX
+
+FEX-Emu runs i386 guest code inside a 64-bit host process and forwards KGSL
+ioctls (type 0x09) to the kernel unchanged, so the kernel decodes them with
+its native LP64 struct layouts (the compat_ioctl path is never taken). On
+__i386__, widen every unsigned long / __kernel_size_t / pointer member of
+msm_kgsl.h to an 8-byte aligned 64-bit slot and give 64-bit members 8-byte
+alignment, so sizes and offsets (and thus the ioctl numbers) match x86_64 /
+aarch64 exactly. Verified with an offsetof/sizeof probe over all 512 struct
+members: i386 (patched) == x86_64 == aarch64. No-op for every other arch.
+Define KGSL_I386_NATIVE_ABI to get the real 32-bit ABI back.
+
+--- a/src/freedreno/vulkan/msm_kgsl.h
++++ b/src/freedreno/vulkan/msm_kgsl.h
+@@ -11,6 +11,30 @@
+ #include <linux/ioctl.h>
+ 
+ /*
++ * HyperPlay (patch 0003): i386 Turnip running as FEX guest code. FEX executes
++ * 32-bit guests inside a 64-bit host process and forwards KGSL ioctls (type
++ * 0x09) unchanged, so the kernel decodes them with its native LP64 layouts
++ * (no compat_ioctl path). On __i386__ every unsigned long, __kernel_size_t and
++ * pointer member is widened to an 8-byte aligned 64-bit slot and 64-bit
++ * members get the LP64 8-byte alignment. Pointer slots keep the pointer in
++ * the low half and a zero high half (designated initializers zero it). Other
++ * architectures keep the original types.
++ */
++#if defined(__i386__) && !defined(KGSL_I386_NATIVE_ABI)
++typedef __u64 __hp_kgsl_ulong __attribute__((aligned(8)));
++typedef __u64 __hp_kgsl_size_t __attribute__((aligned(8)));
++typedef __u64 __hp_kgsl_u64 __attribute__((aligned(8)));
++typedef __s64 __hp_kgsl_s64 __attribute__((aligned(8)));
++#define __HP_KGSL_PTR(name) name __attribute__((aligned(8))); __u32 __hp_kgsl_hi_##name
++#else
++typedef unsigned long __hp_kgsl_ulong;
++typedef __kernel_size_t __hp_kgsl_size_t;
++typedef __u64 __hp_kgsl_u64;
++typedef __s64 __hp_kgsl_s64;
++#define __HP_KGSL_PTR(name) name
++#endif
++
++/*
+  * The KGSL version has proven not to be very useful in userspace if features
+  * are cherry picked into other trees out of order so it is frozen as of 3.14.
+  * It is left here for backward compatibility and as a reminder that
+@@ -272,13 +296,13 @@
+ 	 */
+ 	unsigned int chip_id;
+ 	unsigned int mmu_enabled;
+-	unsigned long gmem_gpubaseaddr;
++	__hp_kgsl_ulong gmem_gpubaseaddr;
+ 	/*
+ 	 * This field contains the adreno revision
+ 	 * number 200, 205, 220, etc...
+ 	 */
+ 	unsigned int gpu_id;
+-	__kernel_size_t gmem_sizebytes;
++	__hp_kgsl_size_t gmem_sizebytes;
+ };
+ 
+ /*
+@@ -371,7 +395,7 @@
+  * list via 'count'.
+  */
+ struct kgsl_capabilities_properties {
+-	__u64 list;
++	__hp_kgsl_u64 list;
+ 	__u32 count;
+ };
+ 
+@@ -388,25 +412,25 @@
+  * appropriate for querytype (in bytes).
+  */
+ struct kgsl_capabilities {
+-	__u64 data;
+-	__u64 size;
++	__hp_kgsl_u64 data;
++	__hp_kgsl_u64 size;
+ 	__u32 querytype;
+ };
+ 
+ struct kgsl_shadowprop {
+-	unsigned long gpuaddr;
+-	__kernel_size_t size;
++	__hp_kgsl_ulong gpuaddr;
++	__hp_kgsl_size_t size;
+ 	unsigned int flags; /* contains KGSL_FLAGS_ values */
+ };
+ 
+ struct kgsl_qdss_stm_prop {
+-	__u64 gpuaddr;
+-	__u64 size;
++	__hp_kgsl_u64 gpuaddr;
++	__hp_kgsl_u64 size;
+ };
+ 
+ struct kgsl_qtimer_prop {
+-	__u64 gpuaddr;
+-	__u64 size;
++	__hp_kgsl_u64 gpuaddr;
++	__hp_kgsl_u64 size;
+ };
+ 
+ struct kgsl_version {
+@@ -417,8 +441,8 @@
+ };
+ 
+ struct kgsl_sp_generic_mem {
+-	__u64 local;
+-	__u64 pvt;
++	__hp_kgsl_u64 local;
++	__hp_kgsl_u64 pvt;
+ };
+ 
+ struct kgsl_ucode_version {
+@@ -433,7 +457,7 @@
+ };
+ 
+ struct kgsl_context_property {
+-	__u64 data;
++	__hp_kgsl_u64 data;
+ 	__u32 size;
+ 	__u32 type;
+ 	__u32 contextid;
+@@ -517,9 +541,9 @@
+ 
+ /* structure holds list of ibs */
+ struct kgsl_ibdesc {
+-	unsigned long gpuaddr;
+-	unsigned long __pad;
+-	__kernel_size_t sizedwords;
++	__hp_kgsl_ulong gpuaddr;
++	__hp_kgsl_ulong __pad;
++	__hp_kgsl_size_t sizedwords;
+ 	unsigned int ctrl;
+ };
+ 
+@@ -539,11 +563,11 @@
+  * execution time
+  */
+ struct kgsl_cmdbatch_profiling_buffer {
+-	__u64 wall_clock_s;
+-	__u64 wall_clock_ns;
+-	__u64 gpu_ticks_queued;
+-	__u64 gpu_ticks_submitted;
+-	__u64 gpu_ticks_retired;
++	__hp_kgsl_u64 wall_clock_s;
++	__hp_kgsl_u64 wall_clock_ns;
++	__hp_kgsl_u64 gpu_ticks_queued;
++	__hp_kgsl_u64 gpu_ticks_submitted;
++	__hp_kgsl_u64 gpu_ticks_retired;
+ };
+ 
+ /* ioctls */
+@@ -562,8 +586,8 @@
+  */
+ struct kgsl_device_getproperty {
+ 	unsigned int type;
+-	void __user *value;
+-	__kernel_size_t sizebytes;
++	void __user *__HP_KGSL_PTR(value);
++	__hp_kgsl_size_t sizebytes;
+ };
+ 
+ #define IOCTL_KGSL_DEVICE_GETPROPERTY \
+@@ -606,7 +630,7 @@
+  */
+ struct kgsl_ringbuffer_issueibcmds {
+ 	unsigned int drawctxt_id;
+-	unsigned long ibdesc_addr;
++	__hp_kgsl_ulong ibdesc_addr;
+ 	unsigned int numibs;
+ 	unsigned int timestamp; /*output param */
+ 	unsigned int flags;
+@@ -635,7 +659,7 @@
+  * type should be a value from enum kgsl_timestamp_type
+  */
+ struct kgsl_cmdstream_freememontimestamp {
+-	unsigned long gpuaddr;
++	__hp_kgsl_ulong gpuaddr;
+ 	unsigned int type;
+ 	unsigned int timestamp;
+ };
+@@ -678,10 +702,10 @@
+  */
+ struct kgsl_map_user_mem {
+ 	int fd;
+-	unsigned long gpuaddr;   /*output param */
+-	__kernel_size_t len;
+-	__kernel_size_t offset;
+-	unsigned long hostptr;   /*input param */
++	__hp_kgsl_ulong gpuaddr;   /*output param */
++	__hp_kgsl_size_t len;
++	__hp_kgsl_size_t offset;
++	__hp_kgsl_ulong hostptr;   /*input param */
+ 	enum kgsl_user_mem_type memtype;
+ 	unsigned int flags;
+ };
+@@ -700,7 +724,7 @@
+ 
+ struct kgsl_cmdstream_freememontimestamp_ctxtid {
+ 	unsigned int context_id;
+-	unsigned long gpuaddr;
++	__hp_kgsl_ulong gpuaddr;
+ 	unsigned int type;
+ 	unsigned int timestamp;
+ };
+@@ -712,7 +736,7 @@
+ /* add a block of pmem or fb into the GPU address space */
+ struct kgsl_sharedmem_from_pmem {
+ 	int pmem_fd;
+-	unsigned long gpuaddr;  /*output param */
++	__hp_kgsl_ulong gpuaddr;  /*output param */
+ 	unsigned int len;
+ 	unsigned int offset;
+ };
+@@ -722,7 +746,7 @@
+ 
+ /* remove memory from the GPU's address space */
+ struct kgsl_sharedmem_free {
+-	unsigned long gpuaddr;
++	__hp_kgsl_ulong gpuaddr;
+ };
+ 
+ #define IOCTL_KGSL_SHAREDMEM_FREE \
+@@ -750,8 +774,8 @@
+ };
+ 
+ struct kgsl_buffer_desc {
+-	void		*hostptr;
+-	unsigned long	gpuaddr;
++	void		*__HP_KGSL_PTR(hostptr);
++	__hp_kgsl_ulong	gpuaddr;
+ 	int		size;
+ 	unsigned int	format;
+ 	unsigned int	pitch;
+@@ -778,7 +802,7 @@
+  */
+ 
+ struct kgsl_sharedmem_from_vmalloc {
+-	unsigned long gpuaddr;	/*output param */
++	__hp_kgsl_ulong gpuaddr;	/*output param */
+ 	unsigned int hostptr;
+ 	unsigned int flags;
+ };
+@@ -825,8 +849,8 @@
+ 	_IOW(KGSL_IOC_TYPE, 0x2e, struct kgsl_cmdwindow_write)
+ 
+ struct kgsl_gpumem_alloc {
+-	unsigned long gpuaddr; /* output param */
+-	__kernel_size_t size;
++	__hp_kgsl_ulong gpuaddr; /* output param */
++	__hp_kgsl_size_t size;
+ 	unsigned int flags;
+ };
+ 
+@@ -834,8 +858,8 @@
+ 	_IOWR(KGSL_IOC_TYPE, 0x2f, struct kgsl_gpumem_alloc)
+ 
+ struct kgsl_cff_syncmem {
+-	unsigned long gpuaddr;
+-	__kernel_size_t len;
++	__hp_kgsl_ulong gpuaddr;
++	__hp_kgsl_size_t len;
+ 	unsigned int __pad[2]; /* For future binary compatibility */
+ };
+ 
+@@ -852,8 +876,8 @@
+ 	int type;                /* Type of event (see list below) */
+ 	unsigned int timestamp;  /* Timestamp to trigger event on */
+ 	unsigned int context_id; /* Context for the timestamp */
+-	void __user *priv;	 /* Pointer to the event specific blob */
+-	__kernel_size_t len;              /* Size of the event specific blob */
++	void __user *__HP_KGSL_PTR(priv);	 /* Pointer to the event specific blob */
++	__hp_kgsl_size_t len;              /* Size of the event specific blob */
+ };
+ 
+ #define IOCTL_KGSL_TIMESTAMP_EVENT_OLD \
+@@ -908,11 +932,11 @@
+ struct kgsl_gpumem_alloc_id {
+ 	unsigned int id;
+ 	unsigned int flags;
+-	__kernel_size_t size;
+-	__kernel_size_t mmapsize;
+-	unsigned long gpuaddr;
++	__hp_kgsl_size_t size;
++	__hp_kgsl_size_t mmapsize;
++	__hp_kgsl_ulong gpuaddr;
+ /* private: reserved for future use*/
+-	unsigned long __pad[2];
++	__hp_kgsl_ulong __pad[2];
+ };
+ 
+ #define IOCTL_KGSL_GPUMEM_ALLOC_ID \
+@@ -951,14 +975,14 @@
+  *
+  */
+ struct kgsl_gpumem_get_info {
+-	unsigned long gpuaddr;
++	__hp_kgsl_ulong gpuaddr;
+ 	unsigned int id;
+ 	unsigned int flags;
+-	__kernel_size_t size;
+-	__kernel_size_t mmapsize;
+-	unsigned long useraddr;
++	__hp_kgsl_size_t size;
++	__hp_kgsl_size_t mmapsize;
++	__hp_kgsl_ulong useraddr;
+ /* private: reserved for future use*/
+-	unsigned long __pad[4];
++	__hp_kgsl_ulong __pad[4];
+ };
+ 
+ #define IOCTL_KGSL_GPUMEM_GET_INFO\
+@@ -979,11 +1003,11 @@
+  *
+  */
+ struct kgsl_gpumem_sync_cache {
+-	unsigned long gpuaddr;
++	__hp_kgsl_ulong gpuaddr;
+ 	unsigned int id;
+ 	unsigned int op;
+-	__kernel_size_t offset;
+-	__kernel_size_t length;
++	__hp_kgsl_size_t offset;
++	__hp_kgsl_size_t length;
+ };
+ 
+ #define KGSL_GPUMEM_CACHE_CLEAN (1 << 0)
+@@ -1069,7 +1093,7 @@
+ struct kgsl_perfcounter_query {
+ 	unsigned int groupid;
+ 	/* Array to return the current countable for up to size counters */
+-	unsigned int __user *countables;
++	unsigned int __user *__HP_KGSL_PTR(countables);
+ 	unsigned int count;
+ 	unsigned int max_counters;
+ /* private: reserved for future use */
+@@ -1093,11 +1117,11 @@
+ struct kgsl_perfcounter_read_group {
+ 	unsigned int groupid;
+ 	unsigned int countable;
+-	unsigned long long value;
++	__hp_kgsl_u64 value;
+ };
+ 
+ struct kgsl_perfcounter_read {
+-	struct kgsl_perfcounter_read_group __user *reads;
++	struct kgsl_perfcounter_read_group __user *__HP_KGSL_PTR(reads);
+ 	unsigned int count;
+ /* private: reserved for future use */
+ 	unsigned int __pad[2]; /* For future binary compatibility */
+@@ -1117,7 +1141,7 @@
+  * size of the working set of memory to be managed.
+  */
+ struct kgsl_gpumem_sync_cache_bulk {
+-	unsigned int __user *id_list;
++	unsigned int __user *__HP_KGSL_PTR(id_list);
+ 	unsigned int count;
+ 	unsigned int op;
+ /* private: reserved for future use */
+@@ -1156,7 +1180,7 @@
+  * be satisfied when all of the specified timelines are signaled.
+  */
+ struct kgsl_cmd_syncpoint_timeline {
+-	__u64 timelines;
++	__hp_kgsl_u64 timelines;
+ 	__u32 count;
+ 	__u32 timelines_size;
+ };
+@@ -1172,8 +1196,8 @@
+  */
+ struct kgsl_cmd_syncpoint {
+ 	int type;
+-	void __user *priv;
+-	__kernel_size_t size;
++	void __user *__HP_KGSL_PTR(priv);
++	__hp_kgsl_size_t size;
+ };
+ 
+ /* Flag to indicate that the cmdlist may contain memlists */
+@@ -1204,9 +1228,9 @@
+ struct kgsl_submit_commands {
+ 	unsigned int context_id;
+ 	unsigned int flags;
+-	struct kgsl_ibdesc __user *cmdlist;
++	struct kgsl_ibdesc __user *__HP_KGSL_PTR(cmdlist);
+ 	unsigned int numcmds;
+-	struct kgsl_cmd_syncpoint __user *synclist;
++	struct kgsl_cmd_syncpoint __user *__HP_KGSL_PTR(synclist);
+ 	unsigned int numsyncs;
+ 	unsigned int timestamp;
+ /* private: reserved for future use */
+@@ -1226,8 +1250,8 @@
+ struct kgsl_device_constraint {
+ 	unsigned int type;
+ 	unsigned int context_id;
+-	void __user *data;
+-	__kernel_size_t size;
++	void __user *__HP_KGSL_PTR(data);
++	__hp_kgsl_size_t size;
+ };
+ 
+ /* Constraint Type*/
+@@ -1335,8 +1359,8 @@
+  * @id: ID of the GPU object to sync
+  */
+ struct kgsl_cff_sync_gpuobj {
+-	__u64 offset;
+-	__u64 length;
++	__hp_kgsl_u64 offset;
++	__hp_kgsl_u64 length;
+ 	unsigned int id;
+ };
+ 
+@@ -1354,13 +1378,13 @@
+  * @metadata: Pointer to the user specified metadata to store for the object
+  */
+ struct kgsl_gpuobj_alloc {
+-	__u64 size;
+-	__u64 flags;
+-	__u64 va_len;
+-	__u64 mmapsize;
++	__hp_kgsl_u64 size;
++	__hp_kgsl_u64 flags;
++	__hp_kgsl_u64 va_len;
++	__hp_kgsl_u64 mmapsize;
+ 	unsigned int id;
+ 	unsigned int metadata_len;
+-	__u64 metadata;
++	__hp_kgsl_u64 metadata;
+ };
+ 
+ /* Let the user know that this header supports the gpuobj metadata */
+@@ -1385,8 +1409,8 @@
+  * @len: Length of the data passed in priv
+  */
+ struct kgsl_gpuobj_free {
+-	__u64 flags;
+-	__u64 __user priv;
++	__hp_kgsl_u64 flags;
++	__hp_kgsl_u64 __user priv;
+ 	unsigned int id;
+ 	unsigned int type;
+ 	unsigned int len;
+@@ -1429,11 +1453,11 @@
+  * id - GPU object ID of the object to query
+  */
+ struct kgsl_gpuobj_info {
+-	__u64 gpuaddr;
+-	__u64 flags;
+-	__u64 size;
+-	__u64 va_len;
+-	__u64 va_addr;
++	__hp_kgsl_u64 gpuaddr;
++	__hp_kgsl_u64 flags;
++	__hp_kgsl_u64 size;
++	__hp_kgsl_u64 va_len;
++	__hp_kgsl_u64 va_addr;
+ 	unsigned int id;
+ };
+ 
+@@ -1449,9 +1473,9 @@
+  * @id: Returns the ID of the new GPU object
+  */
+ struct kgsl_gpuobj_import {
+-	__u64 __user priv;
+-	__u64 priv_len;
+-	__u64 flags;
++	__hp_kgsl_u64 __user priv;
++	__hp_kgsl_u64 priv_len;
++	__hp_kgsl_u64 flags;
+ 	unsigned int type;
+ 	unsigned int id;
+ };
+@@ -1469,7 +1493,7 @@
+  * @virtaddr: Virtual address of the object to import
+  */
+ struct kgsl_gpuobj_import_useraddr {
+-	__u64 virtaddr;
++	__hp_kgsl_u64 virtaddr;
+ };
+ 
+ #define IOCTL_KGSL_GPUOBJ_IMPORT \
+@@ -1484,8 +1508,8 @@
+  */
+ 
+ struct kgsl_gpuobj_sync_obj {
+-	__u64 offset;
+-	__u64 length;
++	__hp_kgsl_u64 offset;
++	__hp_kgsl_u64 length;
+ 	unsigned int id;
+ 	unsigned int op;
+ };
+@@ -1498,7 +1522,7 @@
+  */
+ 
+ struct kgsl_gpuobj_sync {
+-	__u64 __user objs;
++	__hp_kgsl_u64 __user objs;
+ 	unsigned int obj_len;
+ 	unsigned int count;
+ };
+@@ -1515,9 +1539,9 @@
+  * @id - GPU command object ID
+  */
+ struct kgsl_command_object {
+-	__u64 offset;
+-	__u64 gpuaddr;
+-	__u64 size;
++	__hp_kgsl_u64 offset;
++	__hp_kgsl_u64 gpuaddr;
++	__hp_kgsl_u64 size;
+ 	unsigned int flags;
+ 	unsigned int id;
+ };
+@@ -1529,8 +1553,8 @@
+  * @type: type of sync point defined here
+  */
+ struct kgsl_command_syncpoint {
+-	__u64 __user priv;
+-	__u64 size;
++	__hp_kgsl_u64 __user priv;
++	__hp_kgsl_u64 size;
+ 	unsigned int type;
+ };
+ 
+@@ -1550,14 +1574,14 @@
+  * @timestamp: Timestamp for the submitted commands
+  */
+ struct kgsl_gpu_command {
+-	__u64 flags;
+-	__u64 __user cmdlist;
++	__hp_kgsl_u64 flags;
++	__hp_kgsl_u64 __user cmdlist;
+ 	unsigned int cmdsize;
+ 	unsigned int numcmds;
+-	__u64 __user objlist;
++	__hp_kgsl_u64 __user objlist;
+ 	unsigned int objsize;
+ 	unsigned int numobjs;
+-	__u64 __user synclist;
++	__hp_kgsl_u64 __user synclist;
+ 	unsigned int syncsize;
+ 	unsigned int numsyncs;
+ 	unsigned int context_id;
+@@ -1585,7 +1609,7 @@
+  * returned back.
+  */
+ struct kgsl_preemption_counters_query {
+-	__u64 __user counters;
++	__hp_kgsl_u64 __user counters;
+ 	unsigned int size_user;
+ 	unsigned int size_priority_level;
+ 	unsigned int max_priority_level;
+@@ -1609,8 +1633,8 @@
+ #define KGSL_GPUOBJ_SET_INFO_TYPE (1 << 1)
+ 
+ struct kgsl_gpuobj_set_info {
+-	__u64 flags;
+-	__u64 metadata;
++	__hp_kgsl_u64 flags;
++	__hp_kgsl_u64 metadata;
+ 	unsigned int id;
+ 	unsigned int metadata_len;
+ 	unsigned int type;
+@@ -1627,9 +1651,9 @@
+  * @id: Returned ID for this allocation
+  */
+ struct kgsl_sparse_phys_alloc {
+-	__u64 size;
+-	__u64 pagesize;
+-	__u64 flags;
++	__hp_kgsl_u64 size;
++	__hp_kgsl_u64 pagesize;
++	__hp_kgsl_u64 flags;
+ 	unsigned int id;
+ };
+ 
+@@ -1656,10 +1680,10 @@
+  * @gpuaddr: Returned GPU address for this allocation
+  */
+ struct kgsl_sparse_virt_alloc {
+-	__u64 size;
+-	__u64 pagesize;
+-	__u64 flags;
+-	__u64 gpuaddr;
++	__hp_kgsl_u64 size;
++	__hp_kgsl_u64 pagesize;
++	__hp_kgsl_u64 flags;
++	__hp_kgsl_u64 gpuaddr;
+ 	unsigned int id;
+ };
+ 
+@@ -1686,10 +1710,10 @@
+  * @id: Physical ID to bind (bind only)
+  */
+ struct kgsl_sparse_binding_object {
+-	__u64 virtoffset;
+-	__u64 physoffset;
+-	__u64 size;
+-	__u64 flags;
++	__hp_kgsl_u64 virtoffset;
++	__hp_kgsl_u64 physoffset;
++	__hp_kgsl_u64 size;
++	__hp_kgsl_u64 flags;
+ 	unsigned int id;
+ };
+ 
+@@ -1702,7 +1726,7 @@
+  *
+  */
+ struct kgsl_sparse_bind {
+-	__u64 __user list;
++	__hp_kgsl_u64 __user list;
+ 	unsigned int id;
+ 	unsigned int size;
+ 	unsigned int count;
+@@ -1726,9 +1750,9 @@
+  * @id: Virtual ID to bind/unbind
+  */
+ struct kgsl_gpu_sparse_command {
+-	__u64 flags;
+-	__u64 __user sparselist;
+-	__u64 __user synclist;
++	__hp_kgsl_u64 flags;
++	__hp_kgsl_u64 __user sparselist;
++	__hp_kgsl_u64 __user synclist;
+ 	unsigned int sparsesize;
+ 	unsigned int numsparse;
+ 	unsigned int syncsize;
+@@ -1765,9 +1789,9 @@
+  * removed.
+  */
+ struct kgsl_gpumem_bind_range {
+-	__u64 child_offset;
+-	__u64 target_offset;
+-	__u64 length;
++	__hp_kgsl_u64 child_offset;
++	__hp_kgsl_u64 target_offset;
++	__hp_kgsl_u64 length;
+ 	__u32 child_id;
+ 	__u32 op;
+ };
+@@ -1789,7 +1813,7 @@
+  * completes
+  *
+  * Describes a number of range operations to perform on a virtual buffer object
+- * identified by @id. Ranges should be a __u64 representation of an array of
++ * identified by @id. Ranges should be a __hp_kgsl_u64 representation of an array of
+  * &struct kgsl_gpumem_bind_range entries. @ranges_nents will contain the number
+  * of entries in the array, and @ranges_size will contain the size of each entry
+  * in the array. If KGSL_GPUMEM_BIND_ASYNC is set the operation will be
+@@ -1802,7 +1826,7 @@
+  * when the bind operation has completed.
+  */
+ struct kgsl_gpumem_bind_ranges {
+-	__u64 ranges;
++	__hp_kgsl_u64 ranges;
+ 	__u32 ranges_nents;
+ 	__u32 ranges_size;
+ 	__u32 id;
+@@ -1834,9 +1858,9 @@
+  * @rangeslist. @target points to the GPU ID for the target VBO object.
+  */
+ struct kgsl_gpu_aux_command_bind {
+-	__u64 rangeslist;
+-	__u64 numranges;
+-	__u64 rangesize;
++	__hp_kgsl_u64 rangeslist;
++	__hp_kgsl_u64 numranges;
++	__hp_kgsl_u64 rangesize;
+ 	__u32 target;
+ /* private: Padding for 64 bit compatibility */
+ 	__u32 padding;
+@@ -1852,8 +1876,8 @@
+  * to the command struct matching @type of size @size.
+  */
+ struct kgsl_gpu_aux_command_generic {
+-	__u64 priv;
+-	__u64 size;
++	__hp_kgsl_u64 priv;
++	__hp_kgsl_u64 size;
+ 	__u32 type;
+ /* private: Padding for 64 bit compatibility */
+ 	__u32 padding;
+@@ -1893,11 +1917,11 @@
+  * contains the timestamp for the operation.
+  */
+ struct kgsl_gpu_aux_command {
+-	__u64 flags;
+-	__u64 cmdlist;
++	__hp_kgsl_u64 flags;
++	__hp_kgsl_u64 cmdlist;
+ 	__u32 cmdsize;
+ 	__u32 numcmds;
+-	__u64 synclist;
++	__hp_kgsl_u64 synclist;
+ 	__u32 syncsize;
+ 	__u32 numsyncs;
+ 	__u32 context_id;
+@@ -1917,7 +1941,7 @@
+  * identify the timeline in all subsequent commands.
+  */
+ struct kgsl_timeline_create {
+-	__u64 seqno;
++	__hp_kgsl_u64 seqno;
+ 	__u32 id;
+ /* private: padding for 64 bit compatibility */
+ 	__u32 padding;
+@@ -1936,7 +1960,7 @@
+  * ioctls.
+  */
+ struct kgsl_timeline_val {
+-	__u64 seqno;
++	__hp_kgsl_u64 seqno;
+ 	__u32 timeline;
+ /* private: padding for 64 bit compatibility */
+ 	__u32 padding;
+@@ -1961,9 +1985,9 @@
+  * that the process should be blocked waiting for the signal.
+  */
+ struct kgsl_timeline_wait {
+-	__s64 tv_sec;
+-	__s64 tv_nsec;
+-	__u64 timelines;
++	__hp_kgsl_s64 tv_sec;
++	__hp_kgsl_s64 tv_nsec;
++	__hp_kgsl_u64 timelines;
+ 	__u32 count;
+ 	__u32 timelines_size;
+ 	__u32 flags;
+@@ -1986,7 +2010,7 @@
+  * Signal an array of timelines of type @struct kgsl_timeline_val.
+  */
+ struct kgsl_timeline_signal {
+-	__u64 timelines;
++	__hp_kgsl_u64 timelines;
+ 	__u32 count;
+ 	__u32 timelines_size;
+ };
+@@ -2004,7 +2028,7 @@
+  * @handle.  Can be polled and queried just like any other sync file descriptor
+  */
+ struct kgsl_timeline_fence_get {
+-	__u64 seqno;
++	__hp_kgsl_u64 seqno;
+ 	__u32 timeline;
+ 	int handle;
+ };
+@@ -2028,7 +2052,7 @@
+  * KGSL_GPU_AUX_COMMAND_TIMELINE.
+  */
+ struct kgsl_gpu_aux_command_timeline {
+-	__u64 timelines;
++	__hp_kgsl_u64 timelines;
+ 	__u32 count;
+ 	__u32 timelines_size;
+ };
+@@ -2056,9 +2080,9 @@
+  * Supported fault type: KGSL_PAGEFAULT_TYPE_*
+  */
+ struct kgsl_pagefault_report {
+-	__u64 fault_addr;
++	__hp_kgsl_u64 fault_addr;
+ 	/* private: reserved for future use */
+-	__u64 reserved[2];
++	__hp_kgsl_u64 reserved[2];
+ 	__u32 fault_type;
+ 	/* private: padding for 64 bit compatibility */
+ 	__u32 __pad;
+@@ -2079,7 +2103,7 @@
+  * Supported type: KGSL_FAULT_TYPE_*
+  */
+ struct kgsl_fault {
+-	__u64 fault;
++	__hp_kgsl_u64 fault;
+ 	__u32 type;
+ 	__u32 count;
+ 	__u32 size;
+@@ -2106,7 +2130,7 @@
+  * information.
+  */
+ struct kgsl_fault_report {
+-	__u64 faultlist;
++	__hp_kgsl_u64 faultlist;
+ 	__u32 faultnents;
+ 	__u32 faultsize;
+ 	__u32 context_id;
+@@ -2129,11 +2153,11 @@
+  * @context_id: Context ID submitting the kgsl_recurring_command
+  */
+ struct kgsl_recurring_command {
+-	__u64 flags;
+-	__u64 __user cmdlist;
++	__hp_kgsl_u64 flags;
++	__hp_kgsl_u64 __user cmdlist;
+ 	__u32 cmdsize;
+ 	__u32 numcmds;
+-	__u64 __user objlist;
++	__hp_kgsl_u64 __user objlist;
+ 	__u32 objsize;
+ 	__u32 numobjs;
+ 	__u32 context_id;
+@@ -2162,9 +2186,9 @@
+  * query.
+  */
+ struct kgsl_read_calibrated_timestamps {
+-	__u64 __user sources;
+-	__u64 __user ts;
+-	__u64 deviation;
++	__hp_kgsl_u64 __user sources;
++	__hp_kgsl_u64 __user ts;
++	__hp_kgsl_u64 deviation;
+ 	__u32 count;
+ 	/* private: Padding for 64 bit compatibility */
+ 	__u32 padding;
+@@ -2230,7 +2254,7 @@
+  * used by app profile and set the unused fields to KGSL_DCVS_ATTR_UNUSED.
+  */
+ struct kgsl_dcvs_profile {
+-	__u64 attrs;
++	__hp_kgsl_u64 attrs;
+ 	__u32 attrs_size;
+ 	/* private: 64 bit compatibility */
+ 	__u32 padding;

@@ -1,0 +1,90 @@
+#version 450
+// HyperFG 2/3: vectores de movimiento por bloques de 8x8 píxeles (un texel del nivel 1/8),
+// de grueso a fino sobre la pirámide de luminancia con SAD:
+//   1/8: búsqueda completa ±4 texels (±32 px) con parche 3x3
+//   1/4: refinado ±1 alrededor del doble del anterior, parche 5x5
+//   1/2: refinado ±1, parche 5x5
+// El vector cero se prefiere ante empates (sesgo 0.9): zonas quietas no "flotan".
+// Salida: F (RG16F, en píxeles del frame completo) tal que anterior(q + F) ≈ actual(q).
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D prev2;
+layout(set = 0, binding = 1) uniform sampler2D prev4;
+layout(set = 0, binding = 2) uniform sampler2D prev8;
+layout(set = 0, binding = 3) uniform sampler2D cur2;
+layout(set = 0, binding = 4) uniform sampler2D cur4;
+layout(set = 0, binding = 5) uniform sampler2D cur8;
+layout(set = 0, binding = 6, rg16f) uniform writeonly image2D flowOut;
+
+float L(sampler2D t, ivec2 p) {
+    ivec2 s = textureSize(t, 0);
+    return texelFetch(t, clamp(p, ivec2(0), s - 1), 0).r;
+}
+
+float sad8(ivec2 c, ivec2 v) {
+    float s = 0.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) s += abs(L(cur8, c + ivec2(x, y)) - L(prev8, c + ivec2(x, y) + v));
+    return s;
+}
+
+float sad4(ivec2 c, ivec2 v) {
+    float s = 0.0;
+    for (int y = -2; y <= 2; ++y)
+        for (int x = -2; x <= 2; ++x) s += abs(L(cur4, c + ivec2(x, y)) - L(prev4, c + ivec2(x, y) + v));
+    return s;
+}
+
+float sad2(ivec2 c, ivec2 v) {
+    float s = 0.0;
+    for (int y = -2; y <= 2; ++y)
+        for (int x = -2; x <= 2; ++x) s += abs(L(cur2, c + ivec2(x, y)) - L(prev2, c + ivec2(x, y) + v));
+    return s;
+}
+
+void main() {
+    ivec2 b = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(b, imageSize(flowOut)))) return;
+
+    // 1/8: búsqueda completa.
+    ivec2 v8 = ivec2(0);
+    float best = sad8(b, ivec2(0)) * 0.9;
+    for (int dy = -4; dy <= 4; ++dy) {
+        for (int dx = -4; dx <= 4; ++dx) {
+            float c = sad8(b, ivec2(dx, dy));
+            if (c < best) { best = c; v8 = ivec2(dx, dy); }
+        }
+    }
+
+    // 1/4: centro del bloque = 2b + 1; refinado ±1 alrededor de 2*v8 (y el cero).
+    ivec2 c4 = b * 2 + 1;
+    ivec2 v4 = v8 * 2;
+    best = sad4(c4, v4);
+    float zero = sad4(c4, ivec2(0)) * 0.9;
+    if (zero < best) { best = zero; v4 = ivec2(0); }
+    ivec2 base4 = v4;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            float c = sad4(c4, base4 + ivec2(dx, dy));
+            if (c < best) { best = c; v4 = base4 + ivec2(dx, dy); }
+        }
+    }
+
+    // 1/2: centro = 4b + 2; refinado ±1 alrededor de 2*v4 (y el cero).
+    ivec2 c2 = b * 4 + 2;
+    ivec2 v2 = v4 * 2;
+    best = sad2(c2, v2);
+    zero = sad2(c2, ivec2(0)) * 0.9;
+    if (zero < best) { best = zero; v2 = ivec2(0); }
+    ivec2 base2 = v2;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            float c = sad2(c2, base2 + ivec2(dx, dy));
+            if (c < best) { best = c; v2 = base2 + ivec2(dx, dy); }
+        }
+    }
+
+    imageStore(flowOut, b, vec4(vec2(v2) * 2.0, 0.0, 0.0));
+}

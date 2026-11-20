@@ -1,0 +1,51 @@
+#version 450
+// HyperFG 1/3: pirámide de luminancia (R16F) a 1/2, 1/4 y 1/8 del backbuffer del juego, en un solo
+// despacho (reducción en memoria compartida). Además suma |lum8(actual) - lum8(anterior)| para
+// detectar cortes de escena en la GPU (sin lecturas en la CPU).
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D colorTex;              // frame actual (historial)
+layout(set = 0, binding = 1, r16f) uniform writeonly image2D lum2;    // 1/2
+layout(set = 0, binding = 2, r16f) uniform writeonly image2D lum4;    // 1/4
+layout(set = 0, binding = 3, r16f) uniform writeonly image2D lum8;    // 1/8
+layout(set = 0, binding = 4, r16f) uniform readonly image2D prevLum8; // 1/8 del frame anterior
+layout(set = 0, binding = 5) buffer Stats { uint diffSum; uint count; } stats;
+
+layout(push_constant) uniform P {
+    vec2 invSize;   // 1 / tamaño del frame completo
+    uint hasPrev;   // 1 si prevLum8 es válido
+} pc;
+
+shared float s2[8][8];
+shared float s4[4][4];
+
+void main() {
+    ivec2 lid = ivec2(gl_LocalInvocationID.xy);
+    ivec2 p2 = ivec2(gl_GlobalInvocationID.xy);
+    // Un texel de 1/2 = media de 2x2 píxeles: muestra bilineal en el centro del bloque.
+    vec2 uv = (vec2(p2) * 2.0 + 1.0) * pc.invSize;
+    float l = dot(textureLod(colorTex, uv, 0.0).rgb, vec3(0.299, 0.587, 0.114));
+    if (all(lessThan(p2, imageSize(lum2)))) imageStore(lum2, p2, vec4(l));
+    s2[lid.y][lid.x] = l;
+    barrier();
+    if ((lid.x & 1) == 0 && (lid.y & 1) == 0) {
+        float l4 = 0.25 * (s2[lid.y][lid.x] + s2[lid.y][lid.x + 1] + s2[lid.y + 1][lid.x] + s2[lid.y + 1][lid.x + 1]);
+        ivec2 p4 = p2 >> 1;
+        if (all(lessThan(p4, imageSize(lum4)))) imageStore(lum4, p4, vec4(l4));
+        s4[lid.y >> 1][lid.x >> 1] = l4;
+    }
+    barrier();
+    if ((lid.x & 3) == 0 && (lid.y & 3) == 0) {
+        ivec2 q = lid >> 1;
+        float l8 = 0.25 * (s4[q.y][q.x] + s4[q.y][q.x + 1] + s4[q.y + 1][q.x] + s4[q.y + 1][q.x + 1]);
+        ivec2 p8 = p2 >> 2;
+        if (all(lessThan(p8, imageSize(lum8)))) {
+            imageStore(lum8, p8, vec4(l8));
+            if (pc.hasPrev != 0u) {
+                float d = abs(l8 - imageLoad(prevLum8, p8).r);
+                atomicAdd(stats.diffSum, uint(d * 1024.0));
+                atomicAdd(stats.count, 1u);
+            }
+        }
+    }
+}

@@ -1,0 +1,38 @@
+wsi/x11: signal present ids on the software PutImage path
+
+Mesa 26.3.0. HyperPlay presents to Xvfb, which has no DRI3, so Turnip runs
+with MESA_VK_WSI_DEBUG=sw. Turnip has no VK_EXT_external_memory_host, so the
+x11 WSI cannot use MIT-SHM and falls back to x11_present_to_x11_sw()
+(xcb_put_image). That path never gets Present events, so
+x11_present_complete() never runs and swapchain->present_id never advances.
+Turnip still exposes VK_KHR_present_wait, DXVK uses it for frame pacing
+(dxvk-frame thread: vkWaitForPresentKHR(..., UINT64_MAX)), and the game
+stalls forever after a few frames with a black screen (seen on the RedMagic
+10 Pro with Hollow Knight and Cuphead, both through the FEX Vulkan thunk and
+with an x86_64 Turnip under FEX).
+
+Fix: once the image has been sent with PutImage, treat it as presented and
+advance present_id (same as x11_present_complete() does for Present events).
+
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -1933,6 +1933,19 @@
+
+    xcb_flush(chain->conn);
+
++   /* HyperPlay: the PutImage path never receives Present events, so
++    * x11_present_complete() never runs for it and KHR_present_wait waiters
++    * (DXVK frame pacing) block forever. The image has been handed to the X
++    * server here, so treat it as presented. */
++   if (image->present_id) {
++      mtx_lock(&chain->present_progress_mutex);
++      if (image->present_id > chain->present_id) {
++         chain->present_id = image->present_id;
++         u_cnd_monotonic_broadcast(&chain->present_progress_cond);
++      }
++      mtx_unlock(&chain->present_progress_mutex);
++   }
++
+    /* We don't have queued present here.
+     * Immediately let application acquire again, but query geometry first so
+     * we can report OUT_OF_DATE on resize. */

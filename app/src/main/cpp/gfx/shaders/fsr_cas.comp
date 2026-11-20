@@ -1,0 +1,45 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uInputTex;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D uOutputImg;
+
+layout(push_constant) uniform PushConstants {
+    uvec2 inSize;
+    uvec2 outSize;
+    float sharpness; // 0.0f a 1.0f
+} pc;
+
+void main() {
+    ivec2 outCoord = ivec2(gl_GlobalInvocationID.xy);
+    if (outCoord.x >= int(pc.outSize.x) || outCoord.y >= int(pc.outSize.y)) {
+        return;
+    }
+
+    // Coordenada UV de muestreo bilineal centrada
+    vec2 uv = (vec2(outCoord) + vec2(0.5)) / vec2(pc.outSize);
+    vec2 step = vec2(1.0) / vec2(pc.inSize);
+
+    // Muestreo en cruz de 5 taps (centro + N, S, W, E)
+    vec4 center = texture(uInputTex, uv);
+    vec3 c = center.rgb;
+    vec3 n = texture(uInputTex, uv + vec2(0.0, -step.y)).rgb;
+    vec3 s = texture(uInputTex, uv + vec2(0.0,  step.y)).rgb;
+    vec3 w = texture(uInputTex, uv + vec2(-step.x, 0.0)).rgb;
+    vec3 e = texture(uInputTex, uv + vec2( step.x, 0.0)).rgb;
+
+    // Contrast Adaptive Sharpening (CAS) kernel
+    vec3 minRgb = min(c, min(min(n, s), min(w, e)));
+    vec3 maxRgb = max(c, max(max(n, s), max(w, e)));
+
+    // Rango adaptativo para evitar sobre-enfoque y ringing
+    vec3 amp = clamp(min(minRgb, 2.0 - maxRgb) / max(maxRgb, vec3(1e-5)), 0.0, 1.0);
+    float peak = mix(-0.20, -0.05, clamp(pc.sharpness, 0.0, 1.0));
+    vec3 weight = amp * peak;
+
+    vec3 result = (c + (n + s + w + e) * weight) / (vec3(1.0) + 4.0 * weight);
+    result = clamp(result, 0.0, 1.0);
+
+    imageStore(uOutputImg, outCoord, vec4(result, center.a));
+}

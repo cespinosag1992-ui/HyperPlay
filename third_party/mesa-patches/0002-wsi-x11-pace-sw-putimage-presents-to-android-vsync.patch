@@ -1,0 +1,158 @@
+HyperPlay: frame pacing for the X11 PutImage (MESA_VK_WSI_DEBUG=sw) present path.
+
+Xvfb has no vblank, so without this games present as fast as they render and run
+over-speed. HYPERPLAY_WSI_FPS=N releases each present at N FPS; HYPERPLAY_VSYNC_FILE
+(written by HyperPlay's VsyncPublisher on every Android panel vsync) phase-locks the
+releases to the real panel, HYPERPLAY_WSI_LEAD_US before a vsync. Applies after 0001.
+
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -69,6 +69,9 @@
+ #ifdef HAVE_SYS_SHM_H
+ #include <sys/ipc.h>
+ #include <sys/shm.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <time.h>
+ #endif
+ 
+ #ifndef XCB_PRESENT_OPTION_ASYNC_MAY_TEAR
+@@ -1867,12 +1870,138 @@
+ /**
+  * Send image to X server unaccelerated (software drivers).
+  */
++/* HyperPlay: frame pacing for the PutImage (MESA_VK_WSI_DEBUG=sw) path.
++ *
++ * Xvfb has no vblank, so this path presents as fast as the app renders and
++ * games run over-speed. With HYPERPLAY_WSI_FPS=N each present is released at
++ * N frames per second. If HYPERPLAY_VSYNC_FILE points to the HyperPlay vsync
++ * page (written by the Android side on every panel vsync), presents are
++ * phase-locked to the real panel: interval = round(1/N / period) vsyncs and
++ * each PutImage is released HYPERPLAY_WSI_LEAD_US before a vsync, so the
++ * frame reaches the Android swapchain just in time and no second clock beats
++ * against the panel. Without a fresh vsync page it free-runs at 1/N.
++ */
++struct hp_vsync_info {
++   uint32_t magic;
++   uint32_t seq;
++   int64_t vsync_ns;
++   int64_t period_ns;
++};
++#define HP_VSYNC_MAGIC 0x56535048u
++#define HP_VSYNC_FILE_SIZE 4096
++
++static int64_t
++hp_now_ns(void)
++{
++   struct timespec ts;
++   clock_gettime(CLOCK_MONOTONIC, &ts);
++   return (int64_t)ts.tv_sec * 1000000000ll + ts.tv_nsec;
++}
++
++static const struct hp_vsync_info *
++hp_vsync_page(void)
++{
++   static int tried;
++   static const struct hp_vsync_info *page;
++   if (!tried) {
++      tried = 1;
++      const char *path = getenv("HYPERPLAY_VSYNC_FILE");
++      if (path && *path) {
++         int fd = open(path, O_RDONLY | O_CLOEXEC);
++         if (fd >= 0) {
++            struct stat st;
++            if (fstat(fd, &st) == 0 && st.st_size >= HP_VSYNC_FILE_SIZE) {
++               void *m = mmap(NULL, HP_VSYNC_FILE_SIZE, PROT_READ, MAP_SHARED, fd, 0);
++               if (m != MAP_FAILED)
++                  page = m;
++            }
++            close(fd);
++         }
++      }
++   }
++   return page;
++}
++
++static bool
++hp_vsync_read(int64_t *vsync_ns, int64_t *period_ns)
++{
++   const struct hp_vsync_info *v = hp_vsync_page();
++   if (!v)
++      return false;
++   for (int i = 0; i < 8; i++) {
++      if (__atomic_load_n(&v->magic, __ATOMIC_ACQUIRE) != HP_VSYNC_MAGIC)
++         return false;
++      uint32_t s1 = __atomic_load_n(&v->seq, __ATOMIC_ACQUIRE);
++      if (s1 & 1)
++         continue;
++      int64_t vs = __atomic_load_n(&v->vsync_ns, __ATOMIC_RELAXED);
++      int64_t per = __atomic_load_n(&v->period_ns, __ATOMIC_RELAXED);
++      __atomic_thread_fence(__ATOMIC_ACQUIRE);
++      if (__atomic_load_n(&v->seq, __ATOMIC_RELAXED) != s1)
++         continue;
++      if (per < 1000000 || per > 100000000)
++         return false;
++      *vsync_ns = vs;
++      *period_ns = per;
++      return true;
++   }
++   return false;
++}
++
++static int64_t
++hp_floor_div(int64_t a, int64_t b)
++{
++   int64_t q = a / b;
++   return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
++}
++
++static void
++hp_pace_present(void)
++{
++   static int64_t frame_ns = -1, lead_ns, next_ns;
++   if (frame_ns < 0) {
++      const char *fps = getenv("HYPERPLAY_WSI_FPS");
++      const char *lead = getenv("HYPERPLAY_WSI_LEAD_US");
++      int n = fps ? atoi(fps) : 0;
++      frame_ns = (n > 0 && n <= 1000) ? 1000000000ll / n : 0;
++      lead_ns = lead ? (int64_t)atoi(lead) * 1000 : 4000000;
++   }
++   if (!frame_ns)
++      return;
++
++   int64_t now = hp_now_ns();
++   int64_t vs, per, interval = frame_ns, target;
++   int64_t want = next_ns ? next_ns : now;
++   if (hp_vsync_read(&vs, &per) && now - vs < 500000000ll) {
++      int64_t k = (frame_ns + per / 2) / per;
++      interval = (k < 1 ? 1 : k) * per;
++      if (want < now - interval)
++         want = now; /* far behind (stall, loading): resync, no catch-up burst */
++      /* Nearest release point on the vsync grid (vsync - lead + m * period). */
++      int64_t base = vs - lead_ns;
++      int64_t m = hp_floor_div(want - base + per / 2, per);
++      target = base + m * per;
++   } else {
++      if (want < now - interval)
++         want = now;
++      target = want;
++   }
++   if (target > now) {
++      struct timespec ts = { target / 1000000000ll, target % 1000000000ll };
++      while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR)
++         ;
++   }
++   next_ns = target + interval;
++}
++
+ static VkResult
+ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index)
+ {
+    assert(!chain->base.image_info.explicit_sync);
+    struct x11_image *image = &chain->images[image_index];
+ 
++   hp_pace_present();
++
+    /* Begin querying this before submitting the frame for improved async performance.
+     * In this _sw() mode we're expecting network round-trip delay, not just UNIX socket delay. */
+    xcb_get_geometry_cookie_t geom_cookie = xcb_get_geometry(chain->conn, chain->window);

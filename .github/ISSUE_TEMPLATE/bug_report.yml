@@ -1,0 +1,37 @@
+name: Error
+description: Algo no funciona (juego, app, mando, rendimiento)
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Versión de HyperPlay
+      description: Ajustes → Actualizaciones → Versión instalada
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Teléfono y Android
+      placeholder: "RedMagic 10S Pro, Android 15"
+    validations:
+      required: true
+  - type: input
+    id: game
+    attributes:
+      label: Juego
+      placeholder: "Hollow Knight (Steam, 64 bits)"
+  - type: textarea
+    id: what
+    attributes:
+      label: Qué pasó
+      description: Qué hiciste, qué esperabas y qué ocurrió.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Registro (opcional)
+      description: Si la app envió un informe automático, indica su ID.
+      render: text

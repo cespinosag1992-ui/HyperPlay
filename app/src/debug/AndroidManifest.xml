@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Solo en debug: permite lanzar la sesión por ADB (am start) para pruebas en el dispositivo.
+     El extra es com.murdoc820.hyperplay.extra.EXE_PATH (ver GameSessionActivity). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <activity
+            android:name=".GameSessionActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+    </application>
+</manifest>
