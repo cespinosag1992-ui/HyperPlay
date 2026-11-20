@@ -101,9 +101,10 @@ class LauncherLogicTest {
     }
 
     @Test fun folderListRoundTrip() {
-        assertEquals(LauncherLogic.DEFAULT_FOLDERS, LauncherLogic.decodeFolders(null))
+        assertEquals(emptyList<String>(), LauncherLogic.decodeFolders(null))  // sin carpetas por defecto
         assertEquals(emptyList<String>(), LauncherLogic.decodeFolders(""))
-        val list = LauncherLogic.addFolder(LauncherLogic.DEFAULT_FOLDERS, "/sdcard/Juegos raros/")
+        val start = listOf("/storage/emulated/0/PC games", "/storage/emulated/0/Games", "/storage/emulated/0/Download")
+        val list = LauncherLogic.addFolder(start, "/sdcard/Juegos raros/")
         assertEquals(4, list.size)
         assertEquals(list, LauncherLogic.decodeFolders(LauncherLogic.encodeFolders(list)))
         // Duplicados (por alias) no se añaden.

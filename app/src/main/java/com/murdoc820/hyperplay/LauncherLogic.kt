@@ -14,7 +14,6 @@ object LauncherLogic {
     const val PRIMARY_ROOT = "/storage/emulated/0"
     const val SCAN_MAX_DEPTH = 4
 
-    val DEFAULT_FOLDERS = listOf("$PRIMARY_ROOT/PC games", "$PRIMARY_ROOT/Games", "$PRIMARY_ROOT/Download")
 
     const val BADGE_PORTABLE = "[PORTABLE D:\\]"
     const val BADGE_LAA = "[LAA]"
@@ -121,9 +120,9 @@ object LauncherLogic {
 
     fun encodeFolders(folders: List<String>): String = folders.joinToString("\n")
 
-    /** null (nunca guardado) → carpetas por defecto. */
+    /** Sin carpetas por defecto: el usuario elige la suya (null = nunca guardado = ninguna). */
     fun decodeFolders(stored: String?): List<String> {
-        if (stored == null) return DEFAULT_FOLDERS
+        if (stored == null) return emptyList()
         return stored.lineSequence().map(::normalizeFolder).filter { it.isNotEmpty() }.distinct().toList()
     }
 

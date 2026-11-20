@@ -69,7 +69,7 @@ class MainActivity : ComponentActivity() {
         },
         sendReports = { Diagnostics.uploadPending() },
     )
-    private var folders by mutableStateOf(LauncherLogic.DEFAULT_FOLDERS)
+    private var folders by mutableStateOf(emptyList<String>())
 
     private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) onFolderPicked(uri)

@@ -301,7 +301,7 @@ fun LauncherScreen(
                             true
                         }
                         code == AndroidKeyEvent.KEYCODE_BUTTON_Y && page != Page.GAME -> {
-                            if (up) { sounds.confirm(); onScan() }
+                            if (up) { sounds.confirm(); if (folders.isEmpty()) onAddFolder() else onScan() }
                             true
                         }
                         code == AndroidKeyEvent.KEYCODE_BUTTON_L1 || code == AndroidKeyEvent.KEYCODE_BUTTON_R1 -> {
@@ -328,6 +328,7 @@ fun LauncherScreen(
                         onOpen = { i -> selected = i; sounds.confirm(); page = Page.GAME },
                         onTab = { page = it },
                         onScan = { sounds.confirm(); onScan() },
+                        onAddFolder = { sounds.confirm(); onAddFolder() },
                         update = system.update,
                         onUpdateBanner = { sounds.confirm(); page = Page.SETTINGS },
                     )
@@ -455,6 +456,7 @@ private fun HomePage(
     onOpen: (Int) -> Unit,
     onTab: (Page) -> Unit,
     onScan: () -> Unit,
+    onAddFolder: () -> Unit,
     update: UpdateState,
     onUpdateBanner: () -> Unit,
 ) {
@@ -491,7 +493,7 @@ private fun HomePage(
         val game = games.getOrNull(selected)
         Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 40.dp), contentAlignment = Alignment.BottomStart) {
             if (game != null) FocusedGameHeader(game, art[game.exePath])
-            else EmptyLibrary(library, folders, scanRequester, onScan)
+            else EmptyLibrary(library, folders, scanRequester, onScan, onAddFolder)
         }
         if (games.isNotEmpty()) {
             Row(Modifier.padding(start = 40.dp, top = 6.dp, bottom = 0.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -521,7 +523,8 @@ private fun HomePage(
         }
         HintBar(
             if (games.isEmpty()) {
-                listOf("Y" to stringResource(R.string.hint_find_games), "B" to stringResource(R.string.hint_exit))
+                listOf("Y" to stringResource(if (folders.isEmpty()) R.string.choose_folder else R.string.hint_find_games),
+                    "B" to stringResource(R.string.hint_exit))
             } else {
                 listOf("A" to stringResource(R.string.hint_open), "X" to stringResource(R.string.hint_play),
                     "Y" to stringResource(R.string.hint_find_games), "B" to stringResource(R.string.hint_exit))
@@ -643,17 +646,36 @@ private fun IconCapsule(game: PortableGame, art: GameArt?) {
 }
 
 @Composable
-private fun EmptyLibrary(library: LibraryState, folders: List<String>, scanRequester: FocusRequester, onScan: () -> Unit) {
+private fun EmptyLibrary(
+    library: LibraryState,
+    folders: List<String>,
+    scanRequester: FocusRequester,
+    onScan: () -> Unit,
+    onAddFolder: () -> Unit,
+) {
     Column(Modifier.fillMaxWidth().padding(bottom = 40.dp)) {
+        if (folders.isEmpty()) {
+            // Primer arranque: no hay carpetas por defecto, el usuario elige dónde tiene sus juegos.
+            Text(stringResource(R.string.library_pick_title), color = Deck.Text, fontSize = 30.sp, fontWeight = FontWeight.Black)
+            Spacer(Modifier.height(10.dp))
+            Text(stringResource(R.string.library_pick_body), color = Deck.Sub, fontSize = 15.sp,
+                modifier = Modifier.widthIn(max = 560.dp))
+            Spacer(Modifier.height(22.dp))
+            MacButton(stringResource(R.string.choose_folder), onClick = onAddFolder,
+                style = MacButtonStyle.PRIMARY, large = true, modifier = Modifier.focusRequester(scanRequester))
+            return@Column
+        }
         Text(stringResource(if (library.scanning || !library.scannedOnce) R.string.library_searching else R.string.library_empty),
             color = Deck.Text, fontSize = 30.sp, fontWeight = FontWeight.Black)
         Spacer(Modifier.height(10.dp))
-        Text(stringResource(R.string.library_empty_hint,
-            folders.firstOrNull()?.let(LauncherLogic::displayFolder) ?: "/sdcard/PC games"),
+        Text(stringResource(R.string.library_empty_hint, folders.joinToString(", ", transform = LauncherLogic::displayFolder)),
             color = Deck.Sub, fontSize = 15.sp, modifier = Modifier.widthIn(max = 560.dp))
         Spacer(Modifier.height(22.dp))
-        MacButton(stringResource(if (library.scanning) R.string.searching else R.string.hint_find_games), onClick = onScan,
-            style = MacButtonStyle.PRIMARY, large = true, modifier = Modifier.focusRequester(scanRequester))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            MacButton(stringResource(if (library.scanning) R.string.searching else R.string.hint_find_games), onClick = onScan,
+                style = MacButtonStyle.PRIMARY, large = true, modifier = Modifier.focusRequester(scanRequester))
+            MacButton(stringResource(R.string.add_folder), onClick = onAddFolder, large = true)
+        }
     }
 }
 

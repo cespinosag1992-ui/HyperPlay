@@ -13,6 +13,18 @@ own JIT, and wires Direct3D, audio and controllers straight to Vulkan, AAudio an
 > Status: **alpha**. Tuned for Snapdragon 8 Elite (Adreno 830). Tested games: Hollow Knight and
 > Cuphead (Unity, Direct3D 11).
 
+### What works today
+
+| Game | Engine / API | Status |
+|---|---|---|
+| Hollow Knight | Unity (Mono), D3D11, x64 | **Playable**: menus, saves, gameplay, benches and physics (geo, bounces) fixed; 60-120 FPS on the GPU path |
+| Cuphead | Unity (Mono), D3D11, x64 | **In progress**: title screen and main menu with the controller, FMOD audio; gameplay not verified yet |
+| DmC: Devil May Cry | Unreal 3, D3D9, **32-bit** | **Not working yet**: needs the 32-bit (WOW64) path and D3D9 → Vulkan |
+| Celeste, Hollow Knight: Silksong, Stardew Valley | FNA/XNA, Unity, MonoGame | Show up in the library with their info; not tested yet |
+
+The app itself (library, game page, settings, quick menu, controllers, updates, error reports)
+works and is tested on a RedMagic 10S Pro (Android 15).
+
 ### Features
 
 - **Direct engine** (`libhyperplay.so`): PE32/PE32+ loader, Windows IAT interception (kernel32,
@@ -36,7 +48,8 @@ own JIT, and wires Direct3D, audio and controllers straight to Vulkan, AAudio an
    unknown sources.
 3. Grant **All files access**: games open from their own folder and saves are kept next to the
    game (`_HyperPlaySaves`).
-4. Copy a PC game folder (with its `.exe`) to `/sdcard/PC games/` and press **Find games**.
+4. Press **Choose folder** and pick the folder where you keep your PC games (each game in its own
+   subfolder with its `.exe`). There are no default folders; you can add more in **Settings**.
 
 Later versions install from **Settings → Updates** inside the app.
 
@@ -94,6 +107,18 @@ JIT propio y conecta Direct3D, audio y mandos directamente con Vulkan, AAudio y 
 > Estado: **alfa**. Optimizado para Snapdragon 8 Elite (Adreno 830). Juegos probados: Hollow
 > Knight y Cuphead (Unity, Direct3D 11).
 
+### Qué funciona hoy
+
+| Juego | Motor / API | Estado |
+|---|---|---|
+| Hollow Knight | Unity (Mono), D3D11, x64 | **Jugable**: menús, partidas, gameplay, bancos y física (geo, rebotes) corregidos; 60-120 FPS por la ruta GPU |
+| Cuphead | Unity (Mono), D3D11, x64 | **En curso**: título y menú principal con el mando, audio FMOD; gameplay sin verificar todavía |
+| DmC: Devil May Cry | Unreal 3, D3D9, **32 bits** | **Aún no funciona**: falta la ruta de 32 bits (WOW64) y D3D9 → Vulkan |
+| Celeste, Hollow Knight: Silksong, Stardew Valley | FNA/XNA, Unity, MonoGame | Aparecen en la biblioteca con su ficha; sin probar todavía |
+
+La app en sí (biblioteca, ficha del juego, ajustes, menú rápido, mandos, actualizaciones,
+informes de errores) funciona y está probada en un RedMagic 10S Pro (Android 15).
+
 ### Características
 
 - **Motor directo** (`libhyperplay.so`): cargador PE32/PE32+, interceptación de la IAT de Windows
@@ -117,7 +142,8 @@ JIT propio y conecta Direct3D, audio y mandos directamente con Vulkan, AAudio y 
    origen desconocido.
 3. Concede **Acceso a todos los archivos**: los juegos se abren desde su carpeta y las partidas se
    guardan junto al juego (`_HyperPlaySaves`).
-4. Copia la carpeta de un juego de PC (con su `.exe`) a `/sdcard/PC games/` y pulsa **Buscar juegos**.
+4. Pulsa **Elegir carpeta** y selecciona la carpeta donde tienes tus juegos de PC (cada juego en su
+   propia subcarpeta con su `.exe`). No hay carpetas por defecto; puedes añadir más en **Ajustes**.
 
 Las siguientes versiones se instalan desde **Ajustes → Actualizaciones** dentro de la app.
 

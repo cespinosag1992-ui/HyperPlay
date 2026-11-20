@@ -41,7 +41,10 @@
     <string name="chip_windows_32">Windows · 32-bit</string>
     <string name="library_searching">Looking for games…</string>
     <string name="library_empty">Your library is empty</string>
-    <string name="library_empty_hint">Copy a PC game folder (with its .exe) to %1$s and search for games.</string>
+    <string name="library_empty_hint">No games found in %1$s. Copy a PC game folder (with its .exe) there, or add another folder.</string>
+    <string name="library_pick_title">Choose your games folder</string>
+    <string name="library_pick_body">Select the folder where you keep your PC games. Each game goes in its own subfolder with its .exe.</string>
+    <string name="choose_folder">Choose folder</string>
 
     <!-- Launcher: game page -->
     <string name="no_game_info">No official info yet: connect to the internet and reopen the library.</string>

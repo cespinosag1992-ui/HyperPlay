@@ -15,6 +15,7 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 - Handheld-console UI with official covers and game info; your own logo; full gamepad navigation.
 - Custom loading screen until the game draws.
 - The app follows the system language (English and Spanish), including the Steam game info.
+- No default game folders: on first launch you choose the folder where your games are.
 - Controllers: Z/RZ triggers for HID pads, phone vibration if the controller doesn't vibrate.
 - In-app updates from GitHub Releases.
 - Error log on the phone and optional reports to GitHub (via a Cloudflare Worker).
@@ -27,6 +28,7 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   navegación completa con mando.
 - Pantalla de carga propia hasta que el juego dibuja.
 - La app usa el idioma del sistema (inglés y español), también en la ficha de Steam del juego.
+- Sin carpetas de juegos por defecto: en el primer arranque eliges la carpeta donde están tus juegos.
 - Mandos: gatillos en Z/RZ para mandos HID, vibración del teléfono si el mando no vibra.
 - Actualizaciones dentro de la app desde GitHub Releases.
 - Registro de errores en el teléfono e informes opcionales a GitHub (vía Cloudflare Worker).

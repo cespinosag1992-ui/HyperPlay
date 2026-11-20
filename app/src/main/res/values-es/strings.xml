@@ -38,7 +38,10 @@
     <string name="chip_windows_32">Windows · 32 bits</string>
     <string name="library_searching">Buscando juegos…</string>
     <string name="library_empty">Tu biblioteca está vacía</string>
-    <string name="library_empty_hint">Copia la carpeta de un juego de PC (con su .exe) en %1$s y busca juegos.</string>
+    <string name="library_empty_hint">No se encontraron juegos en %1$s. Copia ahí la carpeta de un juego de PC (con su .exe) o añade otra carpeta.</string>
+    <string name="library_pick_title">Elige tu carpeta de juegos</string>
+    <string name="library_pick_body">Selecciona la carpeta donde tienes tus juegos de PC. Cada juego va en su propia subcarpeta con su .exe.</string>
+    <string name="choose_folder">Elegir carpeta</string>
 
     <!-- Launcher: ficha del juego -->
     <string name="no_game_info">Sin ficha oficial todavía: conéctate a internet y vuelve a abrir la biblioteca.</string>

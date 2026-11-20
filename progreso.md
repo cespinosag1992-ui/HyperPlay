@@ -1464,3 +1464,5 @@ Reglas respetadas: sin tocar `OryonEmitterBackend`, `DxbcToSpirv`, `MediaFoundat
   - La ficha de Steam se pide en el idioma del sistema (`steamLanguage()`). Si cambia el idioma, se vuelve a descargar (`info.json` guarda `lang`).
   - Verificado en el teléfono con `cmd locale set-app-locales … en-US` (todo en inglés, géneros de Steam incluidos) y vuelta a `[]` (español).
 - **GitHub bilingüe**: README, CHANGELOG, docs/PUBLICAR.md, plantilla de Issue, README del Worker y texto de los Issues automáticos en inglés y español. La Release usa como notas la sección del CHANGELOG.
+- **Sin carpetas por defecto** (2026-11-20, pedido del usuario): `LauncherLogic.DEFAULT_FOLDERS` eliminado; `decodeFolders(null)` = lista vacía. Sin carpetas, Inicio muestra "Elige tu carpeta de juegos" con el botón Elegir carpeta (Y también abre el selector). Con carpetas y 0 juegos: Buscar juegos + Añadir carpeta. Las carpetas ya guardadas se conservan al actualizar (verificado en el teléfono). La pantalla de primer arranque no se probó en el teléfono (habría que borrar los datos de la app); la cubre `LauncherLogicTest`.
+- README: tabla "Qué funciona hoy" por juego (EN + ES).
