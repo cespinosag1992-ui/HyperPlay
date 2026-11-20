@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -102,6 +103,17 @@ fun ArtImage(
                 alignment = alignment, modifier = Modifier.matchParentSize())
         }
     }
+}
+
+/** Logo de HyperPlay (mando "HP"), cuadrado con esquinas redondeadas. */
+@Composable
+fun HyperLogo(size: Dp) {
+    Image(
+        painter = androidx.compose.ui.res.painterResource(com.murdoc820.hyperplay.R.drawable.hyperplay_logo),
+        contentDescription = "HyperPlay",
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.size(size).clip(RoundedCornerShape(size * 0.22f)),
+    )
 }
 
 /** Glifo de botón del mando (A verde, B rojo, X azul, Y amarillo, LB/RB/Start en gris). */

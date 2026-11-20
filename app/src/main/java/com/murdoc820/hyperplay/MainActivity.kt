@@ -13,6 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.edit
@@ -40,6 +41,20 @@ class MainActivity : ComponentActivity() {
 
     private var hasStorage by mutableStateOf(true)
     private var reportsEnabled by mutableStateOf<Boolean?>(false)
+    private var navKeyTick by mutableIntStateOf(0)
+
+    /** Teclas de navegación del mando/teclado: si nada tiene foco, el launcher lo recoloca. */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            when (event.keyCode) {
+                android.view.KeyEvent.KEYCODE_DPAD_UP, android.view.KeyEvent.KEYCODE_DPAD_DOWN,
+                android.view.KeyEvent.KEYCODE_DPAD_LEFT, android.view.KeyEvent.KEYCODE_DPAD_RIGHT,
+                android.view.KeyEvent.KEYCODE_BUTTON_A, android.view.KeyEvent.KEYCODE_DPAD_CENTER,
+                android.view.KeyEvent.KEYCODE_ENTER -> navKeyTick++
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
 
     private val systemActions = SystemActions(
         checkUpdate = { AppUpdater.check(this) },
@@ -99,6 +114,7 @@ class MainActivity : ComponentActivity() {
                     onExit = ::finish,
                     system = system,
                     actions = systemActions,
+                    navKeyTick = navKeyTick,
                 )
             }
         }

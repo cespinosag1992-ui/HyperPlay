@@ -196,6 +196,20 @@ private fun isHeld(game: PortableGame): Boolean =
 
 private enum class Page { HOME, GAME, SETTINGS }
 
+/** Cambia cada vez que hay que recolocar el foco (tecla del mando sin nada enfocado). */
+private val LocalFocusTick = androidx.compose.runtime.compositionLocalOf { 0 }
+
+/** Enfoca [requester] al aparecer la página y cada vez que [LocalFocusTick] cambia. */
+@Composable
+private fun FocusOnTick(requester: FocusRequester, vararg keys: Any?) {
+    val tick = LocalFocusTick.current
+    LaunchedEffect(tick, *keys) {
+        withFrameNanos { }
+        withFrameNanos { }
+        runCatching { requester.requestFocus() }
+    }
+}
+
 /** Estado de actualizaciones e informes de errores para la UI. */
 data class SystemUi(
     val update: UpdateState = UpdateState.Idle,
@@ -232,6 +246,8 @@ fun LauncherScreen(
     onExit: () -> Unit,
     system: SystemUi = SystemUi(),
     actions: SystemActions = SystemActions(),
+    /** Sube con cada tecla de navegación del mando (MainActivity.dispatchKeyEvent). */
+    navKeyTick: Int = 0,
 ) {
     val games = library.games
     var selected by remember { mutableIntStateOf(0) }
@@ -239,6 +255,12 @@ fun LauncherScreen(
     var page by remember { mutableStateOf(Page.HOME) }
     var keyNavPending by remember { mutableStateOf(false) }
     var folderToRemove by remember { mutableStateOf<String?>(null) }
+    // Android arranca en modo táctil (nada enfocable): la primera tecla del mando sin foco pide
+    // a la página que enfoque su elemento principal (portada seleccionada, JUGAR, primer botón).
+    var anyFocus by remember { mutableStateOf(false) }
+    var focusTick by remember { mutableIntStateOf(0) }
+    // Sin nada enfocado Compose no entrega las teclas a nadie: la actividad avisa con navKeyTick.
+    LaunchedEffect(navKeyTick) { if (navKeyTick > 0 && !anyFocus) focusTick++ }
 
     val focusMoved: () -> Unit = {
         if (keyNavPending) sounds.navigate()
@@ -254,10 +276,17 @@ fun LauncherScreen(
         Box(
             Modifier
                 .fillMaxSize()
+                .onFocusChanged { anyFocus = it.hasFocus }
+                .focusGroup()
                 .onPreviewKeyEvent { e ->
                     val code = e.nativeKeyEvent.keyCode
                     val up = e.type == KeyEventType.KeyUp
                     when {
+                        !anyFocus && folderToRemove == null && (code in DPAD_KEYS || code == AndroidKeyEvent.KEYCODE_BUTTON_A ||
+                            code == AndroidKeyEvent.KEYCODE_ENTER || code == AndroidKeyEvent.KEYCODE_DPAD_CENTER) -> {
+                            if (!up) focusTick++
+                            true
+                        }
                         code == AndroidKeyEvent.KEYCODE_BUTTON_B -> { if (up) goBack(); true }
                         code == AndroidKeyEvent.KEYCODE_BUTTON_X && page == Page.HOME -> {
                             if (up) games.getOrNull(selected)?.let(onPlay)
@@ -281,6 +310,7 @@ fun LauncherScreen(
         ) {
             val focusedGame = games.getOrNull(selected)
             Backdrop(focusedGame?.let { art[it.exePath] }, dimmed = page != Page.HOME)
+            androidx.compose.runtime.CompositionLocalProvider(LocalFocusTick provides focusTick) {
             AnimatedContent(page, transitionSpec = { fadeIn(tween(160)) togetherWith fadeOut(tween(120)) },
                 label = "page") { p ->
                 when (p) {
@@ -308,6 +338,7 @@ fun LauncherScreen(
                         sounds = sounds,
                     )
                 }
+            }
             }
         }
         if (system.reportsEnabled == null) {
@@ -380,10 +411,7 @@ private fun TopBar(current: Page, onTab: (Page) -> Unit) {
             .padding(horizontal = 28.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(26.dp).background(Brush.linearGradient(listOf(Deck.Accent, Deck.Cyan)), RoundedCornerShape(7.dp)),
-            contentAlignment = Alignment.Center) {
-            Text("H", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black)
-        }
+        com.murdoc820.hyperplay.ui.HyperLogo(28.dp)
         Spacer(Modifier.width(10.dp))
         Text("HYPERPLAY", color = Deck.Text, fontSize = 16.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
         Spacer(Modifier.width(36.dp))
@@ -429,7 +457,8 @@ private fun HomePage(
     val listState = rememberLazyListState()
     val requester = remember { FocusRequester() }
     val scanRequester = remember { FocusRequester() }
-    LaunchedEffect(games.isEmpty()) {
+    val tick = LocalFocusTick.current
+    LaunchedEffect(games.isEmpty(), tick) {
         withFrameNanos { }
         if (games.isNotEmpty()) {
             listState.scrollToItem(selected.coerceIn(0, games.lastIndex))
@@ -633,10 +662,7 @@ private fun GamePage(
     val info = art?.info
     val held = isHeld(game)
     val playRequester = remember { FocusRequester() }
-    LaunchedEffect(game.exePath) {
-        withFrameNanos { }
-        runCatching { playRequester.requestFocus() }
-    }
+    FocusOnTick(playRequester, game.exePath)
     val cache = remember(game.exePath) { jitCacheLabel(game) }
     // Todo en una pantalla (en horizontal el teléfono tiene ~370 dp de alto): el arte del juego es
     // el fondo, a la izquierda logo + descripción + JUGAR y a la derecha la ficha compacta.
@@ -741,10 +767,7 @@ private fun SettingsPage(
     sounds: UiSounds,
 ) {
     val first = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        withFrameNanos { }
-        runCatching { first.requestFocus() }
-    }
+    FocusOnTick(first)
     Column(Modifier.fillMaxSize()) {
         TopBar(Page.SETTINGS, onTab)
         Row(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 48.dp, vertical = 12.dp),
@@ -901,10 +924,7 @@ fun StoragePermissionScreen(sounds: UiSounds, onGrant: () -> Unit, onExit: () ->
         ) {
             Column(Modifier.widthIn(max = 560.dp).background(Deck.Panel, Deck.Card).padding(32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(Modifier.size(56.dp).background(Brush.linearGradient(listOf(Deck.Accent, Deck.Cyan)), RoundedCornerShape(14.dp)),
-                    contentAlignment = Alignment.Center) {
-                    Text("H", color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Black)
-                }
+                com.murdoc820.hyperplay.ui.HyperLogo(64.dp)
                 Spacer(Modifier.height(18.dp))
                 Text("Acceso a tus juegos", color = Deck.Text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(10.dp))

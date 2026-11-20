@@ -1449,4 +1449,13 @@ Reglas respetadas: sin tocar `OryonEmitterBackend`, `DxbcToSpirv`, `MediaFoundat
 - **Servidor** (`server/report-worker`): Cloudflare Worker que valida el informe y crea un Issue `auto-report` con un token fine-grained (solo Issues de este repo). El límite por IP y el deduplicado son opcionales con KV. Pendiente de que el usuario cree la cuenta de Cloudflare y el token.
 - Docs nuevas: `README.md`, `LICENSE`, `CHANGELOG.md`, `docs/PUBLICAR.md` y plantilla de Issue de error.
 - `testDebugUnitTest lintDebug` OK (nuevo `AppUpdaterTest`); `assembleRelease` OK (18,6 MB).
-- Sobre usar las DLL de VC++/.NET/DirectX para ARM64 (como GameHub): HK usa su propio Mono (`MonoBleedingEdge`), no el .NET de Microsoft. Las DLL ARM64 no se pueden llamar desde código x86-64 traducido sin capa tipo ARM64EC/Wine, y este fallo era de datos de la partida.
+- **Push hecho** (07:27) tras dar el permiso `workflow`. El usuario desinstaló la versión debug y se instaló la de release (firma nueva).
+- La clave también está copiada en `signing/` dentro del proyecto (ignorada por git, comprobado con `git check-ignore`).
+- **Launcher rehecho al alto real:** el teléfono en horizontal mide 827×374 dp (densidad 520). El héroe de 380 dp de la página del juego tapaba todo y obligaba a hacer scroll.
+  - Ahora el arte es el fondo (degradado a la izquierda): logo, géneros, descripción (4 líneas) y JUGAR a la izquierda; ficha compacta (desarrollador, editor, lanzamiento, plataforma, ejecutable, partidas) a la derecha. Sin scroll.
+  - Inicio más compacto: cápsulas de 100 dp, logo de 62 dp y barras superior e inferior más bajas.
+  - Sin verificar en pantalla: teléfono bloqueado.
+- Sobre usar las DLL de VC++/.NET/DirectX para ARM64 (como GameHub): HK usa su propio Mono (`MonoBleedingEdge`), no el .NET de Microsoft. Las DLL ARM64 no se pueden llamar desde código x86-64 traducido sin capa tipo ARM64EC/Wine, y este fallo era de datos de la partida.- Inicio y ficha del juego verificados en el teléfono: sin scroll, la ficha cabe en una pantalla y JUGAR recibe el foco.
+- **Logo propio** (`res/drawable-nodpi/hyperplay_logo.png`, recorte de `docs/icono_hyperplay.jpg`) en lugar de la "H": barra superior, permiso y pantalla de carga (`HyperLogo`).
+- **Foco con mando:** en modo táctil nada tiene foco y Compose no entrega teclas. `MainActivity.dispatchKeyEvent` sube `navKeyTick` con cruceta/A, y si no hay foco el launcher lo coloca (Inicio en la primera cápsula, ficha en JUGAR, Ajustes en el primer elemento). Verificado con `input keyevent`: anillo de foco visible y A abre la ficha.
+- El fallo `:app:mergeDexRelease` fue puntual (archivo bloqueado). Al repetir, el build pasó.

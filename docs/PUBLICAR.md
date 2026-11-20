@@ -3,7 +3,8 @@
 ## Una vez: clave de firma y secretos
 
 La clave de release está en `%USERPROFILE%\.hyperplay\hyperplay-release.jks` y sus datos en
-`%USERPROFILE%\.hyperplay\keystore.properties` (copia en la raíz del proyecto, ignorada por git).
+`%USERPROFILE%\.hyperplay\keystore.properties`. Hay copias en el proyecto local, ignoradas por git:
+`signing/` (clave + datos) y `keystore.properties` en la raíz (lo usa Gradle).
 
 > **Haz una copia de seguridad de esa carpeta** (USB, nube privada). Si la clave se pierde, las
 > nuevas versiones ya no se podrán instalar encima de las anteriores: cada usuario tendría que

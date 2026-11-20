@@ -164,10 +164,7 @@ private fun LoadingScreen(state: SessionUiState) {
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC060810)))))
         // Marca arriba a la izquierda.
         Row(Modifier.align(Alignment.TopStart).padding(36.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(24.dp).background(Brush.linearGradient(listOf(Deck.Accent, Deck.Cyan)), RoundedCornerShape(6.dp)),
-                contentAlignment = Alignment.Center) {
-                Text("H", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black)
-            }
+            com.murdoc820.hyperplay.ui.HyperLogo(30.dp)
             Spacer(Modifier.width(10.dp))
             Text("HYPERPLAY", color = Deck.Text, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
         }
