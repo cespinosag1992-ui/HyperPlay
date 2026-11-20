@@ -166,6 +166,8 @@
     <string name="render_scale_hint">Applies when you reopen the game</string>
     <string name="set_upscaler">Upscaling</string>
     <string name="set_screen_fit">Screen</string>
+    <string name="fit_wide">Widescreen</string>
+    <string name="fit_wide_hint">More of the scene at the sides, no distortion (on game restart)</string>
     <string name="fit_original">Original</string>
     <string name="fit_stretch">Stretch</string>
     <string name="fit_zoom">Zoom</string>

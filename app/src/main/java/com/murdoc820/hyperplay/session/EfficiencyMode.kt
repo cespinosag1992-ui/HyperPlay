@@ -54,12 +54,14 @@ enum class RenderScaleOption(val key: String, @StringRes val label: Int, val per
  * sin deformar, recortando arriba y abajo.
  */
 enum class ScreenFitOption(val key: String, @StringRes val label: Int, val nativeId: Int) {
+    /** El juego dibuja más escenario a los lados (si HyperPlay sabe parchearlo; si no, = Original). */
+    WIDE("wide", R.string.fit_wide, 3),
     ORIGINAL("original", R.string.fit_original, 0),
     STRETCH("stretch", R.string.fit_stretch, 1),
     ZOOM("zoom", R.string.fit_zoom, 2);
 
     companion object {
-        val DEFAULT = ORIGINAL
+        val DEFAULT = WIDE
 
         /** Clave de preferencias por juego. */
         fun prefsKey(exePath: String) = "screen_fit:$exePath"

@@ -10,6 +10,12 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **Real widescreen for Cuphead** (Quick menu → Image → Screen = **Widescreen**, the default):
+  the game draws more of the scene at the sides, at native resolution, with no stretching and
+  no cropping. HyperPlay patches the 16:9 limit of the game camera in memory when the game
+  loads (the game files are not changed). Tested on the phone: menus, world map and a
+  run-and-gun level fill the 20:9 screen at 60 FPS. Known detail: in some levels a haze layer of
+  the sky was drawn for 16:9 and shows a faint seam near the old edges.
 - Quick menu → Image → **Screen**: Original / Stretch / Zoom, saved per game. Fills the screen
   for games that draw 16:9 with side bars (Cuphead on a 20:9 phone). Stretch widens the image;
   Zoom keeps the shape and crops top and bottom. Tested on the device in Cuphead.
@@ -20,6 +26,12 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Panorámica real para Cuphead** (Menú rápido → Imagen → Pantalla = **Panorámica**, por
+  defecto): el juego dibuja más escenario a los lados, a resolución nativa, sin estirar ni
+  recortar. HyperPlay parchea en memoria el límite 16:9 de la cámara del juego al cargarlo (los
+  archivos del juego no se tocan). Probado en el teléfono: menús, mapa del mundo y un nivel de
+  disparos llenan la pantalla 20:9 a 60 FPS. Detalle conocido: en algunos niveles una capa de
+  bruma del cielo está dibujada para 16:9 y deja una costura suave cerca de los bordes antiguos.
 - Menú rápido → Imagen → **Pantalla**: Original / Estirar / Ampliar, se guarda por juego. Llena
   la pantalla en juegos que dibujan en 16:9 con barras a los lados (Cuphead en un teléfono 20:9).
   Estirar ensancha la imagen; Ampliar mantiene la forma y recorta arriba y abajo. Probado en el

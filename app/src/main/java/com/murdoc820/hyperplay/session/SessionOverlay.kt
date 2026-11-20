@@ -481,6 +481,7 @@ private fun settingFor(state: SessionUiState, item: QuickMenuItem): Setting = wh
     QuickMenuItem.UPSCALER -> Setting(stringResource(R.string.set_upscaler), stringResource(state.upscaler.label))
     QuickMenuItem.SCREEN_FIT -> Setting(stringResource(R.string.set_screen_fit), stringResource(state.screenFit.label),
         hint = stringResource(when (state.screenFit) {
+            ScreenFitOption.WIDE -> R.string.fit_wide_hint
             ScreenFitOption.ORIGINAL -> R.string.fit_original_hint
             ScreenFitOption.STRETCH -> R.string.fit_stretch_hint
             ScreenFitOption.ZOOM -> R.string.fit_zoom_hint

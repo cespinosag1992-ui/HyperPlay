@@ -699,3 +699,10 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - `input keyevent DPAD_DOWN` x2: el menú de título no se mueve (fuente teclado, el puente XInput lo ignora). `input gamepad keyevent DPAD_DOWN`: START → OPTIONS.
 - Bug: tocar ‹ en Pantalla avanzaba (Ampliar → Original). Arreglado; `testDebugUnitTest lintDebug assembleRelease` exit=0, `adb install -r` Success. Verificado: Original → ‹ Ampliar → ‹ Estirar.
 - Aviso de RedMagic "Aprendizaje conductual" (gravity X) encima del launcher: cerrado con BACK sin aceptar.
+
+## 2026-11-20 — Panorámica real en Cuphead
+- IL de `AbstractCupheadCamera.UpdateRect` (offset 554820, 231 bytes): 3 × `22 39 8E E3 3F` (16/9) en +38, +59, +105.
+- `wstest` (NDK, en el teléfono): `hits=3 changedBytes=12 isCuphead=1/0`, `second=0 bad_aspect=0`.
+- `testDebugUnitTest lintDebug assembleRelease` exit=0; `adb install -r` Success.
+- Logcat: `Panorámica: Cuphead UpdateRect 16:9 -> 2.2105 (2688x1216), 5606912 bytes en memfd`.
+- Forzar cierre + relanzar: `Fatal signal 11` en `decodeAndEmitOne` (pid 8655, 50 ms tras abrir la sesión). Tras `am force-stop`: arranca bien.

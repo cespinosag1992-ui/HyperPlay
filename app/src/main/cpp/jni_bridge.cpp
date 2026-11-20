@@ -349,7 +349,7 @@ HP_JNI(jint, nativeGetEffectiveFpsCap)(JNIEnv*, jclass) { return hyperplay::paci
 
 // Reescalado del pase de presentación (0 auto, 1 SGSR v1, 2 bilineal) y nitidez de SGSR.
 HP_JNI(void, nativeSetScreenFit)(JNIEnv*, jclass, jint mode) {
-    hyperplay::gpu::presentopt::g_fit.store(mode >= 0 && mode <= 2 ? mode : 0);
+    hyperplay::gpu::presentopt::g_fit.store(mode >= 0 && mode <= 3 ? mode : 0);
 }
 
 HP_JNI(void, nativeSetUpscaler)(JNIEnv*, jclass, jint mode) {

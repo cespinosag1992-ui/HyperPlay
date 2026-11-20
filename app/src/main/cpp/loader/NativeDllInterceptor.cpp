@@ -2,6 +2,8 @@
 #include "../cpu/GuestProfiler.h"
 #include "../gfx/D3D11GpuRenderer.h"
 #include "Win32DisplayInfo.h"
+#include "WidescreenPatch.h"
+#include "gfx/PresentOptions.h"
 #include "FramePacing.h"
 #include "Win32KnownFolders.h"
 #include "Win32PathUtils.h"
@@ -27,6 +29,7 @@
 #include <fnmatch.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/stat.h>
 #include <sys/system_properties.h>
@@ -1121,6 +1124,7 @@ void* resolveRegistryExport(const std::string& funcName) {
 
 void NativeDllInterceptor::init(LoadedPeImage* image) {
     s_activeImage = image;
+    gpu::presentopt::g_widePatched.store(false);  // juego nuevo: aún sin parche panorámico
     s_cmdA[0] = '\0';
     s_cmdW[0] = u'\0';
     s_exeNameW[0] = u'\0';
@@ -3130,6 +3134,44 @@ static std::string unityBootConfigOverlay(const std::string& realPath) {
     return out;
 }
 
+// Panorámica (Pantalla = Panorámica, ver WidescreenPatch.h): al abrir para leer el ensamblado de
+// Cuphead se entrega una copia parcheada en memoria (memfd), con la proporción real de la
+// pantalla en lugar de 16:9. Los archivos del juego no se tocan. @return fd o -1 (sin parche).
+static int widescreenOverlayFd(const std::string& realPath) {
+    if (gpu::presentopt::g_fit.load() != gpu::presentopt::kFitWide) return -1;
+    if (!widescreen::isCupheadAssembly(realPath.c_str())) return -1;
+    const int in = open(realPath.c_str(), O_RDONLY | O_CLOEXEC);
+    if (in < 0) return -1;
+    std::vector<uint8_t> bytes;
+    {
+        struct stat st{};
+        if (fstat(in, &st) == 0 && st.st_size > 0) bytes.reserve(static_cast<size_t>(st.st_size));
+        uint8_t buf[1 << 16];
+        ssize_t n;
+        while ((n = read(in, buf, sizeof(buf))) > 0) bytes.insert(bytes.end(), buf, buf + n);
+        close(in);
+        if (n < 0) return -1;
+    }
+    const float aspect = static_cast<float>(win32::screenWidth()) / static_cast<float>(win32::screenHeight());
+    if (widescreen::patchCupheadUpdateRect(bytes.data(), bytes.size(), aspect) == 0) {
+        LOGW("Panorámica: firma de UpdateRect no encontrada en %s (sin parche)", realPath.c_str());
+        return -1;
+    }
+    const int fd = static_cast<int>(syscall(__NR_memfd_create, "hp_widescreen", 1u /*MFD_CLOEXEC*/));
+    if (fd < 0) return -1;
+    size_t done = 0;
+    while (done < bytes.size()) {
+        const ssize_t w = write(fd, bytes.data() + done, bytes.size() - done);
+        if (w <= 0) { close(fd); return -1; }
+        done += static_cast<size_t>(w);
+    }
+    lseek(fd, 0, SEEK_SET);
+    gpu::presentopt::g_widePatched.store(true);
+    LOGI("Panorámica: Cuphead UpdateRect 16:9 -> %.4f (%dx%d), %zu bytes en memfd",
+         aspect, win32::screenWidth(), win32::screenHeight(), bytes.size());
+    return fd;
+}
+
 // Diagnóstico (`setprop debug.hyperplay.codedump <texto>`): la primera vez que la consola del juego
 // imprime una línea con <texto> (p. ej. el "ENTER:c Clase:Metodo" del trazado de Mono), recorre la
 // pila del hilo invitado y vuelca el código x86 alrededor de las direcciones de retorno que caen en
@@ -3221,7 +3263,9 @@ void* NativeDllInterceptor::win_CreateFileW(const wchar_t* lpFileName, uint32_t 
         default: break;                            // OPEN_EXISTING
     }
 
-    const int fd = open(realPath.c_str(), flags, 0644);
+    int fd = (flags & O_ACCMODE) == O_RDONLY && (flags & (O_CREAT | O_TRUNC)) == 0
+                 ? widescreenOverlayFd(realPath) : -1;
+    if (fd < 0) fd = open(realPath.c_str(), flags, 0644);
     win_SetLastError((fd >= 0) ? 0 : 2); // ERROR_FILE_NOT_FOUND (2)
     LOGI("win_CreateFileW: raw='%s' real='%s' access=0x%x disp=%u -> fd=%d (err=%d)",
          rawPath.c_str(), realPath.c_str(), dwDesiredAccess, dwCreationDisposition, fd, (fd >= 0) ? 0 : 2);

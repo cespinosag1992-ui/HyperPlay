@@ -163,6 +163,8 @@
     <string name="render_scale_hint">Se aplica al volver a abrir el juego</string>
     <string name="set_upscaler">Reescalado</string>
     <string name="set_screen_fit">Pantalla</string>
+    <string name="fit_wide">Panorámica</string>
+    <string name="fit_wide_hint">Más escenario a los lados, sin deformar (al reiniciar el juego)</string>
     <string name="fit_original">Original</string>
     <string name="fit_stretch">Estirar</string>
     <string name="fit_zoom">Ampliar</string>
