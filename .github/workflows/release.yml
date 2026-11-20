@@ -41,7 +41,10 @@ jobs:
           HP_KEYSTORE_BASE64: ${{ secrets.HP_KEYSTORE_BASE64 }}
         run: |
           test -n "$HP_KEYSTORE_BASE64" || { echo "Falta el secreto HP_KEYSTORE_BASE64"; exit 1; }
-          echo "$HP_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          # Tolerate CR/LF, spaces or a UTF-8 BOM pasted into the secret (Windows clipboards).
+          printf '%s' "$HP_KEYSTORE_BASE64" | tr -d '\r\n \t\357\273\277' | base64 -d > "$RUNNER_TEMP/release.jks"
+          keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "${{ secrets.HP_KEYSTORE_PASSWORD }}" >/dev/null \
+            || { echo "HP_KEYSTORE_BASE64 / HP_KEYSTORE_PASSWORD do not open the keystore"; exit 1; }
 
       - name: Compilar APK firmado
         env:
