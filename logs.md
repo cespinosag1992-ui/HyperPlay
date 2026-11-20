@@ -678,3 +678,9 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 ## 2026-11-19 (23:05) — Frontend
 - `assembleDebug` exit=0; `testDebugUnitTest lintDebug` exit=0; `adb install` Success.
 - Captura a las 23:05: pantalla de bloqueo ("Presione el ícono para verificar su rostro"), batería 22 %. Launcher sin verificar.
+
+## 2026-11-20 — GitHub
+- `gh auth status`: cuenta `cespinosag1992-ui`, scopes `gist, read:org, repo`.
+- `gh repo create HyperPlay --public`: creado. Push rechazado: `refusing to allow an OAuth App to create or update workflow .github/workflows/ci.yml without workflow scope`.
+- `gh secret list`: HP_KEYSTORE_BASE64, HP_KEYSTORE_PASSWORD, HP_KEY_ALIAS, HP_KEY_PASSWORD (2026-11-20T07:23Z).
+- `apksigner verify --print-certs`: CN=HyperPlay, O=Studio 820, C=CO; SHA-256 c812b319a7aa9539dc4ce5d87b23cce5886e95beefb5253425282c02f67c696a.

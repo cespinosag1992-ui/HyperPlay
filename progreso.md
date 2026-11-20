@@ -1421,4 +1421,32 @@ Reglas respetadas: sin tocar `OryonEmitterBackend`, `DxbcToSpirv`, `MediaFoundat
   - Nuevo: log por mando de stick derecho, gatillos y vibrador.
 - Compila; `testDebugUnitTest lintDebug` OK. Instalado. **Sin verificar en pantalla**: el teléfono quedó bloqueado (desbloqueo facial) al 22 % de batería.
 - Pendiente: capturas del launcher, primera descarga de arte de HK (appid 367520) y prueba de la pantalla de carga y de un mando físico.
+## 2026-11-20 — GitHub, actualizaciones dentro de la app e informes de errores
+
+- **Repositorio:** <https://github.com/cespinosag1992-ui/HyperPlay>.
+  - Público, licencia GPL-3.0. Commits con el email noreply de GitHub (no el Gmail).
+  - `.gitignore` deja fuera binarios de juegos (`*.dll`/`*.exe`), volcados, logcats, claves, APKs, `dist/` y PRoot (sin usar, GPL-2.0).
+  - Primer commit `127771a` con 244 archivos (22 MB).
+  - **Push pendiente:** el token de `gh` no tiene el permiso `workflow` (GitHub rechaza `.github/workflows/*`). Hay que ejecutar `gh auth refresh -h github.com -s workflow`.
+- **Firma de release:** clave nueva RSA-4096 en `%USERPROFILE%\.hyperplay\` (hacer copia de seguridad).
+  - Secretos `HP_KEYSTORE_BASE64/PASSWORD`, `HP_KEY_ALIAS` y `HP_KEY_PASSWORD` ya creados en el repo.
+  - Gradle firma el release desde `keystore.properties` (local, ignorado) o desde variables de entorno (CI).
+  - `apksigner`: CN=HyperPlay, SHA-256 c812b319…696a.
+  - La versión actual del teléfono (debug) hay que desinstalarla una vez. Las partidas y la caché están en /sdcard y no se pierden.
+- **CI:** `ci.yml` (tests + lint + APK debug en cada push) y `release.yml` (etiqueta `vX.Y.Z` → APK firmado + `.sha256` en Releases; versionCode = 10000·mayor + 100·menor + parche).
+- **Actualizaciones** (`update/AppUpdater.kt`):
+  - Consulta `releases/latest` al abrir el launcher (cada 6 h como mucho) o desde Ajustes.
+  - Descarga, comprueba el SHA-256 e instala con PackageInstaller encima del mismo paquete: conserva datos y ajustes.
+  - Bloqueada mientras hay un juego en pausa en memoria.
+  - `UpdatedReceiver` limpia el APK y registra la versión nueva.
+  - La caché del JIT de cada juego va ligada al build y se rehace sola.
+- **Diagnóstico** (`diag/Diagnostics.kt`, `HyperPlayApp`):
+  - Registro rotativo `files/diag/hyperplay.log`.
+  - Captura de excepciones no controladas.
+  - Detección de cierres inesperados de sesión (marcador `session.json`) y de juegos que terminan con código ≠ 0.
+  - Cada informe guarda detalles, log del juego, registro de la app y logcat propio en `files/diag/reports/`.
+  - Se envían a `BuildConfig.REPORT_URL` si el usuario acepta (diálogo de consentimiento la primera vez, cambiable en Ajustes).
+- **Servidor** (`server/report-worker`): Cloudflare Worker que valida el informe y crea un Issue `auto-report` con un token fine-grained (solo Issues de este repo). El límite por IP y el deduplicado son opcionales con KV. Pendiente de que el usuario cree la cuenta de Cloudflare y el token.
+- Docs nuevas: `README.md`, `LICENSE`, `CHANGELOG.md`, `docs/PUBLICAR.md` y plantilla de Issue de error.
+- `testDebugUnitTest lintDebug` OK (nuevo `AppUpdaterTest`); `assembleRelease` OK (18,6 MB).
 - Sobre usar las DLL de VC++/.NET/DirectX para ARM64 (como GameHub): HK usa su propio Mono (`MonoBleedingEdge`), no el .NET de Microsoft. Las DLL ARM64 no se pueden llamar desde código x86-64 traducido sin capa tipo ARM64EC/Wine, y este fallo era de datos de la partida.
