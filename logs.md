@@ -693,3 +693,9 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 ## 2026-11-20 — Idiomas
 - `testDebugUnitTest lintDebug assembleRelease`: exit=0 (lint pedía `@SuppressLint("RestrictedApi")` en `MainActivity.dispatchKeyEvent`: falso positivo de androidx).
 - `cmd locale set-app-locales com.murdoc820.hyperplay --locales en-US`: Home/Settings en inglés. `--locales ''`: de nuevo en español (`get-app-locales` = []).
+
+## 2026-11-20 — Pantalla, pulsación mínima y flechas del menú
+- Cuphead, menú rápido (BACK) → Pantalla: Estirar = imagen a toda la pantalla; Ampliar = sin deformar, recorta abajo. 58-62 FPS.
+- `input keyevent DPAD_DOWN` x2: el menú de título no se mueve (fuente teclado, el puente XInput lo ignora). `input gamepad keyevent DPAD_DOWN`: START → OPTIONS.
+- Bug: tocar ‹ en Pantalla avanzaba (Ampliar → Original). Arreglado; `testDebugUnitTest lintDebug assembleRelease` exit=0, `adb install -r` Success. Verificado: Original → ‹ Ampliar → ‹ Estirar.
+- Aviso de RedMagic "Aprendizaje conductual" (gravity X) encima del launcher: cerrado con BACK sin aceptar.

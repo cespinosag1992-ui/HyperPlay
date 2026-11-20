@@ -6,6 +6,28 @@ section of the tagged version into the GitHub Release notes.
 Cada versión se describe primero en inglés y luego en español. El workflow de release copia la
 sección de la versión etiquetada en las notas de la Release de GitHub.
 
+## Unreleased
+
+### English
+
+- Quick menu → Image → **Screen**: Original / Stretch / Zoom, saved per game. Fills the screen
+  for games that draw 16:9 with side bars (Cuphead on a 20:9 phone). Stretch widens the image;
+  Zoom keeps the shape and crops top and bottom. Tested on the device in Cuphead.
+- Quick menu: tapping ‹ now steps a setting back and › steps it forward (before, any tap moved
+  forward).
+- Gamepad: very short button presses are held for at least 40 ms, so games that read the pad
+  once per frame no longer miss them.
+
+### Español
+
+- Menú rápido → Imagen → **Pantalla**: Original / Estirar / Ampliar, se guarda por juego. Llena
+  la pantalla en juegos que dibujan en 16:9 con barras a los lados (Cuphead en un teléfono 20:9).
+  Estirar ensancha la imagen; Ampliar mantiene la forma y recorta arriba y abajo. Probado en el
+  teléfono con Cuphead.
+- Menú rápido: tocar ‹ ahora retrocede el ajuste y › lo avanza (antes cualquier toque avanzaba).
+- Mando: las pulsaciones muy cortas se mantienen al menos 40 ms, así los juegos que leen el mando
+  una vez por frame ya no las pierden.
+
 ## 1.0.0
 
 ### English — first public version (alpha)

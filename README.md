@@ -18,7 +18,7 @@ own JIT, and wires Direct3D, audio and controllers straight to Vulkan, AAudio an
 | Game | Engine / API | Status |
 |---|---|---|
 | Hollow Knight | Unity (Mono), D3D11, x64 | **Playable**: menus, saves, gameplay, benches and physics (geo, bounces) fixed; 60-120 FPS on the GPU path |
-| Cuphead | Unity (Mono), D3D11, x64 | **Playable, in testing**: title, menus, save slots, world map and a run-and-gun level with shooting at ~120 FPS; bosses not verified yet |
+| Cuphead | Unity (Mono), D3D11, x64 | **Playable, in testing**: title, menus, save slots, world map and a run-and-gun level with shooting at ~120 FPS; bosses not verified yet. Full screen with Quick menu → Image → Screen = Stretch or Zoom |
 | DmC: Devil May Cry | Unreal 3, D3D9, **32-bit** | **Not working yet**: needs the 32-bit (WOW64) path and D3D9 → Vulkan |
 | Celeste | XNA/FNA, .NET Framework | **Not working yet**: needs the .NET Framework runtime (`mscoree.dll`) |
 | Hollow Knight: Silksong | Unity (Mono), D3D12/D3D11, x64 | Starts; first tests only, not verified as playable yet |
@@ -114,7 +114,7 @@ JIT propio y conecta Direct3D, audio y mandos directamente con Vulkan, AAudio y 
 | Juego | Motor / API | Estado |
 |---|---|---|
 | Hollow Knight | Unity (Mono), D3D11, x64 | **Jugable**: menús, partidas, gameplay, bancos y física (geo, rebotes) corregidos; 60-120 FPS por la ruta GPU |
-| Cuphead | Unity (Mono), D3D11, x64 | **Jugable, en pruebas**: título, menús, ranuras de partida, mapa del mundo y un nivel de disparos a ~120 FPS; jefes sin verificar |
+| Cuphead | Unity (Mono), D3D11, x64 | **Jugable, en pruebas**: título, menús, ranuras de partida, mapa del mundo y un nivel de disparos a ~120 FPS; jefes sin verificar. Pantalla completa con Menú rápido → Imagen → Pantalla = Estirar o Ampliar |
 | DmC: Devil May Cry | Unreal 3, D3D9, **32 bits** | **Aún no funciona**: falta la ruta de 32 bits (WOW64) y D3D9 → Vulkan |
 | Celeste | XNA/FNA, .NET Framework | **Aún no funciona**: necesita el runtime de .NET Framework (`mscoree.dll`) |
 | Hollow Knight: Silksong | Unity (Mono), D3D12/D3D11, x64 | Arranca; solo primeras pruebas, aún sin verificar que sea jugable |

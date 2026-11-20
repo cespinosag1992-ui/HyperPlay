@@ -129,6 +129,8 @@ fun SessionOverlay(
     onConfirmKill: (Boolean) -> Unit,
     onCloseMenu: () -> Unit,
     onExit: () -> Unit,
+    /** Toque en ‹ (-1) o › (+1) de un ajuste. */
+    onMenuStep: (QuickMenuItem, Int) -> Unit = { item, _ -> onMenuItem(item) },
 ) {
     Box(Modifier.fillMaxSize()) {
         when (state.phase) {
@@ -145,7 +147,7 @@ fun SessionOverlay(
             )
         }
         if (state.menuOpen && state.phase != SessionPhase.ENDED) {
-            QuickMenu(state, onMenuItem, onConfirmKill, onCloseMenu)
+            QuickMenu(state, onMenuItem, onConfirmKill, onCloseMenu, onMenuStep)
         }
     }
 }
@@ -262,6 +264,7 @@ private fun QuickMenu(
     onMenuItem: (QuickMenuItem) -> Unit,
     onConfirmKill: (Boolean) -> Unit,
     onCloseMenu: () -> Unit,
+    onMenuStep: (QuickMenuItem, Int) -> Unit,
 ) {
     // Velo: un toque fuera del panel cierra el menú; también bloquea el mando táctil de debajo.
     Box(
@@ -279,7 +282,7 @@ private fun QuickMenu(
         ) {
             ActionsPane(state, onMenuItem, onConfirmKill)
             Box(Modifier.width(0.5.dp).fillMaxHeight().background(Mac.Separator))
-            SettingsPane(state, onMenuItem, Modifier.weight(1f))
+            SettingsPane(state, onMenuItem, onMenuStep, Modifier.weight(1f))
         }
     }
 }
@@ -402,14 +405,20 @@ private fun ActionButton(text: String, focused: Boolean, style: ActionStyle, onC
 
 /** Panel derecho: ajustes agrupados (estilo Ajustes del Sistema), desplazable si no cabe. */
 @Composable
-private fun SettingsPane(state: SessionUiState, onMenuItem: (QuickMenuItem) -> Unit, modifier: Modifier) {
+private fun SettingsPane(
+    state: SessionUiState,
+    onMenuItem: (QuickMenuItem) -> Unit,
+    onMenuStep: (QuickMenuItem, Int) -> Unit,
+    modifier: Modifier,
+) {
     Column(
         modifier.fillMaxHeight().verticalScroll(rememberScrollState()).padding(Mac.S4),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         val row: @Composable (QuickMenuItem) -> Unit = { item ->
             val s = settingFor(state, item)
-            SettingRow(s, focused = state.menuIndex == item.ordinal && !state.confirmKill) { onMenuItem(item) }
+            SettingRow(s, focused = state.menuIndex == item.ordinal && !state.confirmKill,
+                onStep = { step -> onMenuStep(item, step) }) { onMenuItem(item) }
         }
         MacSectionHeader(stringResource(R.string.section_performance))
         MacGroup {
@@ -488,7 +497,7 @@ private fun settingFor(state: SessionUiState, item: QuickMenuItem): Setting = wh
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SettingRow(s: Setting, focused: Boolean, onClick: () -> Unit) {
+private fun SettingRow(s: Setting, focused: Boolean, onStep: (Int) -> Unit, onClick: () -> Unit) {
     val requester = remember { BringIntoViewRequester() }
     LaunchedEffect(focused) { if (focused) requester.bringIntoView() }
     val shape = RoundedCornerShape(8.dp)
@@ -506,21 +515,29 @@ private fun SettingRow(s: Setting, focused: Boolean, onClick: () -> Unit) {
             s.hint?.let { Text(it, color = Mac.Secondary, fontSize = Mac.Caption, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         }
         Spacer(Modifier.width(Mac.S3))
-        // Valor con flechas tipo selector de macOS (◀ ▶ del mando lo cambian).
+        // Valor con flechas tipo selector de macOS (◀ ▶ del mando lo cambian). Al tocarlas, ‹ va
+        // hacia atrás y › hacia delante; el resto de la fila avanza.
+        @Composable
+        fun Arrow(glyph: String, step: Int) = Text(
+            glyph, color = Mac.Secondary, fontSize = 15.sp,
+            modifier = Modifier
+                .clickable(remember { MutableInteractionSource() }, indication = null) { onStep(step) }
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+        )
         Row(
             Modifier.background(if (s.locked) Color.Transparent else Mac.Control, RoundedCornerShape(6.dp))
-                .padding(horizontal = 10.dp, vertical = 5.dp),
+                .padding(horizontal = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (!s.locked) Text("‹", color = Mac.Secondary, fontSize = 15.sp)
+            if (!s.locked) Arrow("‹", -1)
             Text(
                 s.value,
                 color = if (s.locked) Mac.Tertiary else Mac.Label,
                 fontSize = Mac.Callout, fontWeight = FontWeight.Medium,
-                modifier = Modifier.padding(horizontal = 8.dp),
+                modifier = Modifier.padding(vertical = 5.dp),
                 maxLines = 1,
             )
-            if (!s.locked) Text("›", color = Mac.Secondary, fontSize = 15.sp)
+            if (!s.locked) Arrow("›", 1)
         }
     }
 }

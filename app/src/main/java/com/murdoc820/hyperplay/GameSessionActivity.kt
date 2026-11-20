@@ -216,6 +216,7 @@ class GameSessionActivity : ComponentActivity() {
                     onConfirmKill = ::onConfirmKill,
                     onCloseMenu = { closeMenu() },
                     onExit = { finish() },
+                    onMenuStep = { item, step -> state.menuIndex = item.ordinal; changeFocusedValue(step) },
                 )
             }
         }
