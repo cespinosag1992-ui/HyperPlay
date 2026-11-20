@@ -50,8 +50,19 @@ class GameLauncher(context: Context) {
             "[hyperplay] ========================================================\n"
         )
 
-        // 1. Cargar PE en memoria y secuestrar IAT con trampolines C++20 nativos
-        val directLoaded = HyperPlayNative.nativeDirectLoadPe(game.exePath)
+        // 1. Cargar PE en memoria y secuestrar IAT con trampolines C++20 nativos. Un juego .NET
+        //    (solo IL) se ejecuta con Mono x64 (ManagedRuntime).
+        val managed = ManagedRuntime.isManagedExe(File(game.exePath))
+        val directLoaded = if (managed) {
+            val rt = ManagedRuntime.runtimeDir()
+            check(ManagedRuntime.isInstalled(rt)) {
+                "Juego .NET: falta el runtime Mono en ${rt.absolutePath} / .NET game: Mono runtime missing"
+            }
+            log.appendText("[hyperplay] Juego .NET: Mono x64 de ${rt.absolutePath}\n")
+            HyperPlayNative.nativeDirectLoadManaged(game.exePath, rt.absolutePath)
+        } else {
+            HyperPlayNative.nativeDirectLoadPe(game.exePath)
+        }
         if (!directLoaded) {
             val detail = HyperPlayNative.nativeDirectGetLastLoadReport().trim()
             val err = "Error al cargar el ejecutable PE con BionicPeLoader / IAT en ${game.exePath}" +

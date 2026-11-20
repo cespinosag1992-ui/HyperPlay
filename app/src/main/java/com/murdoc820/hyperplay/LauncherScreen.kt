@@ -277,7 +277,8 @@ fun LauncherScreen(
     LaunchedEffect(windowFocused) {
         if (!windowFocused) {
             staleFocus = true
-        } else if (staleFocus && usedKeys) {
+        } else if (staleFocus && (usedKeys || navKeyTick > 0)) {
+            // (navKeyTick > 0: la pulsación llegó con la capa encima y no pudo enfocar nada)
             // La ventana vuelve (de un juego, de una capa de RedMagic/Game Space, de un aviso):
             // se recoloca el foco ya, sin gastar la siguiente pulsación del usuario en ello.
             withFrameNanos { }

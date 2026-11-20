@@ -15,6 +15,7 @@ add_library(hyperplay SHARED
     loader/BionicLibraryStager.cpp
     loader/BionicPeLoader.cpp
     loader/NativeDllInterceptor.cpp
+    loader/VulkanPassthrough.cpp
     loader/NativeSteamStub.cpp
     loader/FramePacing.cpp
     cpu/OryonSiliconScheduler.cpp

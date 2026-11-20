@@ -564,6 +564,7 @@ bool DirectVulkanBridge::attachWindow(ANativeWindow* window) {
     detachWindowLocked();
     window_ = window;
     ANativeWindow_acquire(window_);
+    if (guestOwnsWindow_) return true;  // el juego presenta él mismo (VulkanPassthrough)
 
     if (!createSurface()) {
         detachWindowLocked();
@@ -583,6 +584,34 @@ bool DirectVulkanBridge::attachWindow(ANativeWindow* window) {
 void DirectVulkanBridge::detachWindow() {
     std::lock_guard<std::mutex> lock(mutex_);
     detachWindowLocked();
+}
+
+PFN_vkGetInstanceProcAddr DirectVulkanBridge::guestLoader() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (instance_ == VK_NULL_HANDLE && !initLocked("")) return nullptr;
+    return getInstanceProcAddr_;
+}
+
+ANativeWindow* DirectVulkanBridge::releaseWindowForGuest() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    guestOwnsWindow_ = true;
+    if (device_ != VK_NULL_HANDLE) {
+        auto waitIdle = devProc<PFN_vkDeviceWaitIdle>("vkDeviceWaitIdle");
+        if (waitIdle != nullptr) waitIdle(device_);
+    }
+    cleanupSwapchainLocked();
+    if (surface_ != VK_NULL_HANDLE) {
+        auto destroySurface = instProc<PFN_vkDestroySurfaceKHR>("vkDestroySurfaceKHR");
+        if (destroySurface != nullptr) destroySurface(instance_, surface_, nullptr);
+        surface_ = VK_NULL_HANDLE;
+    }
+    LOGI("releaseWindowForGuest: el juego presenta en la ventana %p", static_cast<void*>(window_));
+    return window_;
+}
+
+void DirectVulkanBridge::countGuestPresent() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    countFrameLocked();
 }
 
 void DirectVulkanBridge::detachWindowLocked() {

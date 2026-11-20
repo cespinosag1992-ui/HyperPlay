@@ -10,6 +10,17 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **.NET games (Celeste)**: HyperPlay runs .NET Framework games with Mono x64 for Windows
+  (translated) and FNA instead of XNA. The game's Vulkan renderer (FNA3D/SDL GPU) is passed to
+  the phone's Vulkan almost as is (Win32 surface → Android surface, orientation handled). Tested
+  on the phone: Celeste title, menus, file select and the prologue at 60 FPS with the controller.
+  Not yet: audio (FMOD is a silent shim) and downloading the runtime from the app (for now it is
+  copied to `HyperPlay/runtime/mono`, see `tools/managed-runtime`).
+- Engine fixes found on the way: DLL init order (dependencies first), real
+  `CommandLineToArgvW`, `GetStringTypeW` (the CRT thought no character was a space),
+  `ExitThread`, `ERROR_TIMEOUT` from condition variables, `NtCreateFile`/`NtQueryDirectoryFile`,
+  `SetProp`/`GetProp`, `msvcrt.dll` routed to the UCRT, 32-bit DLLs refused in 64-bit games,
+  game console output in logcat.
 - **Real widescreen for Cuphead** (Quick menu → Image → Screen = **Widescreen**, the default):
   the game draws more of the scene at the sides, at native resolution, with no stretching and
   no cropping. HyperPlay patches the 16:9 limit of the game camera in memory when the game
@@ -31,6 +42,17 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Juegos .NET (Celeste)**: HyperPlay ejecuta juegos de .NET Framework con Mono x64 para Windows
+  (traducido) y FNA en lugar de XNA. El renderizador Vulkan del juego (FNA3D/SDL GPU) se pasa al
+  Vulkan del teléfono casi tal cual (superficie Win32 → Android, orientación resuelta). Probado en
+  el teléfono: título, menús, selección de partida y el prólogo de Celeste a 60 FPS con mando.
+  Falta: sonido (FMOD es un shim mudo) y descargar el runtime desde la app (por ahora se copia a
+  `HyperPlay/runtime/mono`, ver `tools/managed-runtime`).
+- Arreglos del motor encontrados por el camino: orden de inicio de las DLL (dependencias
+  primero), `CommandLineToArgvW` real, `GetStringTypeW` (el CRT creía que ningún carácter era un
+  espacio), `ExitThread`, `ERROR_TIMEOUT` en variables de condición,
+  `NtCreateFile`/`NtQueryDirectoryFile`, `SetProp`/`GetProp`, `msvcrt.dll` al UCRT, DLL de 32 bits
+  rechazadas en juegos de 64, salida de consola del juego en logcat.
 - **Panorámica real para Cuphead** (Menú rápido → Imagen → Pantalla = **Panorámica**, por
   defecto): el juego dibuja más escenario a los lados, a resolución nativa, sin estirar ni
   recortar. HyperPlay parchea en memoria el límite 16:9 de la cámara del juego al cargarlo (los

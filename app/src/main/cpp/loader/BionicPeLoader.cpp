@@ -1,4 +1,5 @@
 #include "BionicPeLoader.h"
+#include "ManagedHost.h"
 #include "NativeDllInterceptor.h"
 #include "cpu/OryonEmitterBackend.h"
 
@@ -281,6 +282,10 @@ bool BionicPeLoader::applyRelocations(LoadedPeImage& image) {
             }
         }
     }
+    // Sin reubicaciones y sin IMAGE_FILE_RELOCS_STRIPPED (0x0001): no hay nada que corregir y,
+    // como en Windows, se puede cargar en cualquier base (p. ej. los shims x64 de HyperPlay, todo
+    // relativo a RIP, que chocan con la base 0x180000000 de mono-2.0-sgen.dll).
+    if (relocSize == 0 && (info.characteristics & 0x0001u) == 0) return true;
     if (relocSize == 0 || relocRva >= mapped) {
         LOGE("PE reubicable sin tabla .reloc válida (base 0x%llx, delta %lld): no se puede cargar",
              static_cast<unsigned long long>(info.imageBase), static_cast<long long>(delta));
@@ -370,7 +375,8 @@ bool BionicPeLoader::applyRelocations(LoadedPeImage& image) {
 }
 
 void BionicPeLoader::setupSaveRedirection(LoadedPeImage& image) {
-    image.gameDir = getParentDir(image.filePath);
+    // Juego .NET: el ejecutable es mono.exe (en el runtime) pero D:\ es la carpeta del juego.
+    image.gameDir = managed::active() ? managed::g_gameDir : getParentDir(image.filePath);
     image.savesDir = image.gameDir + "/_HyperPlaySaves";
     mkdir(image.savesDir.c_str(), 0755);
     mkdir((image.savesDir + "/AppData").c_str(), 0755);
@@ -505,6 +511,9 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
 
     // Construcción de rutas candidatas para localizar el binario en disco
     std::vector<std::string> candidatePaths;
+    // 0. Juego .NET: primero las DLL x64 del runtime (FNA y shims de Steam/FMOD), que sustituyen a
+    //    las de 32 bits que trae el juego (CSteamworks.dll, fmod.dll...).
+    if (managed::active()) candidatePaths.push_back(managed::g_runtimeDir + "/fna/" + baseName);
 
     // 1. Si norm especifica una ruta virtual o con letra de unidad ("D:/..."), resolver con resolveVirtualPath
     if (norm.size() >= 2 && (norm[1] == ':' || norm[0] == '/')) {
@@ -516,6 +525,10 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
     }
     // 3. En la raíz de gameDir con baseName
     candidatePaths.push_back(image.gameDir + "/" + baseName);
+    // 3b. Junto al .exe principal (Mono: mono.exe y mono-2.0-sgen.dll en el runtime).
+    if (const std::string exeDir = getParentDir(image.filePath); exeDir != image.gameDir) {
+        candidatePaths.push_back(exeDir + "/" + baseName);
+    }
 
     // 4. Subcarpetas estándar de motores Windows conocidos (Unity, Unreal Engine, plugins)
     candidatePaths.push_back(image.gameDir + "/MonoBleedingEdge/EmbedRuntime/" + baseName);
@@ -603,6 +616,15 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
         close(fd);
         return nullptr;
     }
+    // Como Windows (ERROR_BAD_EXE_FORMAT): una DLL de 32 bits no se carga en un proceso de 64 (y al
+    // revés). Antes se mapeaba igual y su código x86 se ejecutaba como x86-64 (basura). Celeste en
+    // Mono x64 trae fmod.dll de 32 bits: LoadLibrary falla limpio y el juego lo ve.
+    if (info.is64Bit == image.is32Bit) {
+        LOGW("DLL local de %d bits en un proceso de %d bits, no se carga: %s", info.is64Bit ? 64 : 32,
+             image.is32Bit ? 32 : 64, resolvedPath.c_str());
+        close(fd);
+        return nullptr;
+    }
 
     const size_t ps = pageSize();
     (void)ps;
@@ -650,7 +672,7 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
         b->addCodeRange(reinterpret_cast<uintptr_t>(base), static_cast<size_t>(alignedSize));
     }
 
-    const LocalDllRegion reg{base, static_cast<size_t>(alignedSize), info};
+    const LocalDllRegion reg{base, static_cast<size_t>(alignedSize), info, resolvedPath};
     image.localDlls[dllName] = reg;
     image.localDlls[norm] = reg;
     image.localDlls[baseName] = reg;
@@ -658,6 +680,7 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
     std::string lowerNorm = norm;
     for (char& c : lowerNorm) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     image.localDlls[lowerNorm] = reg;
+    image.initOrder.push_back(lowerBase);
 
     LOGI("DLL local cargada: %s (%zu exports) en %p (tamaño 0x%zx)",
          baseName.c_str(), info.exports.size(), base, static_cast<size_t>(alignedSize));
@@ -703,6 +726,9 @@ std::string BionicPeLoader::resolveVirtualPath(const LoadedPeImage& image, const
         if (c == '\\') norm.push_back('/');
         else if (c != '\0' && c != '\"') norm.push_back(c);
     }
+
+    // C:\HyperPlay\Mono\... -> runtime Mono (juegos .NET).
+    if (std::string mounted = managed::resolveMount(norm); !mounted.empty()) return mounted;
 
     // Cualquier prefijo de unidad "D:", "C:", "d:/", etc. se quita para obtener la ruta relativa al directorio del juego
     std::string relative;

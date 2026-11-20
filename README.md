@@ -20,7 +20,7 @@ own JIT, and wires Direct3D, audio and controllers straight to Vulkan, AAudio an
 | Hollow Knight | Unity (Mono), D3D11, x64 | **Playable**: menus, saves, gameplay, benches and physics (geo, bounces) fixed; 60-120 FPS on the GPU path |
 | Cuphead | Unity (Mono), D3D11, x64 | **Playable, in testing**: title, menus, save slots, world map and a run-and-gun level with shooting at ~120 FPS; bosses not verified yet. Real widescreen (more scene at the sides, no stretching) with Quick menu → Image → Screen = Widescreen, the default |
 | DmC: Devil May Cry | Unreal 3, D3D9, **32-bit** | **Not working yet**: needs the 32-bit (WOW64) path and D3D9 → Vulkan |
-| Celeste | XNA/FNA, .NET Framework | **Not working yet**: needs the .NET Framework runtime (`mscoree.dll`) |
+| Celeste | XNA → FNA, .NET Framework | **Starts, in testing**: runs on Mono x64 + FNA (Vulkan passed to the phone): title, menus, file select and the prologue at 60 FPS. **No audio yet** (FMOD). Needs the .NET runtime in `HyperPlay/runtime/mono` (see `tools/managed-runtime`) |
 | Hollow Knight: Silksong | Unity (Mono), D3D12/D3D11, x64 | Starts; first tests only, not verified as playable yet |
 | Stardew Valley | MonoGame, .NET | Shows up in the library with its info; not tested yet |
 
@@ -116,7 +116,7 @@ JIT propio y conecta Direct3D, audio y mandos directamente con Vulkan, AAudio y 
 | Hollow Knight | Unity (Mono), D3D11, x64 | **Jugable**: menús, partidas, gameplay, bancos y física (geo, rebotes) corregidos; 60-120 FPS por la ruta GPU |
 | Cuphead | Unity (Mono), D3D11, x64 | **Jugable, en pruebas**: título, menús, ranuras de partida, mapa del mundo y un nivel de disparos a ~120 FPS; jefes sin verificar. Panorámica real (más escenario a los lados, sin estirar) con Menú rápido → Imagen → Pantalla = Panorámica, por defecto |
 | DmC: Devil May Cry | Unreal 3, D3D9, **32 bits** | **Aún no funciona**: falta la ruta de 32 bits (WOW64) y D3D9 → Vulkan |
-| Celeste | XNA/FNA, .NET Framework | **Aún no funciona**: necesita el runtime de .NET Framework (`mscoree.dll`) |
+| Celeste | XNA → FNA, .NET Framework | **Arranca, en pruebas**: corre en Mono x64 + FNA (Vulkan pasado al teléfono): título, menús, selección de partida y el prólogo a 60 FPS. **Aún sin sonido** (FMOD). Necesita el runtime .NET en `HyperPlay/runtime/mono` (ver `tools/managed-runtime`) |
 | Hollow Knight: Silksong | Unity (Mono), D3D12/D3D11, x64 | Arranca; solo primeras pruebas, aún sin verificar que sea jugable |
 | Stardew Valley | MonoGame, .NET | Aparece en la biblioteca con su ficha; sin probar todavía |
 

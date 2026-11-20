@@ -25,6 +25,7 @@ struct LocalDllRegion {
     void* base = nullptr;
     size_t size = 0;
     PeInfo peInfo;
+    std::string hostPath;  // archivo del que se cargó (GetModuleFileName)
 };
 
 struct LoadedPeImage {
@@ -41,6 +42,9 @@ struct LoadedPeImage {
     PeInfo peInfo;
     std::vector<LoadedSection> sections;
     std::unordered_map<std::string, LocalDllRegion> localDlls;
+    /// Orden en que terminó de cargarse cada DLL local (sus dependencias antes que ella): es el
+    /// orden de los DllMain, como en Windows (el CRT antes que quien lo usa).
+    std::vector<std::string> initOrder;
 
     /// true para imágenes temporales que solo usan la arena de otra imagen (no la liberan).
     bool borrowsArena = false;

@@ -16,6 +16,7 @@
 
 #include "loader/PeHeaderInspector.h"
 #include "loader/BionicPeLoader.h"
+#include "loader/ManagedHost.h"
 #include "loader/NativeDllInterceptor.h"
 #include "cpu/OryonSiliconScheduler.h"
 #include "loader/FramePacing.h"
@@ -130,9 +131,33 @@ std::string& directLoadReport() {
 }
 }  // namespace
 
+static jboolean loadPeInternal(const std::string& path);
+
 HP_JNI(jboolean, nativeDirectLoadPe)(JNIEnv* env, jclass, jstring exePath) {
+    hyperplay::managed::reset();
+    return loadPeInternal(toStdString(env, exePath));
+}
+
+// Juego .NET (ManagedHost.h): carga mono.exe del runtime con D:\ = carpeta del juego.
+HP_JNI(jboolean, nativeDirectLoadManaged)(JNIEnv* env, jclass, jstring gameExePath, jstring runtimeDir) {
+    const std::string game = toStdString(env, gameExePath);
+    const std::string runtime = toStdString(env, runtimeDir);
+    const size_t slash = game.find_last_of('/');
+    if (slash == std::string::npos || runtime.empty()) {
+        directLoadReport() = "juego .NET: ruta del juego o del runtime vacía";
+        return JNI_FALSE;
+    }
+    hyperplay::managed::g_runtimeDir = runtime;
+    hyperplay::managed::g_gameDir = game.substr(0, slash);
+    hyperplay::managed::g_gameExe = game.substr(slash + 1);
+    LOGI("nativeDirectLoadManaged: %s con Mono de %s", game.c_str(), runtime.c_str());
+    const jboolean ok = loadPeInternal(runtime + "/bin/mono.exe");
+    if (!ok) hyperplay::managed::reset();
+    return ok;
+}
+
+static jboolean loadPeInternal(const std::string& path) {
     directLoadReport().clear();
-    const std::string path = toStdString(env, exePath);
     if (path.empty()) {
         directLoadReport() = "ruta vacía";
         LOGW("nativeDirectLoadPe: ruta vacía");
@@ -206,9 +231,15 @@ HP_JNI(jint, nativeDirectLaunch)(JNIEnv*, jclass) {
         return -1;
     }
 
-    // Inicializa cada DLL local llamando a su DllMain(DLL_PROCESS_ATTACH)
+    // Inicializa cada DLL local llamando a su DllMain(DLL_PROCESS_ATTACH), dependencias primero
+    // (initOrder: orden en que terminaron de cargarse); luego cualquier otra que quede.
     std::unordered_set<void*> initializedBases;
-    for (const auto& [name, region] : directImage()->localDlls) {
+    std::vector<std::pair<std::string, hyperplay::LocalDllRegion>> ordered;
+    for (const auto& n : directImage()->initOrder) {
+        if (auto it = directImage()->localDlls.find(n); it != directImage()->localDlls.end()) ordered.emplace_back(*it);
+    }
+    for (const auto& kv : directImage()->localDlls) ordered.emplace_back(kv);
+    for (const auto& [name, region] : ordered) {
         if (region.peInfo.entryPointRva != 0 && region.base != nullptr) {
             if (!initializedBases.insert(region.base).second) {
                 continue; // Evita inicializar el mismo módulo múltiples veces por sus alias

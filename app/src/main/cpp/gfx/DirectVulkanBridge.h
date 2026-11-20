@@ -91,6 +91,16 @@ public:
     [[nodiscard]] std::string gpuName() const noexcept { return gpuName_; }
     [[nodiscard]] bool isTurnip() const noexcept { return loader_.isTurnip(); }
 
+    // --- Juegos que usan Vulkan directamente (loader/VulkanPassthrough) ---------------------
+    /// vkGetInstanceProcAddr del driver en uso (sistema o Turnip); inicializa si hace falta.
+    PFN_vkGetInstanceProcAddr guestLoader();
+    /// Cede la ventana al juego: destruye el swapchain y la superficie propios (dos swapchains no
+    /// pueden compartir un ANativeWindow) y devuelve la ventana, que sigue referenciada aquí.
+    /// Mientras el juego la tenga, attachWindow no crea swapchain propio.
+    ANativeWindow* releaseWindowForGuest();
+    /// Un vkQueuePresentKHR del juego: cuenta para FPS/HUD y para "contenido visible".
+    void countGuestPresent();
+
     void setFsrEnabled(bool enabled) noexcept { fsrPass_.setEnabled(enabled); }
     [[nodiscard]] bool isFsrEnabled() const noexcept { return fsrPass_.isEnabled(); }
 
@@ -140,6 +150,7 @@ private:
     VkDeviceSize stagingSize_ = 0;
 
     ANativeWindow* window_ = nullptr;
+    bool guestOwnsWindow_ = false;
     mutable std::mutex mutex_;
 
     std::atomic<float> currentFps_{0.0f};

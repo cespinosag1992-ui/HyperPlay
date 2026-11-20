@@ -3,6 +3,8 @@
 #include "../gfx/D3D11GpuRenderer.h"
 #include "Win32DisplayInfo.h"
 #include "WidescreenPatch.h"
+#include "ManagedHost.h"
+#include "VulkanPassthrough.h"
 #include "gfx/PresentOptions.h"
 #include "FramePacing.h"
 #include "Win32KnownFolders.h"
@@ -48,8 +50,10 @@
 #include <cstring>
 #include <cstdio>
 #include <cwchar>
+#include <cwctype>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -295,6 +299,16 @@ static void* guestThreadTrampoline(void* arg) {
 
 // Backend que despacha el thunk en curso en este hilo (para llamar callbacks invitados).
 thread_local OryonEmitterBackend* t_dispatchBackend = nullptr;
+
+// kernel32!ExitThread: termina el hilo invitado actual al volver del thunk (dispatchThunk pone
+// RIP=0). Antes era un stub que volvía y el código seguía tras la llamada "sin retorno": Mono
+// (mono_threads_platform_exit = detach + ExitThread) liberaba dos veces y abortaba (refcount.h).
+thread_local bool t_exitThreadRequested = false;
+thread_local uint32_t t_exitThreadCode = 0;
+static void hp_ExitThread(uint32_t code) {
+    t_exitThreadRequested = true;
+    t_exitThreadCode = code;
+}
 // true mientras se resuelven los imports de una DLL local (no del exe): ver resolveNativeSymbol.
 thread_local bool t_resolvingLocalDllImports = false;
 static void* resolveSteamOffline(const char* name);
@@ -2032,6 +2046,12 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
         ctx.gpr[0] = ret;
     }
     ctx.rip = returnAddress;
+    if (t_exitThreadRequested) {
+        // ExitThread no vuelve: RIP=0 termina executeThread con el código en RAX.
+        t_exitThreadRequested = false;
+        ctx.gpr[0] = t_exitThreadCode;
+        ctx.rip = 0;
+    }
     return true;
 }
 
@@ -2179,6 +2199,280 @@ IatHijackStats NativeDllInterceptor::hijackLocalDllIat(LoadedPeImage& image) {
     return stats;
 }
 
+// --- ntdll NtCreateFile / NtQueryDirectoryFile (System.IO de Mono: Directory.GetFiles) ---------
+// Mono 6 (corefx) enumera directorios con NtCreateFile (abrir carpeta, ruta NT "\??\D:\..." o
+// relativa a RootDirectory) + NtQueryDirectoryFile (FILE_FULL_DIR_INFORMATION). Celeste lo usa
+// para listar sus fuentes. El handle es el de un fd de directorio (CloseHandle lo cierra).
+struct DirListing {
+    std::vector<std::string> names;
+    size_t next = 0;
+};
+static std::mutex s_dirMutex;
+static std::unordered_map<int, DirListing> s_dirListings;
+
+static void forgetDirListing(int fd) {
+    std::lock_guard<std::mutex> lock(s_dirMutex);
+    s_dirListings.erase(fd);
+}
+
+static std::string unicodeStringToUtf8(const void* us) {
+    if (us == nullptr) return {};
+    uint16_t lenBytes = 0;
+    std::memcpy(&lenBytes, us, 2);
+    const char16_t* buf = nullptr;
+    std::memcpy(&buf, static_cast<const uint8_t*>(us) + 8, sizeof(buf));
+    if (buf == nullptr) return {};
+    std::u16string s(buf, lenBytes / 2);
+    return utf16ToUtf8(s.c_str());
+}
+
+static uint32_t hp_NtCreateFile(void** fileHandle, uint32_t desiredAccess, const void* objAttr, void* ioStatus,
+                                void*, uint32_t, uint32_t, uint32_t disposition, uint32_t createOptions, void*, uint32_t) {
+    if (fileHandle == nullptr || objAttr == nullptr || s_activeImage == nullptr) return 0xC000000Du;  // INVALID_PARAMETER
+    void* root = nullptr;
+    const void* name = nullptr;
+    std::memcpy(&root, static_cast<const uint8_t*>(objAttr) + 8, sizeof(root));
+    std::memcpy(&name, static_cast<const uint8_t*>(objAttr) + 16, sizeof(name));
+    std::string path = unicodeStringToUtf8(name);
+    if (path.rfind("\\??\\", 0) == 0) path = path.substr(4);
+    std::string real;
+    int fd = -1;
+    const bool wantDir = (createOptions & 0x1u) != 0;  // FILE_DIRECTORY_FILE
+    const int flags = O_RDONLY | O_CLOEXEC | (wantDir ? O_DIRECTORY : 0);
+    if (root != nullptr) {
+        std::string rel = path;
+        for (char& c : rel) if (c == '\\') c = '/';
+        fd = openat(fdFromHandle(root), rel.c_str(), flags);
+        real = rel;
+    } else {
+        real = BionicPeLoader::resolveVirtualPath(*s_activeImage, path);
+        fd = open(real.c_str(), flags);
+    }
+    const uint32_t status = fd >= 0 ? 0u : (errno == ENOENT ? 0xC0000034u : (errno == ENOTDIR ? 0xC0000103u : 0xC0000022u));
+    if (ioStatus != nullptr) {
+        const uint64_t st = status, info = fd >= 0 ? 1u /*FILE_OPENED*/ : 0u;
+        std::memcpy(ioStatus, &st, 8);
+        std::memcpy(static_cast<uint8_t*>(ioStatus) + 8, &info, 8);
+    }
+    LOGI("NtCreateFile('%s' dir=%d acc=0x%x disp=%u) -> fd=%d status=0x%x", real.c_str(), wantDir ? 1 : 0,
+         desiredAccess, disposition, fd, status);
+    if (fd < 0) return status;
+    *fileHandle = handleFromFd(fd);
+    return 0;
+}
+
+static uint32_t hp_NtQueryDirectoryFile(void* fileHandle, void*, void*, void*, void* ioStatus, void* info,
+                                        uint32_t length, uint32_t infoClass, uint8_t single, void* fileName,
+                                        uint8_t restart) {
+    (void)fileName;
+    const int fd = fdFromHandle(fileHandle);
+    auto setIo = [&](uint32_t status, uint64_t bytes) {
+        if (ioStatus == nullptr) return;
+        const uint64_t st = status;
+        std::memcpy(ioStatus, &st, 8);
+        std::memcpy(static_cast<uint8_t*>(ioStatus) + 8, &bytes, 8);
+    };
+    if (fd < 0 || info == nullptr) { setIo(0xC0000008u, 0); return 0xC0000008u; }  // INVALID_HANDLE
+    if (infoClass != 2 && infoClass != 1 && infoClass != 3) {  // Full / Directory / Both
+        LOGW("NtQueryDirectoryFile: clase %u no soportada", infoClass);
+        setIo(0xC0000003u, 0);
+        return 0xC0000003u;  // INVALID_INFO_CLASS
+    }
+    std::lock_guard<std::mutex> lock(s_dirMutex);
+    auto [it, fresh] = s_dirListings.try_emplace(fd);
+    DirListing& dl = it->second;
+    if (fresh || restart) {
+        dl = DirListing{};
+        dl.names = {".", ".."};
+        const int dupFd = dup(fd);
+        if (DIR* d = dupFd >= 0 ? fdopendir(dupFd) : nullptr) {
+            rewinddir(d);
+            while (struct dirent* e = readdir(d)) {
+                if (std::strcmp(e->d_name, ".") != 0 && std::strcmp(e->d_name, "..") != 0) dl.names.emplace_back(e->d_name);
+            }
+            closedir(d);
+        } else if (dupFd >= 0) {
+            close(dupFd);
+        }
+    }
+    auto* out = static_cast<uint8_t*>(info);
+    size_t used = 0;
+    uint8_t* prev = nullptr;
+    // FILE_FULL_DIR_INFORMATION: nombre en 68; FILE_DIRECTORY_INFORMATION en 64;
+    // FILE_BOTH_DIR_INFORMATION en 94 (con ShortName de 24 bytes antes).
+    const size_t nameOff = infoClass == 2 ? 68 : (infoClass == 1 ? 64 : 94);
+    while (dl.next < dl.names.size()) {
+        const std::string& n = dl.names[dl.next];
+        std::u16string wn;
+        for (unsigned char c : n) wn.push_back(static_cast<char16_t>(c));  // nombres ASCII/UTF-8 simples
+        const size_t entry = (nameOff + wn.size() * 2 + 7) & ~static_cast<size_t>(7);
+        if (used + nameOff + wn.size() * 2 > length) break;
+        uint8_t* e = out + used;
+        std::memset(e, 0, std::min<size_t>(entry, length - used));
+        struct stat st{};
+        fstatat(fd, n.c_str(), &st, 0);
+        auto ft = [](time_t t) { return (static_cast<uint64_t>(t) + 11644473600ULL) * 10000000ULL; };
+        const uint64_t ctime = ft(st.st_ctime), atime = ft(st.st_atime), mtime = ft(st.st_mtime);
+        const uint64_t size = static_cast<uint64_t>(st.st_size);
+        const uint32_t attrs = S_ISDIR(st.st_mode) ? 0x10u : 0x80u;  // DIRECTORY / NORMAL
+        const uint32_t nameLen = static_cast<uint32_t>(wn.size() * 2);
+        std::memcpy(e + 8, &ctime, 8);
+        std::memcpy(e + 16, &atime, 8);
+        std::memcpy(e + 24, &mtime, 8);
+        std::memcpy(e + 32, &mtime, 8);
+        std::memcpy(e + 40, &size, 8);
+        std::memcpy(e + 48, &size, 8);
+        std::memcpy(e + 56, &attrs, 4);
+        std::memcpy(e + 60, &nameLen, 4);
+        std::memcpy(e + nameOff, wn.data(), nameLen);
+        if (prev != nullptr) {
+            const uint32_t off = static_cast<uint32_t>(e - prev);
+            std::memcpy(prev, &off, 4);
+        }
+        prev = e;
+        used += entry;
+        ++dl.next;
+        if (single) break;
+    }
+    if (prev == nullptr) {
+        const uint32_t st = dl.next >= dl.names.size() ? 0x80000006u : 0x80000005u;  // NO_MORE_FILES / BUFFER_OVERFLOW
+        setIo(st, 0);
+        return st;
+    }
+    setIo(0, used);
+    return 0;
+}
+
+static uint32_t hp_RtlNtStatusToDosError(uint32_t status) {
+    switch (status) {
+        case 0: return 0;
+        case 0xC0000034u: return 2;    // OBJECT_NAME_NOT_FOUND -> FILE_NOT_FOUND
+        case 0xC000003Au: return 3;    // OBJECT_PATH_NOT_FOUND -> PATH_NOT_FOUND
+        case 0xC0000022u: return 5;    // ACCESS_DENIED
+        case 0xC0000103u: return 267;  // NOT_A_DIRECTORY -> ERROR_DIRECTORY
+        case 0x80000006u: return 18;   // NO_MORE_FILES
+        case 0xC0000008u: return 6;    // INVALID_HANDLE
+        default: return 317;           // ERROR_MR_MID_NOT_FOUND
+    }
+}
+
+// shell32!ShellExecuteExW: no hay otras aplicaciones (Celeste abre su error_log.txt con el bloc de
+// notas al fallar). Se responde éxito sin proceso para que eso no convierta un error en un cierre.
+static int32_t hp_ShellExecuteExW(void* sei) {
+    if (sei != nullptr) {
+        void* none = nullptr;
+        std::memcpy(static_cast<uint8_t*>(sei) + 104, &none, sizeof(none));  // hProcess (x64)
+        const uintptr_t ok = 33;  // hInstApp > 32 = éxito
+        std::memcpy(static_cast<uint8_t*>(sei) + 56, &ok, sizeof(ok));
+    }
+    LOGI("ShellExecuteExW: ignorado (sin aplicaciones externas)");
+    return 1;
+}
+
+// --- user32 SetProp/GetProp/RemoveProp (SDL3 guarda su SDL_Window en la HWND) ------------------
+// La clave es un ATOM (palabra baja, puntero < 0x10000) o una cadena.
+static std::mutex s_propMutex;
+static std::map<std::pair<uintptr_t, std::string>, uintptr_t> s_windowProps;
+
+static std::string propKey(const void* name, bool wide) {
+    const auto v = reinterpret_cast<uintptr_t>(name);
+    if (v < 0x10000) return "#" + std::to_string(v);
+    if (!wide) return std::string(static_cast<const char*>(name));
+    std::string out;
+    for (const auto* p = static_cast<const char16_t*>(name); *p; ++p) out.push_back(static_cast<char>(*p & 0x7F));
+    return out;
+}
+static int32_t setProp(void* hwnd, const void* name, void* data, bool wide) {
+    std::lock_guard<std::mutex> lock(s_propMutex);
+    s_windowProps[{reinterpret_cast<uintptr_t>(hwnd), propKey(name, wide)}] = reinterpret_cast<uintptr_t>(data);
+    return 1;
+}
+static void* getProp(void* hwnd, const void* name, bool wide) {
+    std::lock_guard<std::mutex> lock(s_propMutex);
+    auto it = s_windowProps.find({reinterpret_cast<uintptr_t>(hwnd), propKey(name, wide)});
+    return it == s_windowProps.end() ? nullptr : reinterpret_cast<void*>(it->second);
+}
+static void* removeProp(void* hwnd, const void* name, bool wide) {
+    std::lock_guard<std::mutex> lock(s_propMutex);
+    auto it = s_windowProps.find({reinterpret_cast<uintptr_t>(hwnd), propKey(name, wide)});
+    if (it == s_windowProps.end()) return nullptr;
+    void* v = reinterpret_cast<void*>(it->second);
+    s_windowProps.erase(it);
+    return v;
+}
+static int32_t hp_SetPropW(void* h, const void* n, void* d) { return setProp(h, n, d, true); }
+static void* hp_GetPropW(void* h, const void* n) { return getProp(h, n, true); }
+static void* hp_RemovePropW(void* h, const void* n) { return removeProp(h, n, true); }
+static int32_t hp_SetPropA(void* h, const void* n, void* d) { return setProp(h, n, d, false); }
+static void* hp_GetPropA(void* h, const void* n) { return getProp(h, n, false); }
+static void* hp_RemovePropA(void* h, const void* n) { return removeProp(h, n, false); }
+
+// --- Locale y PSAPI que pide Mono x64 (mono.exe / mono-2.0-sgen.dll) ------------------------
+static std::string guestModulePath(void* hModule);
+
+static uint32_t hp_GetThreadLocale() { return 0x0409; }  // en-US
+
+// GetLocaleInfoA: lo mínimo que consulta Mono (página de códigos y nombres ISO), en-US.
+static int32_t hp_GetLocaleInfoA(uint32_t, uint32_t lcType, char* data, int32_t size) {
+    const char* v = "";
+    switch (lcType & 0x0FFFFFFFu) {  // sin LOCALE_NOUSEROVERRIDE / LOCALE_RETURN_NUMBER
+        case 0x1004: v = "1252"; break;     // LOCALE_IDEFAULTANSICODEPAGE
+        case 0x000B: v = "437"; break;      // LOCALE_IDEFAULTCODEPAGE (OEM)
+        case 0x0059: v = "en"; break;       // LOCALE_SISO639LANGNAME
+        case 0x005A: v = "US"; break;       // LOCALE_SISO3166CTRYNAME
+        case 0x0002: v = "English (United States)"; break;  // LOCALE_SLANGUAGE
+        default: break;
+    }
+    const int32_t need = static_cast<int32_t>(std::strlen(v)) + 1;
+    if (data == nullptr || size == 0) return need;
+    if (size < need) { NativeDllInterceptor::win_SetLastError(122); return 0; }
+    std::memcpy(data, v, static_cast<size_t>(need));
+    return need;
+}
+
+static uint32_t hp_K32GetModuleBaseNameW(void*, void* hModule, char16_t* name, uint32_t size) {
+    const std::string path = guestModulePath(hModule);
+    if (path.empty() || name == nullptr || size == 0) { NativeDllInterceptor::win_SetLastError(126); return 0; }
+    const size_t slash = path.find_last_of("\\/");
+    const std::string base = slash == std::string::npos ? path : path.substr(slash + 1);
+    const uint32_t n = std::min<uint32_t>(static_cast<uint32_t>(base.size()), size - 1);
+    for (uint32_t i = 0; i < n; ++i) name[i] = static_cast<char16_t>(static_cast<unsigned char>(base[i]));
+    name[n] = u'\0';
+    return n;
+}
+
+// Juego .NET con el CRT de Microsoft en el runtime (bin/ucrtbase.dll): las importaciones del CRT
+// van a esa DLL (traducida). Unity enlaza su CRT estático y nunca llega aquí.
+static bool guestCrtDll(const std::string& lowerDll) {
+    if (!managed::active()) return false;
+    if (lowerDll.rfind("api-ms-win-crt-", 0) != 0 && lowerDll != "ucrtbase.dll" && lowerDll != "msvcrt.dll") return false;
+    return access((managed::g_runtimeDir + "/bin/ucrtbase.dll").c_str(), F_OK) == 0;
+}
+
+// msvcrt.dll (FNA3D/FAudio/theorafile, compilados con MinGW): casi todo lo exporta ucrtbase.dll
+// con el mismo nombre; estas seis no existen en el UCRT. Antes msvcrt.dll entero eran stubs que
+// devolvían 0 (memcpy no copiaba nada y FNA3D se caía).
+alignas(16) static uint8_t s_fakeIob[3 * 48] = {};
+static void* hp_msvcrt_iob_func() { return s_fakeIob; }
+static void hp_msvcrt_lock(int) {}
+static void hp_msvcrt_unlock(int) {}
+static void hp_msvcrt_amsg_exit(int code) {
+    LOGE("msvcrt!_amsg_exit(%d)", code);
+    NativeDllInterceptor::win_ExitProcess(255);
+}
+static int hp_msvcrt_fprintf(void*, const char* fmt) {
+    if (fmt != nullptr) __android_log_print(ANDROID_LOG_INFO, "HyperPlay.GameOut", "[fprintf] %s", fmt);
+    return 0;
+}
+static void* msvcrtOnlyExport(const std::string& fn) {
+    if (fn == "__iob_func") return reinterpret_cast<void*>(&hp_msvcrt_iob_func);
+    if (fn == "_lock") return reinterpret_cast<void*>(&hp_msvcrt_lock);
+    if (fn == "_unlock") return reinterpret_cast<void*>(&hp_msvcrt_unlock);
+    if (fn == "_amsg_exit") return reinterpret_cast<void*>(&hp_msvcrt_amsg_exit);
+    if (fn == "fprintf" || fn == "vfprintf") return reinterpret_cast<void*>(&hp_msvcrt_fprintf);
+    return nullptr;
+}
+
 void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, const std::string& funcName) {
     const std::string dll = toLower(dllName);
     void* result = nullptr;
@@ -2213,9 +2507,12 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "XInputGetKeystroke") result = reinterpret_cast<void*>(&DirectXInputBridge::XInputGetKeystroke);
     }
 
-    // 3. Kernel32 & Ntdll & ApiSet
-    if (!result && (dll == "kernel32.dll" || dll == "ntdll.dll" || dll == "kernelbase.dll" || dll == "ucrtbase.dll" ||
-                    dll == "psapi.dll" || dll.rfind("api-ms-win-", 0) == 0)) {
+    if (!result && dll == "msvcrt.dll" && guestCrtDll(dll)) result = msvcrtOnlyExport(funcName);
+
+    // 3. Kernel32 & Ntdll & ApiSet (el CRT de un juego .NET lo pone ucrtbase.dll, paso 6)
+    if (!result && !guestCrtDll(dll) &&
+        (dll == "kernel32.dll" || dll == "ntdll.dll" || dll == "kernelbase.dll" || dll == "ucrtbase.dll" ||
+         dll == "psapi.dll" || dll.rfind("api-ms-win-", 0) == 0)) {
         if (dll == "kernel32.dll") s_kernel32Calls.fetch_add(1);
         else s_ntdllCalls.fetch_add(1);
 
@@ -2309,6 +2606,14 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
             result = reinterpret_cast<void*>(&win_GetModuleInformation);
         else if (funcName == "K32GetModuleFileNameExW" || funcName == "GetModuleFileNameExW")
             result = reinterpret_cast<void*>(&win_GetModuleFileNameExW);
+        else if (funcName == "ExitThread" || funcName == "RtlExitUserThread") result = reinterpret_cast<void*>(&hp_ExitThread);
+        else if (funcName == "NtCreateFile") result = reinterpret_cast<void*>(&hp_NtCreateFile);
+        else if (funcName == "NtQueryDirectoryFile") result = reinterpret_cast<void*>(&hp_NtQueryDirectoryFile);
+        else if (funcName == "RtlNtStatusToDosError") result = reinterpret_cast<void*>(&hp_RtlNtStatusToDosError);
+        else if (funcName == "K32GetModuleBaseNameW" || funcName == "GetModuleBaseNameW")
+            result = reinterpret_cast<void*>(&hp_K32GetModuleBaseNameW);
+        else if (funcName == "GetThreadLocale") result = reinterpret_cast<void*>(&hp_GetThreadLocale);
+        else if (funcName == "GetLocaleInfoA") result = reinterpret_cast<void*>(&hp_GetLocaleInfoA);
         else if (funcName == "GetModuleFileNameA") result = reinterpret_cast<void*>(&win_GetModuleFileNameA);
         else if (funcName == "GetModuleHandleExW") result = reinterpret_cast<void*>(&win_GetModuleHandleExW);
         else if (funcName == "GetTempPathW") result = reinterpret_cast<void*>(&win_GetTempPathW);
@@ -2500,6 +2805,12 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         if (funcName == "CreateWindowExW") result = reinterpret_cast<void*>(&win_CreateWindowExW);
         else if (funcName == "CreateWindowExA") result = reinterpret_cast<void*>(&win_CreateWindowExA);
         else if (funcName == "ShowWindow") result = reinterpret_cast<void*>(&win_ShowWindow);
+        else if (funcName == "SetPropW") result = reinterpret_cast<void*>(&hp_SetPropW);
+        else if (funcName == "GetPropW") result = reinterpret_cast<void*>(&hp_GetPropW);
+        else if (funcName == "RemovePropW") result = reinterpret_cast<void*>(&hp_RemovePropW);
+        else if (funcName == "SetPropA") result = reinterpret_cast<void*>(&hp_SetPropA);
+        else if (funcName == "GetPropA") result = reinterpret_cast<void*>(&hp_GetPropA);
+        else if (funcName == "RemovePropA") result = reinterpret_cast<void*>(&hp_RemovePropA);
         else if (funcName == "PeekMessageW") result = reinterpret_cast<void*>(&win_PeekMessageW);
         else if (funcName == "DispatchMessageW") result = reinterpret_cast<void*>(&win_DispatchMessageW);
         else if (funcName == "GetForegroundWindow") result = reinterpret_cast<void*>(&win_GetForegroundWindow);
@@ -2672,6 +2983,7 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     if (!result && (dll == "shell32.dll" || dll == "shfolder.dll")) {
         s_otherCalls.fetch_add(1);
         if (funcName == "CommandLineToArgvW") result = reinterpret_cast<void*>(&win_CommandLineToArgvW);
+        else if (funcName == "ShellExecuteExW") result = reinterpret_cast<void*>(&hp_ShellExecuteExW);
         else if (funcName == "DllGetVersion") result = reinterpret_cast<void*>(&win_DllGetVersion);
         else if (funcName == "SHGetKnownFolderPath") result = reinterpret_cast<void*>(&win_SHGetKnownFolderPath);
         else if (funcName == "SHGetFolderPathW") result = reinterpret_cast<void*>(&win_SHGetFolderPathW);
@@ -2776,26 +3088,38 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     }
     if (!result && (dll == "vulkan-1.dll" || dll == "vulkan")) {
         s_vulkanCalls.fetch_add(1);
-        if (funcName == "vkGetInstanceProcAddr") result = reinterpret_cast<void*>(&vkGetInstanceProcAddr);
+        // Vulkan del teléfono, casi tal cual (VulkanPassthrough.h). Antes se devolvía el
+        // vkGetInstanceProcAddr nativo y los punteros que entregaba no eran trampolines.
+        static std::once_flag s_vkInit;
+        std::call_once(s_vkInit, [] {
+            vkpass::init([](void* fn, const char* name) { registerTrampolineAddress(fn, name); });
+        });
+        result = vkpass::guestProcAddr(funcName.c_str());
     }
 
-    // 6. Local DLLs (e.g. UnityPlayer.dll -> UnityMain2)
+    // 6. Local DLLs (e.g. UnityPlayer.dll -> UnityMain2). Juego .NET: también las del runtime
+    //    (mono-2.0-sgen.dll junto a mono.exe, FNA y shims en fna/) y el CRT de Microsoft
+    //    (api-ms-win-crt-* -> ucrtbase.dll del runtime, traducido como cualquier DLL).
     bool isGuestExport = false;
     if (!result && s_activeImage != nullptr) {
-        const std::string dllPath = s_activeImage->gameDir + "/" + dllName;
+        const std::string localName = guestCrtDll(dll) ? std::string("ucrtbase.dll") : dllName;
         struct stat st{};
-        const bool existsOnDisk = (stat(dllPath.c_str(), &st) == 0);
-        const bool alreadyLoaded = (s_activeImage->localDlls.find(dllName) != s_activeImage->localDlls.end());
+        bool existsOnDisk = stat((s_activeImage->gameDir + "/" + localName).c_str(), &st) == 0;
+        if (!existsOnDisk && managed::active()) {
+            existsOnDisk = stat((managed::g_runtimeDir + "/bin/" + localName).c_str(), &st) == 0 ||
+                           stat((managed::g_runtimeDir + "/fna/" + localName).c_str(), &st) == 0;
+        }
+        const bool alreadyLoaded = (s_activeImage->localDlls.find(localName) != s_activeImage->localDlls.end());
         if (existsOnDisk || alreadyLoaded) {
             void* dllBase = nullptr;
             if (alreadyLoaded) {
-                dllBase = s_activeImage->localDlls[dllName].base;
+                dllBase = s_activeImage->localDlls[localName].base;
             } else {
                 static BionicPeLoader s_localLoader;
-                dllBase = s_localLoader.loadLocalDll(*s_activeImage, dllName);
+                dllBase = s_localLoader.loadLocalDll(*s_activeImage, localName);
             }
             if (dllBase != nullptr) {
-                auto it = s_activeImage->localDlls.find(dllName);
+                auto it = s_activeImage->localDlls.find(localName);
                 if (it != s_activeImage->localDlls.end()) {
                     uint32_t expRva = it->second.peInfo.findExportRva(funcName);
                     if (expRva != 0) {
@@ -3040,7 +3364,14 @@ int32_t NativeDllInterceptor::win_VirtualFree(void* lpAddress, size_t dwSize, ui
             }
         }
         if (size == 0) size = dwSize;
-        if (size == 0) return 0;
+        if (size == 0) {
+            // Región que no registró VirtualAlloc (p. ej. ya liberada en parte o de otra API):
+            // Windows liberaría la reserva entera; aquí no se conoce su tamaño. Mono aborta con
+            // cualquier fallo de VirtualFree, así que se responde éxito (se pierde la región).
+            static std::atomic<int> s_unknownFrees{0};
+            if (s_unknownFrees.fetch_add(1) < 20) LOGW("VirtualFree(MEM_RELEASE) de %p no registrado: se ignora", lpAddress);
+            return 1;
+        }
         if (munmap(unmapBase, size) != 0) return 0;
         erasePageProt(reinterpret_cast<uintptr_t>(unmapBase), size);
         if (auto* b = OryonEmitterBackend::activeBackend(); b != nullptr) {
@@ -3372,6 +3703,26 @@ int32_t NativeDllInterceptor::win_WriteFile(void* hFile, const void* lpBuffer, u
         }
     }
 
+    if (fd == STDOUT_FILENO || fd == STDERR_FILENO) {
+        // Consola del juego (Mono, el CRT, Celeste "Console.WriteLine") -> logcat, por líneas.
+        static std::mutex s_outMutex;
+        static std::string s_line[3];
+        std::lock_guard<std::mutex> lock(s_outMutex);
+        std::string& line = s_line[fd];
+        const auto* p = static_cast<const char*>(lpBuffer);
+        for (uint32_t i = 0; i < nNumberOfBytesToWrite; ++i) {
+            if (p[i] == '\n' || line.size() > 900) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                __android_log_print(ANDROID_LOG_INFO, "HyperPlay.GameOut", "%s %s", fd == STDOUT_FILENO ? "[out]" : "[err]",
+                                    line.c_str());
+                line.clear();
+                if (p[i] == '\n') continue;
+            }
+            if (p[i] != '\0' && p[i] != '\r') line.push_back(p[i]);  // sin NUL (UTF-16) ni '\r'
+        }
+        if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = nNumberOfBytesToWrite;
+        return 1;
+    }
     const ssize_t n = write(fd, lpBuffer, nNumberOfBytesToWrite);
     if (n < 0) return 0;
     if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = static_cast<uint32_t>(n);
@@ -3410,6 +3761,7 @@ int32_t NativeDllInterceptor::win_CloseHandle(void* hObject) {
     }
     const int fd = fdFromHandle(hObject);
     if (fd >= 0) {
+        forgetDirListing(fd);
         return (close(fd) == 0) ? 1 : 0;
     }
     return 1;
@@ -5655,6 +6007,12 @@ static std::string getActiveExeName() {
 // Línea de comandos del juego. Unity: arranca a la resolución nativa del teléfono en pantalla
 // completa, sin depender de la resolución guardada en PlayerPrefs (que puede ser menor).
 static std::string buildCommandLine() {
+    if (managed::active()) {
+        // Juego .NET: Mono ejecuta el .exe del juego (ver ManagedHost.h).
+        const std::string full = "\"" + std::string(managed::kWinRoot) + "\\bin\\mono.exe\" \"D:\\" + managed::g_gameExe + "\"";
+        LOGI("Línea de comandos (juego .NET): %s", full.c_str());
+        return full;
+    }
     std::string full = "\"D:\\" + getActiveExeName() + "\"";
     if (s_activeImage != nullptr && access((s_activeImage->gameDir + "/UnityPlayer.dll").c_str(), F_OK) == 0) {
         char args[96];
@@ -5923,9 +6281,14 @@ int32_t NativeDllInterceptor::win_GetFileAttributesExA(const char* lpFileName, u
 // Cadena vacía si el handle no es un módulo.
 static std::string guestModulePath(void* hModule) {
     if (s_activeImage == nullptr) return {};
-    if (hModule == nullptr || hModule == s_activeImage->baseAddress) return "D:\\" + getActiveExeName();
+    if (hModule == nullptr || hModule == s_activeImage->baseAddress) {
+        // Juego .NET: el proceso es mono.exe del runtime (Mono calcula su raíz desde aquí).
+        if (std::string w = managed::toWinPath(s_activeImage->filePath); !w.empty()) return w;
+        return "D:\\" + getActiveExeName();
+    }
     for (const auto& kv : s_activeImage->localDlls) {
         if (kv.second.base != hModule) continue;
+        if (std::string w = managed::toWinPath(kv.second.hostPath); !w.empty()) return w;
         std::string p = kv.first;
         for (char& ch : p) if (ch == '/') ch = '\\';
         if (p.size() >= 2 && p[1] == ':') return p;
@@ -6156,12 +6519,65 @@ int32_t NativeDllInterceptor::win_IsDebuggerPresent() {
     return 0;
 }
 
-void* NativeDllInterceptor::win_CommandLineToArgvW(const void*, int32_t* pNumArgs) {
+// CommandLineToArgvW con las reglas de Windows: comillas agrupan, 2n '\' + '"' -> n '\' y abre o
+// cierra comillas, 2n+1 '\' + '"' -> n '\' + '"' literal; el resto de '\' son literales. El
+// resultado es un único bloque (punteros + cadenas) que se libera con LocalFree. Antes devolvía
+// siempre {"game.exe"} y Mono (mono.exe Celeste.exe) no veía el programa.
+void* NativeDllInterceptor::win_CommandLineToArgvW(const void* lpCmdLine, int32_t* pNumArgs) {
     s_otherCalls.fetch_add(1);
-    if (pNumArgs) *pNumArgs = 1;
-    static const char16_t s_arg0[] = u"game.exe";
-    static const char16_t* s_argv[] = { s_arg0, nullptr };
-    return const_cast<char16_t**>(s_argv);
+    const auto* cmd = static_cast<const char16_t*>(lpCmdLine);
+    std::vector<std::u16string> args;
+    if (cmd == nullptr || *cmd == u'\0') {
+        args.emplace_back(u"game.exe");
+    } else {
+        size_t i = 0;
+        // argv[0]: hasta el siguiente espacio, o entre comillas (sin reglas de '\').
+        std::u16string a0;
+        if (cmd[0] == u'"') {
+            for (i = 1; cmd[i] != u'\0' && cmd[i] != u'"'; ++i) a0.push_back(cmd[i]);
+            if (cmd[i] == u'"') ++i;
+        } else {
+            for (; cmd[i] != u'\0' && cmd[i] != u' ' && cmd[i] != u'\t'; ++i) a0.push_back(cmd[i]);
+        }
+        args.push_back(a0);
+        for (;;) {
+            while (cmd[i] == u' ' || cmd[i] == u'\t') ++i;
+            if (cmd[i] == u'\0') break;
+            std::u16string cur;
+            bool quoted = false;
+            while (cmd[i] != u'\0' && (quoted || (cmd[i] != u' ' && cmd[i] != u'\t'))) {
+                size_t bs = 0;
+                while (cmd[i] == u'\\') { ++bs; ++i; }
+                if (cmd[i] == u'"') {
+                    cur.append(bs / 2, u'\\');
+                    if (bs % 2 == 1) { cur.push_back(u'"'); ++i; continue; }
+                    if (quoted && cmd[i + 1] == u'"') { cur.push_back(u'"'); i += 2; continue; }
+                    quoted = !quoted;
+                    ++i;
+                } else {
+                    cur.append(bs, u'\\');
+                    if (cmd[i] != u'\0' && (quoted || (cmd[i] != u' ' && cmd[i] != u'\t'))) cur.push_back(cmd[i++]);
+                }
+            }
+            args.push_back(cur);
+        }
+    }
+    size_t chars = 0;
+    for (const auto& a : args) chars += a.size() + 1;
+    const size_t ptrBytes = (args.size() + 1) * sizeof(char16_t*);
+    auto* block = static_cast<uint8_t*>(win_LocalAlloc(0x40, ptrBytes + chars * sizeof(char16_t)));
+    if (block == nullptr) return nullptr;
+    auto** argv = reinterpret_cast<char16_t**>(block);
+    auto* text = reinterpret_cast<char16_t*>(block + ptrBytes);
+    for (size_t k = 0; k < args.size(); ++k) {
+        argv[k] = text;
+        std::memcpy(text, args[k].data(), args[k].size() * sizeof(char16_t));
+        text += args[k].size();
+        *text++ = u'\0';
+    }
+    argv[args.size()] = nullptr;
+    if (pNumArgs) *pNumArgs = static_cast<int32_t>(args.size());
+    return argv;
 }
 
 namespace {
@@ -6880,6 +7296,8 @@ int32_t NativeDllInterceptor::win_SleepConditionVariableSRW(void* ConditionVaria
 
     if (shared) win_AcquireSRWLockShared(SRWLock);
     else win_AcquireSRWLockExclusive(SRWLock);
+    // Como Windows: un timeout devuelve FALSE con ERROR_TIMEOUT (Mono aborta con cualquier otro).
+    win_SetLastError(ok ? 0 : 1460);
     return ok ? 1 : 0;
 }
 
@@ -6899,6 +7317,7 @@ int32_t NativeDllInterceptor::win_SleepConditionVariableCS(void* ConditionVariab
     cvLock.unlock();
 
     win_EnterCriticalSection(CriticalSection);
+    win_SetLastError(ok ? 0 : 1460);  // ERROR_TIMEOUT (ver SleepConditionVariableSRW)
     return ok ? 1 : 0;
 }
 
@@ -8079,6 +8498,25 @@ int32_t NativeDllInterceptor::win_HeapDestroy(void* /*hHeap*/) {
 static std::mutex s_envMutex;
 static std::unordered_map<std::string, std::string> s_customEnvVars;
 
+// Variables de un juego .NET (ManagedHost.h): Mono busca FNA y los reenvíos de XNA en fna/ del
+// runtime; SDL GPU (FNA3D) usa Vulkan, que HyperPlay pasa al Vulkan del teléfono.
+static bool managedEnvVar(const std::string& upper, std::string& val) {
+    if (!managed::active()) return false;
+    if (upper == "MONO_PATH") {
+        // fna/ (FNA + reenvíos XNA) y las bibliotecas de clases (System.dll...) sin copiar el GAC.
+        const std::string root = managed::kWinRoot;
+        val = root + "\\fna;" + root + "\\lib\\mono\\4.5;" + root + "\\lib\\mono\\4.5\\Facades";
+        return true;
+    }
+    if (upper == "SDL_GPU_DRIVER" || upper == "SDL_HINT_GPU_DRIVER") { val = "vulkan"; return true; }
+    // Mandos: solo XInput (el puente de HyperPlay). HIDAPI/RawInput/WGI buscan hid.dll, libusb y
+    // dispositivos USB en cada sondeo (cientos de LoadLibrary fallidos por segundo).
+    if (upper == "SDL_JOYSTICK_HIDAPI" || upper == "SDL_JOYSTICK_RAWINPUT" || upper == "SDL_JOYSTICK_WGI" ||
+        upper == "SDL_JOYSTICK_GAMEINPUT" || upper == "SDL_JOYSTICK_DIRECTINPUT") { val = "0"; return true; }
+    if (upper == "FNA3D_FORCE_DRIVER") { val = "SDLGPU"; return true; }
+    return false;
+}
+
 uint32_t NativeDllInterceptor::win_GetEnvironmentVariableW(const wchar_t* lpName, wchar_t* lpBuffer, uint32_t nSize) {
     s_kernel32Calls.fetch_add(1);
     if (lpName == nullptr) {
@@ -8101,6 +8539,7 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableW(const wchar_t* lpName
         }
     }
 
+    if (!found) found = managedEnvVar(upper, val);
     if (!found) {
         if (upper == "NUMBER_OF_PROCESSORS") { val = "8"; found = true; }
         else if (upper == "PROCESSOR_ARCHITECTURE") { val = (s_activeImage && s_activeImage->is32Bit) ? "x86" : "AMD64"; found = true; }
@@ -8154,6 +8593,7 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableA(const char* lpName, c
         }
     }
 
+    if (!found) found = managedEnvVar(upper, val);
     if (!found) {
         if (upper == "NUMBER_OF_PROCESSORS") { val = "8"; found = true; }
         else if (upper == "PROCESSOR_ARCHITECTURE") { val = (s_activeImage && s_activeImage->is32Bit) ? "x86" : "AMD64"; found = true; }
@@ -8857,9 +9297,49 @@ int32_t NativeDllInterceptor::win_GetCPInfo(uint32_t, void* lpCPInfo) {
     return 1;
 }
 
-int32_t NativeDllInterceptor::win_GetStringTypeW(uint32_t, const void*, int32_t cchSrc, uint16_t* lpCharType) {
+// Clasificación CT_CTYPE1 de un carácter UTF-16 (C1_UPPER 0x1, LOWER 0x2, DIGIT 0x4, SPACE 0x8,
+// PUNCT 0x10, CNTRL 0x20, BLANK 0x40, XDIGIT 0x80, ALPHA 0x100, DEFINED 0x200).
+static uint16_t ctype1(char16_t c) {
+    uint16_t t = 0x200;
+    const auto w = static_cast<wint_t>(c);
+    if (c < 0x80) {
+        if (c >= 'A' && c <= 'Z') t |= 0x101;
+        if (c >= 'a' && c <= 'z') t |= 0x102;
+        if (c >= '0' && c <= '9') t |= 0x84;
+        if ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) t |= 0x80;
+        if (c == ' ' || (c >= 0x09 && c <= 0x0D)) t |= 0x08;
+        if (c == ' ' || c == '\t') t |= 0x40;
+        if (c < 0x20 || c == 0x7F) t |= 0x20;
+        if (c > 0x20 && c < 0x7F && !std::isalnum(static_cast<int>(c))) t |= 0x10;
+        return t;
+    }
+    if (iswupper(w)) t |= 0x101;
+    if (iswlower(w)) t |= 0x102;
+    if (iswalpha(w)) t |= 0x100;
+    if (iswdigit(w)) t |= 0x04;
+    if (iswspace(w)) t |= 0x08;
+    if (iswpunct(w)) t |= 0x10;
+    if (iswcntrl(w)) t |= 0x20;
+    if (c == 0xA0) t |= 0x48;  // NBSP
+    return t;
+}
+
+// Antes devolvía todo a 0: el CRT de Microsoft (ucrtbase) construye con esto su tabla de ctype y
+// isspace(' ') era falso (Mono no separaba "Tipo, Ensamblado": Type.GetType fallaba).
+int32_t NativeDllInterceptor::win_GetStringTypeW(uint32_t dwInfoType, const void* lpSrcStr, int32_t cchSrc, uint16_t* lpCharType) {
     s_kernel32Calls.fetch_add(1);
-    if (lpCharType && cchSrc > 0) std::memset(lpCharType, 0, static_cast<size_t>(cchSrc) * sizeof(uint16_t));
+    if (lpCharType == nullptr || lpSrcStr == nullptr) { win_SetLastError(87); return 0; }
+    const auto* src = static_cast<const char16_t*>(lpSrcStr);
+    if (cchSrc < 0) { cchSrc = 0; while (src[cchSrc] != u'\0') ++cchSrc; ++cchSrc; }
+    for (int32_t i = 0; i < cchSrc; ++i) {
+        if (dwInfoType == 1) {          // CT_CTYPE1
+            lpCharType[i] = ctype1(src[i]);
+        } else if (dwInfoType == 4) {   // CT_CTYPE3: C3_ALPHA 0x8000 para letras
+            lpCharType[i] = iswalpha(static_cast<wint_t>(src[i])) ? 0x8000 : 0;
+        } else {                        // CT_CTYPE2 (dirección): C2_LEFTTORIGHT
+            lpCharType[i] = 1;
+        }
+    }
     return 1;
 }
 

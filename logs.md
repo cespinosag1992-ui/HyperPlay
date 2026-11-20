@@ -714,3 +714,9 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - Quick Resume: `Quick Resume: reanudando juego en memoria tras 2 ms`.
 - Cuphead suspendido → abrir HK: `HyperPlayProc: matando el proceso del juego anterior (pid 19738)`; HK en pid 21490, título a 60 FPS.
 - Al abrir la app aparece la capa "ENERGY CUBE" de RedMagic (bloqueo de notificaciones, motor de IA) encima del launcher.
+
+## 2026-11-20 — Celeste (Mono x64 + FNA + Vulkan directo)
+- PC: `mono.exe Celeste.exe` con MONO_PATH=xna, fnalibs x64 y shims → "GAME DISPLAYED (1490 ms)", "DONE LOADING (2207 ms)", 25 s sin errores. SDL_GPU: Vulkan (RTX 3070).
+- Teléfono, en orden: IAT de mono.exe incompleta (mono-2.0-sgen/CRT) → DllMain de Mono antes que el CRT (RIP basura) → "Usage is: mono" (CommandLineToArgvW) → `System` no encontrado (MONO_PATH) → CSteamworks (sin .reloc) → `SetProp() failed` → `msvcrt!memcpy` stub → ContentTypeReader (GetStringTypeW) → `SleepConditionVariableCS failed with error 0` → `NtCreateFile` → `refcount.h:44` (ExitThread) → `mono-mmap-windows.c:132` (VirtualFree) → imagen girada 90° → congelado (SUBOPTIMAL) → funciona.
+- MonoTest.exe (Type.GetType): antes `NULL System.Int32, mscorlib`; tras GetStringTypeW, igual que en el PC.
+- Final: intro, título, menú, selección de partida y prólogo a 60-63 FPS, GPU 12-23 %, 2.0-2.6 W.
