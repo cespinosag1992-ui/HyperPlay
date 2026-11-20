@@ -133,16 +133,16 @@ fun HintBar(hints: List<Pair<String, String>>, modifier: Modifier = Modifier) {
     Row(
         modifier
             .background(Brush.verticalGradient(listOf(Color.Transparent, Deck.Scrim)))
-            .padding(horizontal = 28.dp, vertical = 12.dp),
+            .padding(horizontal = 28.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Spacer(Modifier.weight(1f))
         hints.forEachIndexed { i, (button, text) ->
-            if (i > 0) Spacer(Modifier.width(22.dp))
-            ButtonGlyph(button)
-            Spacer(Modifier.width(8.dp))
-            Text(text, color = Deck.Sub, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            if (i > 0) Spacer(Modifier.width(18.dp))
+            ButtonGlyph(button, size = 18.dp)
+            Spacer(Modifier.width(6.dp))
+            Text(text, color = Deck.Sub, fontSize = 12.sp, fontWeight = FontWeight.Medium)
         }
     }
 }

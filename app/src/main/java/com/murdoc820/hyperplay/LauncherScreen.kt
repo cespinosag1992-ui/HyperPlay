@@ -377,7 +377,7 @@ private fun Backdrop(art: GameArt?, dimmed: Boolean) {
 private fun TopBar(current: Page, onTab: (Page) -> Unit) {
     Row(
         Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.displayCutout)
-            .padding(horizontal = 28.dp, vertical = 14.dp),
+            .padding(horizontal = 28.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(26.dp).background(Brush.linearGradient(listOf(Deck.Accent, Deck.Cyan)), RoundedCornerShape(7.dp)),
@@ -443,7 +443,7 @@ private fun HomePage(
         TopBar(Page.HOME, onTab)
         (update as? UpdateState.Available)?.let { av ->
             Row(
-                Modifier.padding(horizontal = 48.dp).background(Color(0xCC1D2438), Deck.Pill)
+                Modifier.padding(horizontal = 40.dp).background(Color(0xCC1D2438), Deck.Pill)
                     .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onUpdateBanner)
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -455,15 +455,15 @@ private fun HomePage(
             }
         }
         val game = games.getOrNull(selected)
-        Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 48.dp), contentAlignment = Alignment.BottomStart) {
+        Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 40.dp), contentAlignment = Alignment.BottomStart) {
             if (game != null) FocusedGameHeader(game, art[game.exePath])
             else EmptyLibrary(library, folders, scanRequester, onScan)
         }
         if (games.isNotEmpty()) {
-            Row(Modifier.padding(start = 48.dp, top = 18.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Biblioteca", color = Deck.Text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Row(Modifier.padding(start = 40.dp, top = 6.dp, bottom = 0.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Biblioteca", color = Deck.Text, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(10.dp))
-                Text("${games.size} ${if (games.size == 1) "juego" else "juegos"}", color = Deck.Dim, fontSize = 14.sp)
+                Text("${games.size} ${if (games.size == 1) "juego" else "juegos"}", color = Deck.Dim, fontSize = 12.sp)
                 if (library.scanning) {
                     Spacer(Modifier.width(12.dp))
                     CircularProgressIndicator(Modifier.size(14.dp), color = Deck.Accent, strokeWidth = 2.dp)
@@ -471,9 +471,9 @@ private fun HomePage(
             }
             LazyRow(
                 state = listState,
-                contentPadding = PaddingValues(horizontal = 48.dp),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                modifier = Modifier.fillMaxWidth().height(250.dp).focusGroup(),
+                contentPadding = PaddingValues(horizontal = 40.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier.fillMaxWidth().height(166.dp).focusGroup(),
             ) {
                 itemsIndexed(games, key = { _, g -> g.exePath }) { i, g ->
                     GameCapsule(
@@ -498,37 +498,37 @@ private fun HomePage(
 @Composable
 private fun FocusedGameHeader(game: PortableGame, art: GameArt?) {
     val info = art?.info
-    Column(Modifier.widthIn(max = 760.dp).padding(bottom = 6.dp)) {
-        GameLogo(game, art, Modifier.heightIn(max = 120.dp).widthIn(max = 460.dp))
-        Spacer(Modifier.height(14.dp))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(Modifier.widthIn(max = 620.dp).padding(bottom = 2.dp)) {
+        GameLogo(game, art, Modifier.heightIn(max = 62.dp).widthIn(max = 300.dp), compact = true)
+        Spacer(Modifier.height(6.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (isHeld(game)) Chip("En pausa · vuelve al instante", Deck.Green)
             info?.genres?.take(3)?.forEach { Chip(it) }
             if (info == null) Chip(if (game.pe.is64Bit) "Windows · 64 bits" else "Windows · 32 bits")
         }
         info?.description?.takeIf { it.isNotBlank() }?.let {
-            Spacer(Modifier.height(10.dp))
-            Text(it, color = Deck.Sub, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 20.sp)
+            Spacer(Modifier.height(4.dp))
+            Text(it, color = Deck.Sub, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 16.sp)
         }
     }
 }
 
 @Composable
-private fun GameLogo(game: PortableGame, art: GameArt?, modifier: Modifier) {
+private fun GameLogo(game: PortableGame, art: GameArt?, modifier: Modifier, compact: Boolean = false) {
     val title = art?.info?.name?.takeIf { it.isNotBlank() } ?: game.title
     val logo = art?.logo
     if (logo != null) {
         ArtImage(logo, modifier.aspectRatio(2.6f), contentScale = ContentScale.Fit, alignment = Alignment.CenterStart,
-            fallback = { BigTitle(title) })
+            fallback = { BigTitle(title, compact) })
     } else {
-        BigTitle(title)
+        BigTitle(title, compact)
     }
 }
 
 @Composable
-private fun BigTitle(title: String) {
-    Text(title, color = Deck.Text, fontSize = 40.sp, fontWeight = FontWeight.Black, maxLines = 2,
-        overflow = TextOverflow.Ellipsis, lineHeight = 44.sp)
+private fun BigTitle(title: String, compact: Boolean = false) {
+    Text(title, color = Deck.Text, fontSize = if (compact) 26.sp else 30.sp, fontWeight = FontWeight.Black, maxLines = 2,
+        overflow = TextOverflow.Ellipsis, lineHeight = if (compact) 30.sp else 34.sp)
 }
 
 @Composable
@@ -551,9 +551,9 @@ private fun GameCapsule(
     val scale by animateFloatAsState(if (focused) 1.08f else 1f, tween(140), label = "capsule")
     Box(
         modifier
-            .width(150.dp)
+            .width(100.dp)
             .fillMaxHeight()
-            .padding(vertical = 10.dp),
+            .padding(vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -594,11 +594,11 @@ private fun IconCapsule(game: PortableGame, art: GameArt?) {
             val icon = art?.icon
             when {
                 header != null -> ArtImage(header, Modifier.fillMaxWidth().aspectRatio(460f / 215f).clip(RoundedCornerShape(4.dp)))
-                icon != null -> ArtImage(icon, Modifier.size(72.dp), contentScale = ContentScale.Fit)
-                else -> Box(Modifier.size(72.dp).background(Brush.linearGradient(listOf(Deck.Accent, Deck.Cyan)), RoundedCornerShape(16.dp)))
+                icon != null -> ArtImage(icon, Modifier.size(48.dp), contentScale = ContentScale.Fit)
+                else -> Box(Modifier.size(48.dp).background(Brush.linearGradient(listOf(Deck.Accent, Deck.Cyan)), RoundedCornerShape(16.dp)))
             }
             Spacer(Modifier.height(14.dp))
-            Text(art?.info?.name?.takeIf { it.isNotBlank() } ?: game.title, color = Deck.Text, fontSize = 14.sp,
+            Text(art?.info?.name?.takeIf { it.isNotBlank() } ?: game.title, color = Deck.Text, fontSize = 11.sp,
                 fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -637,78 +637,66 @@ private fun GamePage(
         withFrameNanos { }
         runCatching { playRequester.requestFocus() }
     }
-    val imports = remember(game.exePath) { HyperPlayNative.nativeDirectGetImports(game.exePath) }
     val cache = remember(game.exePath) { jitCacheLabel(game) }
+    // Todo en una pantalla (en horizontal el teléfono tiene ~370 dp de alto): el arte del juego es
+    // el fondo, a la izquierda logo + descripción + JUGAR y a la derecha la ficha compacta.
     Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-            // Héroe a todo el ancho con el logo encima.
-            Box(Modifier.fillMaxWidth().height(380.dp)) {
-                val hero = art?.hero ?: art?.header
-                if (hero != null) ArtImage(hero, Modifier.fillMaxSize())
-                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0x33060810), Color(0x00060810), Deck.Bg))))
-                Box(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.displayCutout)) { TopBarCompact(onBack) }
-                Box(Modifier.align(Alignment.BottomStart).padding(start = 48.dp, bottom = 18.dp)) {
-                    GameLogo(game, art, Modifier.heightIn(max = 130.dp).widthIn(max = 520.dp))
-                }
-            }
-            Column(Modifier.padding(horizontal = 48.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    MacButton(if (held) "CONTINUAR" else "JUGAR", onClick = onPlay, style = MacButtonStyle.PRIMARY,
-                        large = true, onFocused = onFocused, modifier = Modifier.focusRequester(playRequester))
-                    Spacer(Modifier.width(24.dp))
-                    Column {
-                        Text(if (held) "En pausa en memoria" else "Listo para jugar",
-                            color = if (held) Deck.Green else Deck.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                        Text(if (held) "Vuelves justo donde lo dejaste" else "Caché del traductor: $cache",
-                            color = Deck.Dim, fontSize = 13.sp)
-                    }
-                }
-                Spacer(Modifier.height(26.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-                    Column(Modifier.weight(1.4f)) {
-                        SectionTitle("Acerca del juego")
-                        Text(info?.description?.takeIf { it.isNotBlank() }
-                            ?: "Sin ficha oficial todavía: conéctate a internet y vuelve a abrir la biblioteca.",
-                            color = Deck.Sub, fontSize = 15.sp, lineHeight = 22.sp)
-                        if (!info?.genres.isNullOrEmpty()) {
-                            Spacer(Modifier.height(12.dp))
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                info?.genres?.forEach { Chip(it) }
-                            }
+        val hero = art?.hero ?: art?.header
+        if (hero != null) ArtImage(hero, Modifier.fillMaxSize(), alignment = Alignment.TopEnd)
+        Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(
+            0f to Color(0xF20A0D16), 0.45f to Color(0xCC0A0D16), 1f to Color(0x400A0D16))))
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
+            0.55f to Color.Transparent, 1f to Color(0xE60A0D16))))
+        Column(Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.displayCutout)) { TopBarCompact(onBack) }
+            Row(
+                Modifier.weight(1f).fillMaxWidth().windowInsetsPadding(WindowInsets.displayCutout)
+                    .padding(start = 36.dp, end = 28.dp, bottom = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(28.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1.15f)) {
+                    GameLogo(game, art, Modifier.heightIn(max = 72.dp).widthIn(max = 340.dp), compact = true)
+                    if (!info?.genres.isNullOrEmpty() || held) {
+                        Spacer(Modifier.height(8.dp))
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (held) Chip("En pausa en memoria", Deck.Green)
+                            info?.genres?.take(4)?.forEach { Chip(it) }
                         }
                     }
-                    Column(Modifier.weight(1f)) {
-                        SectionTitle("Información")
-                        InfoCard {
-                            InfoLine("Desarrollador", info?.developers?.joinToString(", ").orEmpty().ifBlank { "—" })
-                            InfoLine("Editor", info?.publishers?.joinToString(", ").orEmpty().ifBlank { "—" })
-                            InfoLine("Lanzamiento", info?.releaseDate.orEmpty().ifBlank { "—" })
-                            InfoLine("Arquitectura", if (game.pe.is64Bit) "Windows x64" else "Windows x86")
-                            InfoLine("Gráficos", LauncherLogic.graphicsApiLabel(game.pe.graphicsApis, game.engineHints))
-                        }
+                    Spacer(Modifier.height(8.dp))
+                    Text(info?.description?.takeIf { it.isNotBlank() }
+                        ?: "Sin ficha oficial todavía: conéctate a internet y vuelve a abrir la biblioteca.",
+                        color = Deck.Sub, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(14.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        MacButton(if (held) "CONTINUAR" else "JUGAR", onClick = onPlay, style = MacButtonStyle.PRIMARY,
+                            onFocused = onFocused, modifier = Modifier.focusRequester(playRequester).width(150.dp))
+                        Spacer(Modifier.width(14.dp))
+                        Text(if (held) "Vuelves justo donde lo dejaste" else "Caché: $cache",
+                            color = Deck.Dim, fontSize = 12.sp, maxLines = 2)
                     }
                 }
-                Spacer(Modifier.height(24.dp))
-                SectionTitle("Archivos")
-                InfoCard {
-                    InfoLine("Ejecutable", File(game.exePath).name)
-                    InfoLine("Carpeta (D:)", LauncherLogic.displayFolder(game.mountFolder))
-                    InfoLine("Partidas guardadas", "_HyperPlaySaves")
-                    if (imports != null && imports.isNotEmpty()) {
-                        InfoLine("Bibliotecas", imports.take(4).joinToString(", ") + if (imports.size > 4) " y ${imports.size - 4} más" else "")
+                Column(Modifier.weight(0.85f)) {
+                    InfoCard {
+                        InfoLine("Desarrollador", info?.developers?.joinToString(", ").orEmpty().ifBlank { "—" })
+                        InfoLine("Editor", info?.publishers?.joinToString(", ").orEmpty().ifBlank { "—" })
+                        InfoLine("Lanzamiento", info?.releaseDate.orEmpty().ifBlank { "—" })
+                        InfoLine("Plataforma", (if (game.pe.is64Bit) "Windows x64" else "Windows x86") + " · " +
+                            LauncherLogic.graphicsApiLabel(game.pe.graphicsApis, game.engineHints))
+                        InfoLine("Ejecutable", File(game.exePath).name)
+                        InfoLine("Partidas", "_HyperPlaySaves")
                     }
                 }
-                Spacer(Modifier.height(90.dp))
             }
+            HintBar(listOf("A" to if (held) "Continuar" else "Jugar", "B" to "Atrás"), Modifier.fillMaxWidth())
         }
-        HintBar(listOf("A" to if (held) "Continuar" else "Jugar", "B" to "Atrás"),
-            Modifier.fillMaxWidth().align(Alignment.BottomCenter))
     }
 }
 
 @Composable
 private fun TopBarCompact(onBack: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("‹  Biblioteca", color = Deck.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
             modifier = Modifier.clickable(remember { MutableInteractionSource() }, indication = null, onClick = onBack))
         Spacer(Modifier.weight(1f))
@@ -724,16 +712,16 @@ private fun SectionTitle(text: String) {
 
 @Composable
 private fun InfoCard(content: @Composable () -> Unit) {
-    Column(Modifier.fillMaxWidth().background(Color(0xB3141A2B), Deck.Card).padding(horizontal = 18.dp, vertical = 8.dp)) {
+    Column(Modifier.fillMaxWidth().background(Color(0xCC141A2B), Deck.Card).padding(horizontal = 14.dp, vertical = 6.dp)) {
         content()
     }
 }
 
 @Composable
 private fun InfoLine(label: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = Deck.Dim, fontSize = 14.sp, modifier = Modifier.width(150.dp))
-        Text(value, color = Deck.Text, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Deck.Dim, fontSize = 12.sp, modifier = Modifier.width(96.dp))
+        Text(value, color = Deck.Text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
