@@ -267,8 +267,15 @@ fun LauncherScreen(
     // a la página que enfoque su elemento principal (portada seleccionada, JUGAR, primer botón).
     var anyFocus by remember { mutableStateOf(false) }
     var focusTick by remember { mutableIntStateOf(0) }
+    // Al volver de un juego (la ventana recupera el foco) Compose puede creer que algo sigue
+    // enfocado sin que lo esté: la primera tecla del mando vuelve a colocar el foco.
+    var staleFocus by remember { mutableStateOf(false) }
+    val windowFocused = androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused
+    LaunchedEffect(windowFocused) { if (!windowFocused) staleFocus = true }
     // Sin nada enfocado Compose no entrega las teclas a nadie: la actividad avisa con navKeyTick.
-    LaunchedEffect(navKeyTick) { if (navKeyTick > 0 && !anyFocus) focusTick++ }
+    LaunchedEffect(navKeyTick) {
+        if (navKeyTick > 0 && (!anyFocus || staleFocus)) { staleFocus = false; focusTick++ }
+    }
 
     val focusMoved: () -> Unit = {
         if (keyNavPending) sounds.navigate()
@@ -290,9 +297,10 @@ fun LauncherScreen(
                     val code = e.nativeKeyEvent.keyCode
                     val up = e.type == KeyEventType.KeyUp
                     when {
-                        !anyFocus && folderToRemove == null && (code in DPAD_KEYS || code == AndroidKeyEvent.KEYCODE_BUTTON_A ||
+                        (!anyFocus || staleFocus) && folderToRemove == null && (code in DPAD_KEYS ||
+                            code == AndroidKeyEvent.KEYCODE_BUTTON_A ||
                             code == AndroidKeyEvent.KEYCODE_ENTER || code == AndroidKeyEvent.KEYCODE_DPAD_CENTER) -> {
-                            if (!up) focusTick++
+                            if (!up) { staleFocus = false; focusTick++ }
                             true
                         }
                         code == AndroidKeyEvent.KEYCODE_BUTTON_B -> { if (up) goBack(); true }

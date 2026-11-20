@@ -18,9 +18,10 @@ own JIT, and wires Direct3D, audio and controllers straight to Vulkan, AAudio an
 | Game | Engine / API | Status |
 |---|---|---|
 | Hollow Knight | Unity (Mono), D3D11, x64 | **Playable**: menus, saves, gameplay, benches and physics (geo, bounces) fixed; 60-120 FPS on the GPU path |
-| Cuphead | Unity (Mono), D3D11, x64 | **In progress**: title screen and main menu with the controller, FMOD audio; gameplay not verified yet |
+| Cuphead | Unity (Mono), D3D11, x64 | **Playable, in testing**: title, menus, save slots, world map and a run-and-gun level with shooting at ~120 FPS; bosses not verified yet |
 | DmC: Devil May Cry | Unreal 3, D3D9, **32-bit** | **Not working yet**: needs the 32-bit (WOW64) path and D3D9 → Vulkan |
-| Celeste, Hollow Knight: Silksong, Stardew Valley | FNA/XNA, Unity, MonoGame | Show up in the library with their info; not tested yet |
+| Celeste | XNA/FNA, .NET Framework | **Not working yet**: needs the .NET Framework runtime (`mscoree.dll`) |
+| Hollow Knight: Silksong, Stardew Valley | Unity, MonoGame | Show up in the library with their info; not tested yet |
 
 The app itself (library, game page, settings, quick menu, controllers, updates, error reports)
 works and is tested on a RedMagic 10S Pro (Android 15).
@@ -112,9 +113,10 @@ JIT propio y conecta Direct3D, audio y mandos directamente con Vulkan, AAudio y 
 | Juego | Motor / API | Estado |
 |---|---|---|
 | Hollow Knight | Unity (Mono), D3D11, x64 | **Jugable**: menús, partidas, gameplay, bancos y física (geo, rebotes) corregidos; 60-120 FPS por la ruta GPU |
-| Cuphead | Unity (Mono), D3D11, x64 | **En curso**: título y menú principal con el mando, audio FMOD; gameplay sin verificar todavía |
+| Cuphead | Unity (Mono), D3D11, x64 | **Jugable, en pruebas**: título, menús, ranuras de partida, mapa del mundo y un nivel de disparos a ~120 FPS; jefes sin verificar |
 | DmC: Devil May Cry | Unreal 3, D3D9, **32 bits** | **Aún no funciona**: falta la ruta de 32 bits (WOW64) y D3D9 → Vulkan |
-| Celeste, Hollow Knight: Silksong, Stardew Valley | FNA/XNA, Unity, MonoGame | Aparecen en la biblioteca con su ficha; sin probar todavía |
+| Celeste | XNA/FNA, .NET Framework | **Aún no funciona**: necesita el runtime de .NET Framework (`mscoree.dll`) |
+| Hollow Knight: Silksong, Stardew Valley | Unity, MonoGame | Aparecen en la biblioteca con su ficha; sin probar todavía |
 
 La app en sí (biblioteca, ficha del juego, ajustes, menú rápido, mandos, actualizaciones,
 informes de errores) funciona y está probada en un RedMagic 10S Pro (Android 15).
