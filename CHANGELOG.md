@@ -8,27 +8,81 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ## 1.0.0
 
-**English** — first public version
+### English — first public version (alpha)
 
-- Direct engine for Windows x86/x64 games on Android (PE loader, IAT, ARM64 JIT with cache).
-- Real x87 FPU in the JIT (before, C# `Math.Sqrt` returned the square: endless bounces, odd physics).
-- Handheld-console UI with official covers and game info; your own logo; full gamepad navigation.
-- Custom loading screen until the game draws.
-- The app follows the system language (English and Spanish), including the Steam game info.
-- No default game folders: on first launch you choose the folder where your games are.
-- Controllers: Z/RZ triggers for HID pads, phone vibration if the controller doesn't vibrate.
-- In-app updates from GitHub Releases.
-- Error log on the phone and optional reports to GitHub (via a Cloudflare Worker).
+**Game status in this version**
 
-**Español** — primera versión pública
+| Game | Status |
+|---|---|
+| **Hollow Knight** | ✅ **Stable**: menus, saves, gameplay, benches and physics; 60-120 FPS |
+| Hollow Knight: Silksong | 🧪 Starts; first tests only, not verified as playable yet |
+| Cuphead | 🚧 Being optimized: menus, saves, world map and a level already run at ~120 FPS; the goal is to make it playable and stable for the next version |
+| DmC: Devil May Cry | ❌ Not yet (needs 32-bit and Direct3D 9 support) |
+| Celeste | ❌ Not yet (needs the .NET Framework runtime) |
 
-- Motor directo para juegos de Windows x86/x64 en Android (cargador PE, IAT, JIT a ARM64 con caché).
-- FPU x87 real en el JIT (antes `Math.Sqrt` de C# devolvía el cuadrado: rebotes infinitos, física rara).
-- Interfaz de consola portátil con portadas e información oficial de los juegos; logo propio;
-  navegación completa con mando.
-- Pantalla de carga propia hasta que el juego dibuja.
-- La app usa el idioma del sistema (inglés y español), también en la ficha de Steam del juego.
-- Sin carpetas de juegos por defecto: en el primer arranque eliges la carpeta donde están tus juegos.
-- Mandos: gatillos en Z/RZ para mandos HID, vibración del teléfono si el mando no vibra.
-- Actualizaciones dentro de la app desde GitHub Releases.
-- Registro de errores en el teléfono e informes opcionales a GitHub (vía Cloudflare Worker).
+Only **Hollow Knight** is considered stable in 1.0.0.
+
+**Features**
+
+- **Direct engine, no Wine or Linux**: Windows x86/x64 `.exe` games run directly on Android. PE
+  loader, Win32 API interception and an x86/x64 → ARM64 JIT with an on-disk cache, real x87 FPU,
+  SSE up to 4.2 and FMA.
+- **GPU graphics**: Direct3D 11 → Vulkan (DXBC → SPIR-V shaders) on the Adreno 830, SGSR
+  upscaling, CAS sharpening and HyperFG frame generation.
+- **Handheld-console interface**: library with official covers, logos and game info from Steam,
+  game page on a single screen, custom loading screen, Quick Resume (the game stays paused in
+  memory) and an in-game quick menu (L3 + R3).
+- **Controllers**: Xbox, PlayStation, GameSir, 8BitDo and generic HID over Bluetooth or USB, with
+  automatic mapping, analog triggers and vibration (or the phone vibrates if the pad can't); full
+  gamepad navigation in the launcher; touch controls appear when you touch the screen.
+- **Performance and heat**: FPS cap (60/72/120/unlimited), render resolution, thermal protection
+  that keeps the battery under 40 °C, and a performance overlay.
+- **Your language**: the app follows the system language (English or Spanish), including the
+  Steam game info.
+- **Your folder**: no default folders; you choose where your games are.
+- **In-app updates** from GitHub Releases, installed over the current version without losing
+  settings, saves or caches.
+- **Error log on the phone** and optional reports (asked on first launch). Automatic upload to
+  GitHub is not enabled in this build yet.
+
+**Requirements**: Android 12 or later, ARM64. Tuned for Snapdragon 8 Elite (tested on a
+RedMagic 10S Pro). HyperPlay does not include games.
+
+### Español — primera versión pública (alfa)
+
+**Estado de los juegos en esta versión**
+
+| Juego | Estado |
+|---|---|
+| **Hollow Knight** | ✅ **Estable**: menús, partidas, gameplay, bancos y física; 60-120 FPS |
+| Hollow Knight: Silksong | 🧪 Arranca; solo primeras pruebas, aún sin verificar que sea jugable |
+| Cuphead | 🚧 En optimización: menús, partidas, mapa del mundo y un nivel ya van a ~120 FPS; el objetivo es dejarlo jugable y estable para la próxima versión |
+| DmC: Devil May Cry | ❌ Todavía no (necesita soporte de 32 bits y Direct3D 9) |
+| Celeste | ❌ Todavía no (necesita el runtime de .NET Framework) |
+
+En la 1.0.0 solo **Hollow Knight** se considera estable.
+
+**Funciones**
+
+- **Motor directo, sin Wine ni Linux**: los juegos `.exe` de Windows x86/x64 se ejecutan
+  directamente en Android. Cargador PE, interceptación de la API Win32 y JIT x86/x64 → ARM64 con
+  caché en disco, FPU x87 real, SSE hasta 4.2 y FMA.
+- **Gráficos en la GPU**: Direct3D 11 → Vulkan (shaders DXBC → SPIR-V) en la Adreno 830,
+  reescalado SGSR, nitidez CAS y generación de fotogramas HyperFG.
+- **Interfaz de consola portátil**: biblioteca con portadas, logos e información oficial de Steam,
+  ficha del juego en una sola pantalla, pantalla de carga propia, Quick Resume (el juego queda en
+  pausa en memoria) y menú rápido dentro del juego (L3 + R3).
+- **Mandos**: Xbox, PlayStation, GameSir, 8BitDo y HID genéricos por Bluetooth o USB, con mapeo
+  automático, gatillos analógicos y vibración (o vibra el teléfono si el mando no puede);
+  navegación completa con mando en el launcher; el mando táctil aparece al tocar la pantalla.
+- **Rendimiento y temperatura**: tope de FPS (60/72/120/sin límite), resolución de render,
+  protección térmica que mantiene la batería por debajo de 40 °C e indicador de rendimiento.
+- **Tu idioma**: la app usa el idioma del sistema (inglés o español), también en la ficha de Steam.
+- **Tu carpeta**: sin carpetas por defecto; tú eliges dónde están tus juegos.
+- **Actualizaciones dentro de la app** desde GitHub Releases, instaladas por encima sin perder
+  ajustes, partidas ni cachés.
+- **Registro de errores en el teléfono** e informes opcionales (se pregunta en el primer arranque).
+  El envío automático a GitHub aún no está activado en esta versión.
+
+**Requisitos**: Android 12 o superior, ARM64. Optimizado para Snapdragon 8 Elite (probado en un
+RedMagic 10S Pro). HyperPlay no incluye juegos.
