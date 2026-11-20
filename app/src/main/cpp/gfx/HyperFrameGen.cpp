@@ -716,6 +716,7 @@ struct HyperFrameGen::Impl {
                 f.vkCmdSetScissor(cmd, 0, 1, &sc);
                 float pc[8];
                 rotationPc(t.transform, pc);
+                presentopt::applyFit(pc, w, h, t.extent.width, t.extent.height);
                 f.vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pc);
                 if (sgsr) {
                     const float fw = static_cast<float>(w), fh = static_cast<float>(h);

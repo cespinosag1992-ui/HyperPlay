@@ -165,6 +165,13 @@
     <string name="set_render_scale">Render resolution</string>
     <string name="render_scale_hint">Applies when you reopen the game</string>
     <string name="set_upscaler">Upscaling</string>
+    <string name="set_screen_fit">Screen</string>
+    <string name="fit_original">Original</string>
+    <string name="fit_stretch">Stretch</string>
+    <string name="fit_zoom">Zoom</string>
+    <string name="fit_original_hint">The game as it draws itself (16:9 games keep side bars)</string>
+    <string name="fit_stretch_hint">Fills the screen by widening the image</string>
+    <string name="fit_zoom_hint">Fills the screen without distortion; crops top and bottom</string>
     <string name="set_fsr">FSR sharpening (CAS)</string>
     <string name="set_overlay">Performance overlay</string>
     <string name="set_phone_rumble">Vibrate the phone</string>

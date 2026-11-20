@@ -41,6 +41,8 @@ object HyperPlayNative {
     @JvmStatic external fun nativeSetRenderScale(percent: Int)
     /** Reescalado al presentar: 0 auto (SGSR v1 si escala < 100 %), 1 SGSR siempre, 2 bilineal. */
     @JvmStatic external fun nativeSetUpscaler(mode: Int)
+    /** Ajuste a la pantalla: 0 original, 1 estirar, 2 ampliar (ver gfx/PresentOptions.h). */
+    @JvmStatic external fun nativeSetScreenFit(mode: Int)
     /** Nitidez de SGSR v1 (0..1; 0,30 = intensidad original). */
     @JvmStatic external fun nativeSetSgsrSharpness(sharpness: Float)
     /** HyperFG 2x (apagado por defecto); `debug.hyperplay.fg` tiene prioridad. */

@@ -48,6 +48,28 @@ enum class RenderScaleOption(val key: String, @StringRes val label: Int, val per
     }
 }
 
+/**
+ * Ajuste a la pantalla (por juego): para juegos que dibujan en 16:9 con barras en un panel más
+ * ancho. Original = tal cual; Estirar = el área 16:9 a toda la pantalla; Ampliar = llena el ancho
+ * sin deformar, recortando arriba y abajo.
+ */
+enum class ScreenFitOption(val key: String, @StringRes val label: Int, val nativeId: Int) {
+    ORIGINAL("original", R.string.fit_original, 0),
+    STRETCH("stretch", R.string.fit_stretch, 1),
+    ZOOM("zoom", R.string.fit_zoom, 2);
+
+    companion object {
+        val DEFAULT = ORIGINAL
+
+        /** Clave de preferencias por juego. */
+        fun prefsKey(exePath: String) = "screen_fit:$exePath"
+
+        fun fromKey(key: String?): ScreenFitOption = entries.firstOrNull { it.key == key } ?: DEFAULT
+
+        fun cycle(current: ScreenFitOption, step: Int = 1): ScreenFitOption = entries[(current.ordinal + step).mod(entries.size)]
+    }
+}
+
 /** Reescalado del pase de presentación. */
 enum class UpscalerMode(val key: String, @StringRes val label: Int, val nativeId: Int) {
     AUTO("auto", R.string.upscaler_auto, 0),

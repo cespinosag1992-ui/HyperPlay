@@ -50,6 +50,7 @@ import com.murdoc820.hyperplay.session.RenderScaleOption
 import com.murdoc820.hyperplay.session.ThermalDecision
 import com.murdoc820.hyperplay.session.ThermalGovernor
 import com.murdoc820.hyperplay.session.UpscalerMode
+import com.murdoc820.hyperplay.session.ScreenFitOption
 import com.murdoc820.hyperplay.session.readBatteryTempC
 import com.murdoc820.hyperplay.session.PerfOverlayMode
 import com.murdoc820.hyperplay.session.QuickMenuItem
@@ -194,6 +195,8 @@ class GameSessionActivity : ComponentActivity() {
 
         exePath = intent.getStringExtra(EXTRA_EXE_PATH).orEmpty()
         state.title = File(exePath).parentFile?.name ?: exePath
+        state.screenFit = ScreenFitOption.fromKey(prefs.getString(ScreenFitOption.prefsKey(exePath), null))
+        HyperPlayNative.nativeSetScreenFit(state.screenFit.nativeId)
         state.art = runCatching { com.murdoc820.hyperplay.art.GameArtRepository.cached(this, exePath) }.getOrNull()
         state.perfMode = PerfOverlayMode.fromKey(prefs.getString(PerfOverlayMode.PREFS_KEY, null))
         startPerfMonitor()
@@ -479,6 +482,7 @@ class GameSessionActivity : ComponentActivity() {
             QuickMenuItem.THERMAL -> toggleThermalProtection()
             QuickMenuItem.RENDER_SCALE -> changeRenderScale(1)
             QuickMenuItem.UPSCALER -> changeUpscaler(1)
+            QuickMenuItem.SCREEN_FIT -> changeScreenFit(1)
             QuickMenuItem.FSR_UPSCALE -> toggleFsrUpscale()
             QuickMenuItem.OVERLAY -> changePerfMode(1)
             QuickMenuItem.PHONE_RUMBLE -> togglePhoneRumble()
@@ -646,6 +650,14 @@ class GameSessionActivity : ComponentActivity() {
         sounds.navigate()
     }
 
+    private fun changeScreenFit(step: Int) {
+        val next = ScreenFitOption.cycle(state.screenFit, step)
+        state.screenFit = next
+        prefs.edit { putString(ScreenFitOption.prefsKey(exePath), next.key) }
+        HyperPlayNative.nativeSetScreenFit(next.nativeId)  // en caliente, por frame
+        sounds.navigate()
+    }
+
     /** Muestreo (4 Hz FPS, 2 Hz /proc y /sys) solo con la sesión en marcha, el HUD visible y la app en primer plano. */
     private fun startPerfMonitor() {
         val monitor = PerfMonitor(applicationContext)
@@ -681,6 +693,7 @@ class GameSessionActivity : ComponentActivity() {
             QuickMenuItem.THERMAL -> toggleThermalProtection()
             QuickMenuItem.RENDER_SCALE -> changeRenderScale(step)
             QuickMenuItem.UPSCALER -> changeUpscaler(step)
+            QuickMenuItem.SCREEN_FIT -> changeScreenFit(step)
             QuickMenuItem.FSR_UPSCALE -> toggleFsrUpscale()
             QuickMenuItem.OVERLAY -> changePerfMode(step)
             QuickMenuItem.PHONE_RUMBLE -> togglePhoneRumble()

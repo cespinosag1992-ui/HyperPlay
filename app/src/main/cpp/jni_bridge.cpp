@@ -316,8 +316,7 @@ HP_JNI(jobjectArray, nativeDirectGetImports)(JNIEnv* env, jclass, jstring exePat
 // Estado XInput completo del mando 0 (XInputPadBridge -> DirectXInputBridge, leído por XInputGetState).
 HP_JNI(void, nativeDirectSetGamepadState)(JNIEnv*, jclass, jint buttons, jint lt, jint rt,
                                           jint lx, jint ly, jint rx, jint ry) {
-    hyperplay::DirectXInputBridge::setButton(0xFFFF, false);
-    hyperplay::DirectXInputBridge::setButton(static_cast<uint16_t>(buttons), true);
+    hyperplay::DirectXInputBridge::setButtons(static_cast<uint16_t>(buttons));
     hyperplay::DirectXInputBridge::setTriggers(static_cast<uint8_t>(lt), static_cast<uint8_t>(rt));
     hyperplay::DirectXInputBridge::setThumbL(static_cast<int16_t>(lx), static_cast<int16_t>(ly));
     hyperplay::DirectXInputBridge::setThumbR(static_cast<int16_t>(rx), static_cast<int16_t>(ry));
@@ -349,6 +348,10 @@ HP_JNI(void, nativeSetThermalRelax)(JNIEnv*, jclass, jboolean relax) {
 HP_JNI(jint, nativeGetEffectiveFpsCap)(JNIEnv*, jclass) { return hyperplay::pacing::effectiveCap(); }
 
 // Reescalado del pase de presentación (0 auto, 1 SGSR v1, 2 bilineal) y nitidez de SGSR.
+HP_JNI(void, nativeSetScreenFit)(JNIEnv*, jclass, jint mode) {
+    hyperplay::gpu::presentopt::g_fit.store(mode >= 0 && mode <= 2 ? mode : 0);
+}
+
 HP_JNI(void, nativeSetUpscaler)(JNIEnv*, jclass, jint mode) {
     hyperplay::gpu::presentopt::g_upscaler.store(mode >= 0 && mode <= 2 ? mode : 0);
 }

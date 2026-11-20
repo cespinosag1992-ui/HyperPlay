@@ -269,4 +269,15 @@ class EfficiencyModeTest {
         assertEquals(PerfLevel.WARN, L.powerLevel(6f))
         assertEquals(PerfLevel.BAD, L.powerLevel(8f))
     }
+
+    @Test
+    fun screenFitDefaultsCycleAndPerGameKey() {
+        assertEquals(ScreenFitOption.ORIGINAL, ScreenFitOption.fromKey(null))
+        assertEquals(ScreenFitOption.ZOOM, ScreenFitOption.fromKey("zoom"))
+        assertEquals(ScreenFitOption.ORIGINAL, ScreenFitOption.fromKey("basura"))
+        assertEquals(ScreenFitOption.STRETCH, ScreenFitOption.cycle(ScreenFitOption.ORIGINAL))
+        assertEquals(ScreenFitOption.ORIGINAL, ScreenFitOption.cycle(ScreenFitOption.ZOOM))
+        assertEquals(ScreenFitOption.ZOOM, ScreenFitOption.cycle(ScreenFitOption.ORIGINAL, -1))
+        assertEquals("screen_fit:/sdcard/A/a.exe", ScreenFitOption.prefsKey("/sdcard/A/a.exe"))
+    }
 }

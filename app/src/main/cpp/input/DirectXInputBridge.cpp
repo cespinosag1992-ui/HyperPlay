@@ -30,6 +30,25 @@ constexpr uint32_t ERROR_SUCCESS = 0;
 constexpr uint32_t ERROR_DEVICE_NOT_CONNECTED = 1167;
 
 std::atomic<uint32_t> s_packetNumber{1};
+// Momento (ns, reloj monotónico) en que se pulsó cada botón; 0 = nunca.
+std::atomic<int64_t> s_pressNs[16] = {};
+
+int64_t nowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+/// Botones pulsados hace menos de kMinPressMs (aunque ya se hayan soltado).
+uint16_t recentPresses() {
+    const int64_t now = nowNs();
+    const int64_t window = DirectXInputBridge::kMinPressMs * 1000000;
+    uint16_t bits = 0;
+    for (int i = 0; i < 16; ++i) {
+        const int64_t t = s_pressNs[i].load(std::memory_order_relaxed);
+        if (t != 0 && now - t < window) bits |= static_cast<uint16_t>(1u << i);
+    }
+    return bits;
+}
 XInputGamepadState s_gamepadState{};
 XInputVibrationState s_vibrationState{};
 
@@ -108,6 +127,18 @@ void DirectXInputBridge::setButton(uint16_t buttonMask, bool pressed) {
     s_packetNumber.fetch_add(1, std::memory_order_relaxed);
 }
 
+void DirectXInputBridge::setButtons(uint16_t buttons) {
+    const uint16_t pressed = static_cast<uint16_t>(buttons & ~s_gamepadState.wButtons);
+    if (pressed != 0) {
+        const int64_t now = nowNs();
+        for (int i = 0; i < 16; ++i) {
+            if (pressed & (1u << i)) s_pressNs[i].store(now, std::memory_order_relaxed);
+        }
+    }
+    s_gamepadState.wButtons = buttons;
+    s_packetNumber.fetch_add(1, std::memory_order_relaxed);
+}
+
 void DirectXInputBridge::setTriggers(uint8_t left, uint8_t right) {
     s_gamepadState.bLeftTrigger = left;
     s_gamepadState.bRightTrigger = right;
@@ -133,6 +164,7 @@ uint32_t DirectXInputBridge::XInputGetState(uint32_t userIndex, void* pState) {
     auto* winState = reinterpret_cast<Win32XInputState*>(pState);
     winState->dwPacketNumber = s_packetNumber.load(std::memory_order_relaxed);
     winState->Gamepad = s_gamepadState;
+    winState->Gamepad.wButtons |= recentPresses();
     if (const uint32_t d = s_debugPad.load(std::memory_order_relaxed); d != 0) {
         winState->Gamepad.wButtons |= static_cast<uint16_t>(d & 0xFFFF);
         if (d & (1u << 16)) winState->Gamepad.sThumbLX = -32767;
@@ -194,6 +226,7 @@ void DirectXInputBridge::reset() {
     s_gamepadState = XInputGamepadState{};
     s_vibrationState = XInputVibrationState{};
     s_packetNumber.store(1, std::memory_order_relaxed);
+    for (auto& t : s_pressNs) t.store(0, std::memory_order_relaxed);
 }
 
 }  // namespace hyperplay

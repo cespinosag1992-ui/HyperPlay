@@ -1595,6 +1595,7 @@ public:
                             case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR: { const float m[8] = {0, -1, 1, 0, 1, 0, 0, 0}; std::memcpy(pc, m, 32); break; }
                             default: break;
                         }
+                        presentopt::applyFit(pc, g->width, g->height, target.extent.width, target.extent.height);
                         f.vkCmdPushConstants(fr.cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pc);
                         f.vkCmdDraw(fr.cmd, 3, 1, 0, 0);
                         f.vkCmdEndRenderPass(fr.cmd);

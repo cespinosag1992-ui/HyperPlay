@@ -23,6 +23,11 @@ struct XInputVibrationState {
 class DirectXInputBridge {
 public:
     static void setButton(uint16_t buttonMask, bool pressed);
+    /// Estado completo de los botones. Una pulsación más corta que kMinPressMs se sigue viendo
+    /// pulsada hasta cumplir ese mínimo: los juegos sondean XInput una vez por frame y si no la
+    /// perderían (toques muy rápidos, `input keyevent`).
+    static void setButtons(uint16_t buttons);
+    static constexpr int64_t kMinPressMs = 40;
     static void setTriggers(uint8_t left, uint8_t right);
     static void setThumbL(int16_t x, int16_t y);
     static void setThumbR(int16_t x, int16_t y);
