@@ -90,23 +90,23 @@ function block(label, content, budget) {
 
 function issueBody(r) {
   const head = [
-    `**Tipo:** ${clean(r.kind, 20)}`,
-    `**Versión:** ${clean(r.appVersion, 20)} (${clean(r.appVersionCode, 12)})`,
-    `**Dispositivo:** ${clean(r.device, 120)}`,
-    `**Sistema:** ${clean(r.android, 60)}`,
-    `**Hora (teléfono):** ${clean(r.time, 40)}`,
+    `**Type / Tipo:** ${clean(r.kind, 20)}`,
+    `**Version / Versión:** ${clean(r.appVersion, 20)} (${clean(r.appVersionCode, 12)})`,
+    `**Device / Dispositivo:** ${clean(r.device, 120)}`,
+    `**System / Sistema:** ${clean(r.android, 60)}`,
+    `**Time on phone / Hora del teléfono:** ${clean(r.time, 40)}`,
     `**ID:** \`${clean(r.id, 40)}\``,
     "",
-    "### Detalles",
+    "### Details / Detalles",
     "```",
     String(r.details ?? "").replace(/```/g, "ˋˋˋ").slice(0, 8000),
     "```",
   ].join("\n");
   let budget = MAX_ISSUE - head.length - 600;
-  const game = block("Log del juego", r.gameLog, Math.floor(budget * 0.5));
+  const game = block("Game log / Log del juego", r.gameLog, Math.floor(budget * 0.5));
   budget -= game.length;
-  const app = block("Registro de la app", r.appLog, Math.floor(budget * 0.4));
+  const app = block("App log / Registro de la app", r.appLog, Math.floor(budget * 0.4));
   budget -= app.length;
   const logcat = block("logcat", r.logcat, Math.max(0, budget - 200));
-  return (head + game + app + logcat + "\n_Informe automático enviado por la app HyperPlay._").slice(0, MAX_ISSUE);
+  return (head + game + app + logcat + "\n_Automatic report sent by the HyperPlay app. / Informe automático enviado por la app HyperPlay._").slice(0, MAX_ISSUE);
 }

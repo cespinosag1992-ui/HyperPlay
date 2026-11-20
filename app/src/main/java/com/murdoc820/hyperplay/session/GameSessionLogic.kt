@@ -1,14 +1,16 @@
 package com.murdoc820.hyperplay.session
 
+import androidx.annotation.StringRes
+import com.murdoc820.hyperplay.R
 import com.murdoc820.hyperplay.engine.GameLauncher
 import java.io.File
 import java.io.RandomAccessFile
 import kotlin.math.roundToInt
 
 /** Etapas del overlay de carga (según el log de [GameLauncher]). */
-enum class LoadingStage(val label: String) {
-    PE_LOAD("Cargando PE e IAT…"),
-    EXECUTING("Ejecutando en Oryon JIT…"),
+enum class LoadingStage(@StringRes val label: Int) {
+    PE_LOAD(R.string.stage_pe_load),
+    EXECUTING(R.string.stage_executing),
 }
 
 /** Lógica pura de [com.murdoc820.hyperplay.GameSessionActivity] (probada en la JVM). */
@@ -119,7 +121,7 @@ object GameSessionLogic {
 
     /** Texto del código que devolvió el punto de entrada PE (negativo = sin código). */
     fun describeExitCode(code: Int): String = when {
-        code < 0 -> "desconocido"
+        code < 0 -> "—"
         code == 0 -> "0 (normal)"
         else -> code.toString()
     }

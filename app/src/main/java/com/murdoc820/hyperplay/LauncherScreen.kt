@@ -68,6 +68,8 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -180,15 +182,21 @@ fun MacButton(
  * Caché persistente del JIT (`_HyperPlaySaves/hypercache/oryon_jit.idx`, 16 B por bloque): se llena
  * sola al jugar y hace más rápidos los arranques siguientes.
  */
-internal fun jitCacheLabel(game: PortableGame): String {
+internal fun jitCacheStats(game: PortableGame): Pair<Long, Long>? {
     val dir = File(game.mountFolder, "_HyperPlaySaves/hypercache")
     val idx = File(dir, "oryon_jit.idx").length()
     val dat = File(dir, "oryon_jit.dat").length()
-    if (idx <= 0L) return "Se crea la primera vez que juegas"
-    val blocks = idx / 16
-    val mb = (dat + idx) / (1024 * 1024)
-    val k = if (blocks >= 1000) "${blocks / 1000} mil" else "$blocks"
-    return "$k bloques · $mb MB"
+    if (idx <= 0L) return null
+    return idx / 16 to (dat + idx) / (1024 * 1024)
+}
+
+/** Texto de la caché en el idioma del sistema: bloques y MB, o "se crea la primera vez". */
+@Composable
+private fun jitCacheLabel(stats: Pair<Long, Long>?): String {
+    if (stats == null) return stringResource(R.string.cache_first_time)
+    val (blocks, mb) = stats
+    val k = if (blocks >= 1000) stringResource(R.string.thousands, (blocks / 1000).toInt()) else "$blocks"
+    return stringResource(R.string.cache_stats, k, mb.toInt())
 }
 
 private fun isHeld(game: PortableGame): Boolean =
@@ -346,22 +354,19 @@ fun LauncherScreen(
                 onDismissRequest = {},
                 containerColor = Deck.Panel,
                 shape = Deck.Card,
-                title = { Text("¿Ayudas a mejorar HyperPlay?", color = Deck.Text, fontSize = 18.sp, fontWeight = FontWeight.Bold) },
+                title = { Text(stringResource(R.string.consent_title), color = Deck.Text, fontSize = 18.sp, fontWeight = FontWeight.Bold) },
                 text = {
                     Text(
-                        "Si un juego o la app fallan, HyperPlay puede enviar un informe con el registro del error, " +
-                            "el modelo del teléfono, la versión de Android y el juego. No incluye tus partidas, cuentas " +
-                            "ni archivos personales. Los informes siempre se guardan también en tu teléfono y puedes " +
-                            "cambiarlo en Ajustes.",
+                        stringResource(R.string.consent_body),
                         color = Deck.Sub, fontSize = 14.sp, lineHeight = 20.sp,
                     )
                 },
                 confirmButton = {
-                    MacButton("Enviar informes", style = MacButtonStyle.PRIMARY, onClick = {
+                    MacButton(stringResource(R.string.consent_send), style = MacButtonStyle.PRIMARY, onClick = {
                         sounds.confirm(); actions.setReports(true)
                     })
                 },
-                dismissButton = { MacButton("No, gracias", onClick = { sounds.back(); actions.setReports(false) }) },
+                dismissButton = { MacButton(stringResource(R.string.consent_decline), onClick = { sounds.back(); actions.setReports(false) }) },
             )
         }
         folderToRemove?.let { folder ->
@@ -369,19 +374,19 @@ fun LauncherScreen(
                 onDismissRequest = { folderToRemove = null },
                 containerColor = Deck.Panel,
                 shape = Deck.Card,
-                title = { Text("¿Quitar esta carpeta?", color = Deck.Text, fontSize = 18.sp, fontWeight = FontWeight.Bold) },
+                title = { Text(stringResource(R.string.remove_folder_title), color = Deck.Text, fontSize = 18.sp, fontWeight = FontWeight.Bold) },
                 text = {
-                    Text("${LauncherLogic.displayFolder(folder)} dejará de aparecer en la biblioteca. Los archivos no se borran.",
+                    Text(stringResource(R.string.remove_folder_body, LauncherLogic.displayFolder(folder)),
                         color = Deck.Sub, fontSize = 14.sp)
                 },
                 confirmButton = {
-                    MacButton("Quitar", style = MacButtonStyle.PRIMARY, onClick = {
+                    MacButton(stringResource(R.string.remove), style = MacButtonStyle.PRIMARY, onClick = {
                         folderToRemove = null
                         sounds.confirm()
                         onRemoveFolder(folder)
                     })
                 },
-                dismissButton = { MacButton("Cancelar", onClick = { folderToRemove = null; sounds.back() }) },
+                dismissButton = { MacButton(stringResource(R.string.cancel), onClick = { folderToRemove = null; sounds.back() }) },
             )
         }
     }
@@ -413,13 +418,13 @@ private fun TopBar(current: Page, onTab: (Page) -> Unit) {
     ) {
         com.murdoc820.hyperplay.ui.HyperLogo(28.dp)
         Spacer(Modifier.width(10.dp))
-        Text("HYPERPLAY", color = Deck.Text, fontSize = 16.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
+        Text(stringResource(R.string.brand_upper), color = Deck.Text, fontSize = 16.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
         Spacer(Modifier.width(36.dp))
         com.murdoc820.hyperplay.ui.ButtonGlyph("LB")
         Spacer(Modifier.width(12.dp))
-        TabLabel("Inicio", current == Page.HOME) { onTab(Page.HOME) }
+        TabLabel(stringResource(R.string.tab_home), current == Page.HOME) { onTab(Page.HOME) }
         Spacer(Modifier.width(22.dp))
-        TabLabel("Ajustes", current == Page.SETTINGS) { onTab(Page.SETTINGS) }
+        TabLabel(stringResource(R.string.tab_settings), current == Page.SETTINGS) { onTab(Page.SETTINGS) }
         Spacer(Modifier.width(12.dp))
         com.murdoc820.hyperplay.ui.ButtonGlyph("RB")
         Spacer(Modifier.weight(1f))
@@ -479,7 +484,7 @@ private fun HomePage(
             ) {
                 Box(Modifier.size(8.dp).background(Deck.Cyan, RoundedCornerShape(50)))
                 Spacer(Modifier.width(10.dp))
-                Text("Nueva versión ${av.release.version} disponible · Ajustes (RB) para instalar",
+                Text(stringResource(R.string.update_banner, av.release.version),
                     color = Deck.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             }
         }
@@ -490,9 +495,9 @@ private fun HomePage(
         }
         if (games.isNotEmpty()) {
             Row(Modifier.padding(start = 40.dp, top = 6.dp, bottom = 0.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Biblioteca", color = Deck.Text, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.library), color = Deck.Text, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(10.dp))
-                Text("${games.size} ${if (games.size == 1) "juego" else "juegos"}", color = Deck.Dim, fontSize = 12.sp)
+                Text(pluralStringResource(R.plurals.games_count, games.size, games.size), color = Deck.Dim, fontSize = 12.sp)
                 if (library.scanning) {
                     Spacer(Modifier.width(12.dp))
                     CircularProgressIndicator(Modifier.size(14.dp), color = Deck.Accent, strokeWidth = 2.dp)
@@ -515,8 +520,12 @@ private fun HomePage(
             }
         }
         HintBar(
-            if (games.isEmpty()) listOf("Y" to "Buscar juegos", "B" to "Salir")
-            else listOf("A" to "Abrir", "X" to "Jugar", "Y" to "Buscar juegos", "B" to "Salir"),
+            if (games.isEmpty()) {
+                listOf("Y" to stringResource(R.string.hint_find_games), "B" to stringResource(R.string.hint_exit))
+            } else {
+                listOf("A" to stringResource(R.string.hint_open), "X" to stringResource(R.string.hint_play),
+                    "Y" to stringResource(R.string.hint_find_games), "B" to stringResource(R.string.hint_exit))
+            },
             Modifier.fillMaxWidth(),
         )
     }
@@ -531,9 +540,9 @@ private fun FocusedGameHeader(game: PortableGame, art: GameArt?) {
         GameLogo(game, art, Modifier.heightIn(max = 62.dp).widthIn(max = 300.dp), compact = true)
         Spacer(Modifier.height(6.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            if (isHeld(game)) Chip("En pausa · vuelve al instante", Deck.Green)
+            if (isHeld(game)) Chip(stringResource(R.string.chip_held_home), Deck.Green)
             info?.genres?.take(3)?.forEach { Chip(it) }
-            if (info == null) Chip(if (game.pe.is64Bit) "Windows · 64 bits" else "Windows · 32 bits")
+            if (info == null) Chip(stringResource(if (game.pe.is64Bit) R.string.chip_windows_64 else R.string.chip_windows_32))
         }
         info?.description?.takeIf { it.isNotBlank() }?.let {
             Spacer(Modifier.height(4.dp))
@@ -636,14 +645,14 @@ private fun IconCapsule(game: PortableGame, art: GameArt?) {
 @Composable
 private fun EmptyLibrary(library: LibraryState, folders: List<String>, scanRequester: FocusRequester, onScan: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(bottom = 40.dp)) {
-        Text(if (library.scanning || !library.scannedOnce) "Buscando juegos…" else "Tu biblioteca está vacía",
+        Text(stringResource(if (library.scanning || !library.scannedOnce) R.string.library_searching else R.string.library_empty),
             color = Deck.Text, fontSize = 30.sp, fontWeight = FontWeight.Black)
         Spacer(Modifier.height(10.dp))
-        Text("Copia la carpeta de un juego de PC (con su .exe) en " +
-            (folders.firstOrNull()?.let(LauncherLogic::displayFolder) ?: "/sdcard/PC games") + " y busca juegos.",
+        Text(stringResource(R.string.library_empty_hint,
+            folders.firstOrNull()?.let(LauncherLogic::displayFolder) ?: "/sdcard/PC games"),
             color = Deck.Sub, fontSize = 15.sp, modifier = Modifier.widthIn(max = 560.dp))
         Spacer(Modifier.height(22.dp))
-        MacButton(if (library.scanning) "Buscando…" else "Buscar juegos", onClick = onScan,
+        MacButton(stringResource(if (library.scanning) R.string.searching else R.string.hint_find_games), onClick = onScan,
             style = MacButtonStyle.PRIMARY, large = true, modifier = Modifier.focusRequester(scanRequester))
     }
 }
@@ -663,7 +672,7 @@ private fun GamePage(
     val held = isHeld(game)
     val playRequester = remember { FocusRequester() }
     FocusOnTick(playRequester, game.exePath)
-    val cache = remember(game.exePath) { jitCacheLabel(game) }
+    val cache = jitCacheLabel(remember(game.exePath) { jitCacheStats(game) })
     // Todo en una pantalla (en horizontal el teléfono tiene ~370 dp de alto): el arte del juego es
     // el fondo, a la izquierda logo + descripción + JUGAR y a la derecha la ficha compacta.
     Box(Modifier.fillMaxSize()) {
@@ -686,36 +695,37 @@ private fun GamePage(
                     if (!info?.genres.isNullOrEmpty() || held) {
                         Spacer(Modifier.height(8.dp))
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            if (held) Chip("En pausa en memoria", Deck.Green)
+                            if (held) Chip(stringResource(R.string.chip_held), Deck.Green)
                             info?.genres?.take(4)?.forEach { Chip(it) }
                         }
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(info?.description?.takeIf { it.isNotBlank() }
-                        ?: "Sin ficha oficial todavía: conéctate a internet y vuelve a abrir la biblioteca.",
+                        ?: stringResource(R.string.no_game_info),
                         color = Deck.Sub, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.height(14.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        MacButton(if (held) "CONTINUAR" else "JUGAR", onClick = onPlay, style = MacButtonStyle.PRIMARY,
+                        MacButton(stringResource(if (held) R.string.continue_button else R.string.play_button), onClick = onPlay, style = MacButtonStyle.PRIMARY,
                             onFocused = onFocused, modifier = Modifier.focusRequester(playRequester).width(150.dp))
                         Spacer(Modifier.width(14.dp))
-                        Text(if (held) "Vuelves justo donde lo dejaste" else "Caché: $cache",
+                        Text(if (held) stringResource(R.string.held_hint) else stringResource(R.string.cache_label, cache),
                             color = Deck.Dim, fontSize = 12.sp, maxLines = 2)
                     }
                 }
                 Column(Modifier.weight(0.85f)) {
                     InfoCard {
-                        InfoLine("Desarrollador", info?.developers?.joinToString(", ").orEmpty().ifBlank { "—" })
-                        InfoLine("Editor", info?.publishers?.joinToString(", ").orEmpty().ifBlank { "—" })
-                        InfoLine("Lanzamiento", info?.releaseDate.orEmpty().ifBlank { "—" })
-                        InfoLine("Plataforma", (if (game.pe.is64Bit) "Windows x64" else "Windows x86") + " · " +
+                        InfoLine(stringResource(R.string.info_developer), info?.developers?.joinToString(", ").orEmpty().ifBlank { "—" })
+                        InfoLine(stringResource(R.string.info_publisher), info?.publishers?.joinToString(", ").orEmpty().ifBlank { "—" })
+                        InfoLine(stringResource(R.string.info_release), info?.releaseDate.orEmpty().ifBlank { "—" })
+                        InfoLine(stringResource(R.string.info_platform), (if (game.pe.is64Bit) "Windows x64" else "Windows x86") + " · " +
                             LauncherLogic.graphicsApiLabel(game.pe.graphicsApis, game.engineHints))
-                        InfoLine("Ejecutable", File(game.exePath).name)
-                        InfoLine("Partidas", "_HyperPlaySaves")
+                        InfoLine(stringResource(R.string.info_executable), File(game.exePath).name)
+                        InfoLine(stringResource(R.string.info_saves), "_HyperPlaySaves")
                     }
                 }
             }
-            HintBar(listOf("A" to if (held) "Continuar" else "Jugar", "B" to "Atrás"), Modifier.fillMaxWidth())
+            HintBar(listOf("A" to stringResource(if (held) R.string.hint_continue else R.string.hint_play),
+                "B" to stringResource(R.string.hint_back)), Modifier.fillMaxWidth())
         }
     }
 }
@@ -723,7 +733,7 @@ private fun GamePage(
 @Composable
 private fun TopBarCompact(onBack: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("‹  Biblioteca", color = Deck.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+        Text(stringResource(R.string.back_to_library_short), color = Deck.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
             modifier = Modifier.clickable(remember { MutableInteractionSource() }, indication = null, onClick = onBack))
         Spacer(Modifier.weight(1f))
         ClockAndBattery()
@@ -746,7 +756,8 @@ private fun InfoCard(content: @Composable () -> Unit) {
 @Composable
 private fun InfoLine(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = Deck.Dim, fontSize = 12.sp, modifier = Modifier.width(96.dp))
+        Text(label, color = Deck.Dim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.width(124.dp).padding(end = 8.dp))
         Text(value, color = Deck.Text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -773,21 +784,29 @@ private fun SettingsPage(
         Row(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 48.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(28.dp)) {
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).focusGroup()) {
-                SectionTitle("Biblioteca")
+                SectionTitle(stringResource(R.string.library))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    MacButton(if (library.scanning) "Buscando…" else "Buscar juegos", onClick = onScan,
+                    MacButton(stringResource(if (library.scanning) R.string.searching else R.string.hint_find_games), onClick = onScan,
                         style = MacButtonStyle.PRIMARY, onFocused = onFocused, modifier = Modifier.focusRequester(first))
-                    MacButton("Añadir carpeta", onClick = onAddFolder, onFocused = onFocused)
+                    MacButton(stringResource(R.string.add_folder), onClick = onAddFolder, onFocused = onFocused)
                 }
-                val status = library.error ?: library.progress
+                val scan = library.scan
+                val status = when {
+                    library.error != null -> stringResource(R.string.scan_error, library.error)
+                    scan != null && scan.total == 0 -> stringResource(R.string.scan_preparing)
+                    scan != null -> stringResource(R.string.scan_progress, scan.index, scan.total,
+                        LauncherLogic.displayFolder(scan.folder), scan.found)
+                    library.scannedOnce -> pluralStringResource(R.plurals.games_count, library.games.size, library.games.size)
+                    else -> ""
+                }
                 if (status.isNotEmpty()) {
                     Spacer(Modifier.height(10.dp))
                     Text(status, color = if (library.error != null) Deck.Orange else Deck.Dim, fontSize = 13.sp)
                 }
                 Spacer(Modifier.height(22.dp))
-                SectionTitle("Carpetas de juegos")
+                SectionTitle(stringResource(R.string.section_folders))
                 if (folders.isEmpty()) {
-                    Text("Ninguna carpeta", color = Deck.Dim, fontSize = 14.sp)
+                    Text(stringResource(R.string.no_folders), color = Deck.Dim, fontSize = 14.sp)
                 }
                 folders.forEach { f ->
                     FolderRow(f, onFocused, onClick = { onFolderClick(f) })
@@ -795,28 +814,29 @@ private fun SettingsPage(
                 }
             }
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).focusGroup()) {
-                SectionTitle("Actualizaciones")
+                SectionTitle(stringResource(R.string.section_updates))
                 UpdateCard(system, actions, onFocused, sounds)
                 Spacer(Modifier.height(22.dp))
-                SectionTitle("Informes de errores")
+                SectionTitle(stringResource(R.string.section_reports))
                 ReportsCard(system, actions, onFocused, sounds)
                 Spacer(Modifier.height(22.dp))
-                SectionTitle("Este dispositivo")
+                SectionTitle(stringResource(R.string.section_device))
                 InfoCard {
-                    InfoLine("Procesador", "Snapdragon 8 Elite · 2 Prime + 6 Perf")
-                    InfoLine("Gráficos", "Adreno 830 · Vulkan")
-                    InfoLine("Juegos", "${library.games.size}")
+                    InfoLine(stringResource(R.string.info_cpu), "Snapdragon 8 Elite · 2 Prime + 6 Perf")
+                    InfoLine(stringResource(R.string.info_gpu), "Adreno 830 · Vulkan")
+                    InfoLine(stringResource(R.string.info_games), "${library.games.size}")
                 }
                 Spacer(Modifier.height(22.dp))
-                SectionTitle("Mandos")
+                SectionTitle(stringResource(R.string.section_controllers))
                 InfoCard {
-                    InfoLine("Compatibles", "Xbox, PlayStation, GameSir, 8BitDo y HID")
-                    InfoLine("Vibración", "Mando o, si no tiene, el teléfono")
-                    InfoLine("Menú rápido", "L3 + R3 o Select + Start")
+                    InfoLine(stringResource(R.string.info_supported), stringResource(R.string.supported_value))
+                    InfoLine(stringResource(R.string.info_rumble), stringResource(R.string.rumble_value))
+                    InfoLine(stringResource(R.string.info_quick_menu), stringResource(R.string.quick_menu_value))
                 }
             }
         }
-        HintBar(listOf("A" to "Elegir", "Y" to "Buscar juegos", "B" to "Atrás"), Modifier.fillMaxWidth())
+        HintBar(listOf("A" to stringResource(R.string.hint_select), "Y" to stringResource(R.string.hint_find_games),
+            "B" to stringResource(R.string.hint_back)), Modifier.fillMaxWidth())
     }
 }
 
@@ -824,17 +844,17 @@ private fun SettingsPage(
 private fun UpdateCard(system: SystemUi, actions: SystemActions, onFocused: () -> Unit, sounds: UiSounds) {
     val u = system.update
     InfoCard {
-        InfoLine("Versión instalada", system.currentVersion)
+        InfoLine(stringResource(R.string.update_installed), system.currentVersion)
         val status = when (u) {
-            UpdateState.Idle -> "Sin comprobar"
-            UpdateState.Checking -> "Buscando…"
-            UpdateState.UpToDate -> "Tienes la última versión"
-            is UpdateState.Available -> "Nueva: ${u.release.version}"
-            is UpdateState.Downloading -> "Descargando ${u.release.version} · ${(u.progress * 100).toInt()} %"
-            is UpdateState.Installing -> "Instalando ${u.release.version}…"
+            UpdateState.Idle -> stringResource(R.string.update_idle)
+            UpdateState.Checking -> stringResource(R.string.searching)
+            UpdateState.UpToDate -> stringResource(R.string.update_up_to_date)
+            is UpdateState.Available -> stringResource(R.string.update_new, u.release.version)
+            is UpdateState.Downloading -> stringResource(R.string.update_downloading, u.release.version, (u.progress * 100).toInt())
+            is UpdateState.Installing -> stringResource(R.string.update_installing, u.release.version)
             is UpdateState.Error -> u.message
         }
-        InfoLine("Estado", status)
+        InfoLine(stringResource(R.string.update_status), status)
         if (u is UpdateState.Downloading) {
             androidx.compose.material3.LinearProgressIndicator(
                 progress = { u.progress },
@@ -850,11 +870,11 @@ private fun UpdateCard(system: SystemUi, actions: SystemActions, onFocused: () -
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(bottom = 8.dp)) {
             if (release != null) {
-                MacButton("Descargar e instalar", style = MacButtonStyle.PRIMARY, onFocused = onFocused,
+                MacButton(stringResource(R.string.update_install), style = MacButtonStyle.PRIMARY, onFocused = onFocused,
                     onClick = { sounds.confirm(); actions.installUpdate(release) })
             }
             if (u !is UpdateState.Downloading && u !is UpdateState.Installing) {
-                MacButton("Buscar actualizaciones", onFocused = onFocused, onClick = { sounds.confirm(); actions.checkUpdate() })
+                MacButton(stringResource(R.string.update_check), onFocused = onFocused, onClick = { sounds.confirm(); actions.checkUpdate() })
             }
         }
     }
@@ -863,15 +883,18 @@ private fun UpdateCard(system: SystemUi, actions: SystemActions, onFocused: () -
 @Composable
 private fun ReportsCard(system: SystemUi, actions: SystemActions, onFocused: () -> Unit, sounds: UiSounds) {
     InfoCard {
-        InfoLine("Enviar informes", if (system.reportsEnabled == true) "Activado" else "Desactivado")
-        InfoLine("Guardados en el teléfono", if (system.pendingReports == 0) "Ninguno pendiente" else "${system.pendingReports} pendientes")
-        if (!system.reportsConfigured) InfoLine("Servidor", "No configurado en esta versión")
+        InfoLine(stringResource(R.string.consent_send),
+            stringResource(if (system.reportsEnabled == true) R.string.state_on else R.string.state_off))
+        InfoLine(stringResource(R.string.reports_saved),
+            if (system.pendingReports == 0) stringResource(R.string.reports_none)
+            else pluralStringResource(R.plurals.reports_pending, system.pendingReports, system.pendingReports))
+        if (!system.reportsConfigured) InfoLine(stringResource(R.string.reports_server), stringResource(R.string.reports_server_unset))
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(bottom = 8.dp)) {
-            MacButton(if (system.reportsEnabled == true) "Desactivar" else "Activar", onFocused = onFocused,
+            MacButton(stringResource(if (system.reportsEnabled == true) R.string.turn_off else R.string.turn_on), onFocused = onFocused,
                 onClick = { sounds.confirm(); actions.setReports(system.reportsEnabled != true) })
             if (system.pendingReports > 0 && system.reportsEnabled == true && system.reportsConfigured) {
-                MacButton("Enviar ahora", style = MacButtonStyle.PRIMARY, onFocused = onFocused,
+                MacButton(stringResource(R.string.send_now), style = MacButtonStyle.PRIMARY, onFocused = onFocused,
                     onClick = { sounds.confirm(); actions.sendReports() })
             }
         }
@@ -896,7 +919,7 @@ private fun FolderRow(path: String, onFocused: () -> Unit, onClick: () -> Unit) 
     ) {
         Text(LauncherLogic.displayFolder(path), color = Deck.Text, fontSize = 15.sp, modifier = Modifier.weight(1f),
             maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("Quitar", color = if (focused) Deck.Red else Deck.Dim, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Text(stringResource(R.string.remove), color = if (focused) Deck.Red else Deck.Dim, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -926,16 +949,14 @@ fun StoragePermissionScreen(sounds: UiSounds, onGrant: () -> Unit, onExit: () ->
                 horizontalAlignment = Alignment.CenterHorizontally) {
                 com.murdoc820.hyperplay.ui.HyperLogo(64.dp)
                 Spacer(Modifier.height(18.dp))
-                Text("Acceso a tus juegos", color = Deck.Text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.perm_title), color = Deck.Text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "HyperPlay abre los juegos directamente desde su carpeta (por ejemplo /sdcard/PC games) y guarda " +
-                        "las partidas junto al juego. Para eso necesita el permiso \"Acceso a todos los archivos\". " +
-                        "Actívalo en Ajustes y vuelve.",
+                    stringResource(R.string.perm_body),
                     color = Deck.Sub, fontSize = 15.sp, textAlign = TextAlign.Center, lineHeight = 22.sp,
                 )
                 Spacer(Modifier.height(24.dp))
-                MacButton("Abrir Ajustes", onClick = { sounds.confirm(); onGrant() },
+                MacButton(stringResource(R.string.perm_open), onClick = { sounds.confirm(); onGrant() },
                     modifier = Modifier.focusRequester(requester), style = MacButtonStyle.PRIMARY, large = true)
             }
         }

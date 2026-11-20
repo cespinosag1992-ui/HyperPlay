@@ -1,16 +1,19 @@
 package com.murdoc820.hyperplay.session
 
+import androidx.annotation.StringRes
+import com.murdoc820.hyperplay.R
+
 /**
  * Modo eficiente y protección térmica (Quick Menu). Lógica pura, probada en la JVM; la actividad
  * solo lee sensores y aplica las decisiones al motor (tope de FPS en caliente y anclaje Prime).
  */
 
 /** Tope de FPS del limitador preciso del motor. [fps] = 0 → sin límite. */
-enum class FpsCapOption(val key: String, val label: String, val fps: Int) {
-    FPS_60("60", "60 FPS (Eficiente)", 60),
-    FPS_72("72", "72 FPS", 72),
-    FPS_120("120", "120 FPS", 120),
-    UNLIMITED("off", "Sin límite", 0);
+enum class FpsCapOption(val key: String, @StringRes val label: Int, val fps: Int) {
+    FPS_60("60", R.string.fps_cap_60, 60),
+    FPS_72("72", R.string.fps_cap_72, 72),
+    FPS_120("120", R.string.fps_cap_120, 120),
+    UNLIMITED("off", R.string.fps_cap_unlimited, 0);
 
     /** Refresco que se pide al panel para que cada frame dure un número entero de vsyncs. */
     val panelHz: Int get() = if (this == FPS_72) 144 else 120
@@ -26,10 +29,10 @@ enum class FpsCapOption(val key: String, val label: String, val fps: Int) {
 }
 
 /** Escala de render (se aplica al iniciar la sesión). 100 % = nativa (por defecto). */
-enum class RenderScaleOption(val key: String, val label: String, val percent: Int) {
-    NATIVE("100", "100 % Nativa", 100),
-    P85("85", "85 %", 85),
-    P75("75", "75 %", 75);
+enum class RenderScaleOption(val key: String, @StringRes val label: Int, val percent: Int) {
+    NATIVE("100", R.string.render_native, 100),
+    P85("85", R.string.render_85, 85),
+    P75("75", R.string.render_75, 75);
 
     companion object {
         val DEFAULT = NATIVE
@@ -46,10 +49,10 @@ enum class RenderScaleOption(val key: String, val label: String, val percent: In
 }
 
 /** Reescalado del pase de presentación. */
-enum class UpscalerMode(val key: String, val label: String, val nativeId: Int) {
-    AUTO("auto", "Auto (SGSR v1 si escala < 100 %)", 0),
-    SGSR("sgsr", "SGSR v1 siempre (nitidez)", 1),
-    OFF("off", "Bilineal (OFF)", 2);
+enum class UpscalerMode(val key: String, @StringRes val label: Int, val nativeId: Int) {
+    AUTO("auto", R.string.upscaler_auto, 0),
+    SGSR("sgsr", R.string.upscaler_sgsr, 1),
+    OFF("off", R.string.upscaler_off, 2);
 
     companion object {
         val DEFAULT = AUTO

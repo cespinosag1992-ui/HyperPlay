@@ -3,6 +3,7 @@ package com.murdoc820.hyperplay.update
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
+import com.murdoc820.hyperplay.R
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.net.Uri
@@ -85,7 +86,7 @@ object AppUpdater {
                         else -> UpdateState.UpToDate
                     }
                 },
-                onFailure = { UpdateState.Error("No se pudo comprobar: ${it.message ?: "sin conexión"}") },
+                onFailure = { UpdateState.Error(context.getString(R.string.update_err_check, it.message ?: context.getString(R.string.update_err_offline))) },
             )
             Diagnostics.log("I", "update", "comprobación: ${_state.value}")
         }
@@ -95,11 +96,11 @@ object AppUpdater {
     fun downloadAndInstall(context: Context, release: ReleaseInfo) {
         val app = context.applicationContext
         if (QuickResume.isHolding()) {
-            _state.value = UpdateState.Error("Cierra el juego en pausa antes de actualizar.", release)
+            _state.value = UpdateState.Error(context.getString(R.string.update_err_held), release)
             return
         }
         if (!app.packageManager.canRequestPackageInstalls()) {
-            _state.value = UpdateState.Error("Permite a HyperPlay instalar apps y vuelve a pulsar Instalar.", release)
+            _state.value = UpdateState.Error(context.getString(R.string.update_err_permission), release)
             app.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${app.packageName}"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return
@@ -124,7 +125,7 @@ object AppUpdater {
                 install(app, apk)
             } catch (e: Exception) {
                 Diagnostics.log("E", "update", "fallo: ${e.message}")
-                _state.value = UpdateState.Error("No se pudo actualizar: ${e.message}", release)
+                _state.value = UpdateState.Error(context.getString(R.string.update_err_failed, e.message.orEmpty()), release)
             }
         }
     }
@@ -140,10 +141,10 @@ object AppUpdater {
                 }
                 PackageInstaller.STATUS_SUCCESS -> Diagnostics.log("I", "update", "instalada")
                 else -> {
-                    val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "código $status"
+                    val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: context.getString(R.string.update_err_code, status)
                     Diagnostics.log("E", "update", "instalación fallida: $msg")
                     val rel = (_state.value as? UpdateState.Installing)?.release
-                    _state.value = UpdateState.Error("La instalación falló: $msg", rel)
+                    _state.value = UpdateState.Error(context.getString(R.string.update_err_install, msg), rel)
                 }
             }
         }

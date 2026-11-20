@@ -1,37 +1,37 @@
-name: Error
-description: Algo no funciona (juego, app, mando, rendimiento)
+name: Bug / Error
+description: Something doesn't work (game, app, controller, performance) / Algo no funciona (juego, app, mando, rendimiento)
 labels: ["bug"]
 body:
   - type: input
     id: version
     attributes:
-      label: Versión de HyperPlay
-      description: Ajustes → Actualizaciones → Versión instalada
+      label: HyperPlay version / Versión de HyperPlay
+      description: Settings → Updates → Installed version / Ajustes → Actualizaciones → Versión instalada
       placeholder: "1.0.0"
     validations:
       required: true
   - type: input
     id: device
     attributes:
-      label: Teléfono y Android
+      label: Phone and Android / Teléfono y Android
       placeholder: "RedMagic 10S Pro, Android 15"
     validations:
       required: true
   - type: input
     id: game
     attributes:
-      label: Juego
-      placeholder: "Hollow Knight (Steam, 64 bits)"
+      label: Game / Juego
+      placeholder: "Hollow Knight (Steam, 64-bit)"
   - type: textarea
     id: what
     attributes:
-      label: Qué pasó
-      description: Qué hiciste, qué esperabas y qué ocurrió.
+      label: What happened / Qué pasó
+      description: What you did, what you expected and what happened. / Qué hiciste, qué esperabas y qué ocurrió.
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
-      label: Registro (opcional)
-      description: Si la app envió un informe automático, indica su ID.
+      label: Log (optional) / Registro (opcional)
+      description: If the app sent an automatic report, give its ID. / Si la app envió un informe automático, indica su ID.
       render: text

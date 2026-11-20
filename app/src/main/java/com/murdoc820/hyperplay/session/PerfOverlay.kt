@@ -18,7 +18,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
+import com.murdoc820.hyperplay.R
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -151,7 +153,7 @@ private fun FullOsd(s: PerfSnapshot, hud: HudContext) {
     Column {
         OsdRow(if (hud.frameGen) "FPS (FG)" else "FPS", L.formatOrDash(s.fps), "", L.fpsLevel(s.fps, hud.targetFps))
         val low = L.minFps(s.frameTimesMs)
-        OsdRow("FPS mín", L.formatOrDash(low), "", L.fpsLevel(low, hud.targetFps))
+        OsdRow(stringResource(R.string.osd_fps_min), L.formatOrDash(low), "", L.fpsLevel(low, hud.targetFps))
         OsdRow("Frametime", L.formatOrDash(s.frameTimeMs, 1), "ms", L.fpsLevel(s.fps, hud.targetFps))
         OsdRow("CPU", L.formatOrDash(s.cpuPercent), "%", L.usageLevel(s.cpuPercent))
         if (s.clusters.isEmpty()) {
@@ -163,7 +165,7 @@ private fun FullOsd(s: PerfSnapshot, hud: HudContext) {
             }
         }
         if (s.cpuTempC == null && s.thermalHeadroom != null) {
-            OsdRow("Margen térm", L.formatOrDash(s.thermalHeadroom * 100f), "%", L.headroomLevel(s.thermalHeadroom))
+            OsdRow(stringResource(R.string.osd_thermal_headroom), L.formatOrDash(s.thermalHeadroom * 100f), "%", L.headroomLevel(s.thermalHeadroom))
         } else {
             OsdRow("CPU", L.formatOrDash(s.cpuTempC), "°C", L.tempLevel(s.cpuTempC))
         }
@@ -171,8 +173,8 @@ private fun FullOsd(s: PerfSnapshot, hud: HudContext) {
         OsdRow("GPU", L.formatOrDash(s.gpuTempC), "°C", L.tempLevel(s.gpuTempC))
         OsdRow("BAT", L.formatOrDash(s.batteryTempC), "°C",
             if (hud.thermal?.hot == true) PerfLevel.BAD else L.batteryTempLevel(s.batteryTempC))
-        OsdRow(if (s.charging) "Carga" else "Consumo", L.formatOrDash(s.batteryPowerW, 1), "W", L.powerLevel(s.batteryPowerW))
-        if (hud.thermal?.throttled == true) OsdRow("Térmico", "60", "▼", PerfLevel.WARN)
+        OsdRow(stringResource(if (s.charging) R.string.osd_charging else R.string.osd_draw), L.formatOrDash(s.batteryPowerW, 1), "W", L.powerLevel(s.batteryPowerW))
+        if (hud.thermal?.throttled == true) OsdRow(stringResource(R.string.osd_thermal), "60", "▼", PerfLevel.WARN)
     }
 }
 

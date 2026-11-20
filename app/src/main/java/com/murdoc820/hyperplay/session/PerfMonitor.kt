@@ -16,13 +16,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import androidx.annotation.StringRes
+import com.murdoc820.hyperplay.R
 
 /** Modo del HUD de rendimiento (Quick Menu → "Overlay"). Se guarda globalmente en SharedPreferences. */
-enum class PerfOverlayMode(val key: String, val label: String) {
-    OFF("off", "Desactivado"),
-    COMPACT("compact", "Activado"),
+enum class PerfOverlayMode(val key: String, @StringRes val label: Int) {
+    OFF("off", R.string.state_off),
+    COMPACT("compact", R.string.state_on),
     /** Ya no se ofrece (se veía mal en el centro); un "full" guardado pasa a [COMPACT]. */
-    FULL("full", "Completo");
+    FULL("full", R.string.overlay_full);
 
     companion object {
         val DEFAULT = COMPACT

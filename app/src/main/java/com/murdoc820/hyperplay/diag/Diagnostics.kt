@@ -128,7 +128,7 @@ object Diagnostics {
         if (exitCode != 0 || error != null) {
             queueReport(
                 kind = "juego",
-                title = "${File(exePath).parentFile?.name ?: exePath}: terminó con código $exitCode",
+                title = "${File(exePath).parentFile?.name ?: exePath}: exit code / código $exitCode",
                 details = buildString {
                     appendLine("Juego: $exePath")
                     appendLine("Código de salida: $exitCode")
@@ -149,7 +149,7 @@ object Diagnostics {
         val minutes = j?.optLong("start")?.let { (System.currentTimeMillis() - it) / 60000 } ?: -1
         queueReport(
             kind = "cierre",
-            title = "${File(exe).parentFile?.name ?: "juego"}: cierre inesperado de la sesión",
+            title = "${File(exe).parentFile?.name ?: "game"}: unexpected session end / cierre inesperado",
             details = buildString {
                 appendLine("La sesión de juego terminó sin cerrarse (crash nativo, falta de memoria o el sistema mató la app).")
                 appendLine("Juego: $exe")
@@ -166,8 +166,8 @@ object Diagnostics {
         log("E", "crash", "excepción no capturada en ${thread.name}\n${stack(error)}")
         queueReport(
             kind = "crash",
-            title = "Crash de la app: ${error.javaClass.simpleName}: ${error.message.orEmpty().take(80)}",
-            details = "Hilo: ${thread.name}\n\n${stack(error)}",
+            title = "App crash / Crash de la app: ${error.javaClass.simpleName}: ${error.message.orEmpty().take(80)}",
+            details = "Thread / Hilo: ${thread.name}\n\n${stack(error)}",
             gameLog = null,
             synchronous = true,
         )

@@ -689,3 +689,7 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - `assembleRelease`: falló una vez en `:app:mergeDexRelease`. Al repetir, exit=0.
 - ADB `input keyevent DPAD_RIGHT x2`: anillo en la 3.ª cápsula (DmC). `BUTTON_A`: abre la ficha, foco en JUGAR.
 - La capa Game Space de RedMagic puede abrirse encima del launcher. BACK con la app enfocada la cierra (B = Salir).
+
+## 2026-11-20 — Idiomas
+- `testDebugUnitTest lintDebug assembleRelease`: exit=0 (lint pedía `@SuppressLint("RestrictedApi")` en `MainActivity.dispatchKeyEvent`: falso positivo de androidx).
+- `cmd locale set-app-locales com.murdoc820.hyperplay --locales en-US`: Home/Settings en inglés. `--locales ''`: de nuevo en español (`get-app-locales` = []).

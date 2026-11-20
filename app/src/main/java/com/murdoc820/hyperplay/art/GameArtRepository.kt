@@ -113,11 +113,13 @@ object GameArtRepository {
 
         // 2-3. Ficha e imágenes oficiales.
         val metaFile = File(dir, "info.json")
-        val stale = !metaFile.isFile || System.currentTimeMillis() - metaFile.lastModified() > REFRESH_MS
+        val lang = steamLanguage()
+        val stale = !metaFile.isFile || System.currentTimeMillis() - metaFile.lastModified() > REFRESH_MS ||
+            readLang(dir) != lang
         if (info == null || stale) {
             val appId = localAppId(game) ?: network.withPermit { searchAppId(game.title) } ?: return
-            info = network.withPermit { fetchDetails(appId) } ?: info ?: return
-            metaFile.writeText(infoToJson(info).toString())
+            info = network.withPermit { fetchDetails(appId, lang) } ?: info ?: return
+            metaFile.writeText(infoToJson(info).put("lang", lang).toString())
         }
         val id = info.appId
         network.withPermit {
@@ -154,11 +156,27 @@ object GameArtRepository {
 
     private fun normalized(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
 
+    /** Idioma de la tienda de Steam para el idioma del sistema (inglés si Steam no lo tiene). */
+    internal fun steamLanguage(locale: java.util.Locale = java.util.Locale.getDefault()): String = when (locale.language) {
+        "es" -> if (locale.country in setOf("", "ES")) "spanish" else "latam"
+        "pt" -> if (locale.country == "BR") "brazilian" else "portuguese"
+        "zh" -> if (locale.country in setOf("TW", "HK", "MO") || locale.script == "Hant") "tchinese" else "schinese"
+        "fr" -> "french"; "de" -> "german"; "it" -> "italian"; "ja" -> "japanese"; "ko" -> "koreana"
+        "ru" -> "russian"; "pl" -> "polish"; "tr" -> "turkish"; "uk" -> "ukrainian"; "nl" -> "dutch"
+        "sv" -> "swedish"; "da" -> "danish"; "fi" -> "finnish"; "nb", "no" -> "norwegian"; "cs" -> "czech"
+        "hu" -> "hungarian"; "ro" -> "romanian"; "el" -> "greek"; "th" -> "thai"; "vi" -> "vietnamese"
+        "bg" -> "bulgarian"; "id", "in" -> "indonesian"; "ar" -> "arabic"
+        else -> "english"
+    }
+
+    private fun readLang(dir: File): String? =
+        runCatching { JSONObject(File(dir, "info.json").readText()).optString("lang") }.getOrNull()
+
     private fun searchAppId(title: String): Int? {
         val term = searchTerm(title)
         if (term.isEmpty()) return null
         val url = "https://store.steampowered.com/api/storesearch/?term=" +
-            URLEncoder.encode(term, "UTF-8") + "&l=spanish&cc=US"
+            URLEncoder.encode(term, "UTF-8") + "&l=english&cc=US"
         val json = httpText(url)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return null
         val items = json.optJSONArray("items") ?: return null
         val want = normalized(term)
@@ -172,8 +190,8 @@ object GameArtRepository {
         return best ?: items.optJSONObject(0)?.optInt("id")?.takeIf { items.length() == 1 }
     }
 
-    private fun fetchDetails(appId: Int): GameInfo? {
-        val text = httpText("https://store.steampowered.com/api/appdetails?appids=$appId&l=spanish") ?: return null
+    private fun fetchDetails(appId: Int, lang: String): GameInfo? {
+        val text = httpText("https://store.steampowered.com/api/appdetails?appids=$appId&l=$lang") ?: return null
         val data = runCatching { JSONObject(text).getJSONObject(appId.toString()) }.getOrNull() ?: return null
         if (!data.optBoolean("success")) return null
         val d = data.getJSONObject("data")

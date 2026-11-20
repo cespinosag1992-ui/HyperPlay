@@ -67,6 +67,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Notes = this version's CHANGELOG section (English + Spanish), plus the auto list of PRs.
+          VER="${{ steps.ver.outputs.name }}"
+          awk -v v="## $VER" '$0==v{f=1;next} /^## /{if(f)exit} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "HyperPlay $VER" > notes.md
           gh release create "$GITHUB_REF_NAME" out/* \
-            --title "HyperPlay ${{ steps.ver.outputs.name }}" \
+            --title "HyperPlay $VER" \
+            --notes-file notes.md \
             --generate-notes

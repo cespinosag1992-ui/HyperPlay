@@ -44,6 +44,9 @@ class MainActivity : ComponentActivity() {
     private var navKeyTick by mutableIntStateOf(0)
 
     /** Teclas de navegación del mando/teclado: si nada tiene foco, el launcher lo recoloca. */
+    // Falso positivo de lint: androidx.core marca dispatchKeyEvent como restringido, pero es el
+    // método público de Activity que se sobrescribe aquí.
+    @android.annotation.SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
             when (event.keyCode) {
@@ -157,7 +160,7 @@ class MainActivity : ComponentActivity() {
             pickFolder.launch(null)
         } catch (_: ActivityNotFoundException) {
             sounds.error()
-            Toast.makeText(this, "No hay selector de carpetas disponible", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.toast_no_picker), Toast.LENGTH_LONG).show()
         }
     }
 
@@ -165,7 +168,7 @@ class MainActivity : ComponentActivity() {
         val path = LauncherLogic.treeUriToPath(uri.toString())
         if (path == null) {
             sounds.error()
-            Toast.makeText(this, "Elige una carpeta del almacenamiento interno o de la tarjeta SD", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.toast_pick_internal), Toast.LENGTH_LONG).show()
             return
         }
         saveFolders(LauncherLogic.addFolder(folders, path))
@@ -185,7 +188,7 @@ class MainActivity : ComponentActivity() {
     private fun play(game: PortableGame) {
         if (!File(game.exePath).isFile) {
             sounds.error()
-            Toast.makeText(this, "No se encuentra ${game.exePath}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.toast_exe_missing, game.exePath), Toast.LENGTH_LONG).show()
             LibraryRepository.scan(folders)
             return
         }

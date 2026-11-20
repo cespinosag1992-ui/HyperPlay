@@ -19,7 +19,7 @@ object LauncherLogic {
     const val BADGE_PORTABLE = "[PORTABLE D:\\]"
     const val BADGE_LAA = "[LAA]"
     const val GRAPHICS_UNITY_UNREAL = "DirectX 11 (Unity/Unreal)"
-    const val GRAPHICS_AUTO = "Auto (D3D/Vulkan directo)"
+    const val GRAPHICS_AUTO = "Auto (D3D/Vulkan)"
     const val GRAPHICS_DXGI_ONLY = "DXGI (DirectX 10/11/12)"
 
     private const val EXTERNAL_STORAGE_AUTHORITY = "com.android.externalstorage.documents"

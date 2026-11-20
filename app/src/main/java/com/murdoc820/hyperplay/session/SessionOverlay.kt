@@ -39,7 +39,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
+import com.murdoc820.hyperplay.R
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -184,7 +186,7 @@ private fun LoadingScreen(state: SessionUiState) {
                 color = Deck.Accent, trackColor = Color(0x332A3350),
             )
             Spacer(Modifier.height(12.dp))
-            Text("${state.stage.label}  ·  ${GameSessionLogic.formatElapsed(state.elapsedMillis)}",
+            Text("${stringResource(state.stage.label)}  ·  ${GameSessionLogic.formatElapsed(state.elapsedMillis)}",
                 color = Deck.Sub, fontSize = 14.sp, fontWeight = FontWeight.Medium)
             state.logTail.lastOrNull()?.let {
                 Spacer(Modifier.height(4.dp))
@@ -192,7 +194,7 @@ private fun LoadingScreen(state: SessionUiState) {
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        Text("L3 + R3 abre el menú rápido", color = Deck.Dim, fontSize = 12.sp,
+        Text(stringResource(R.string.loading_quick_menu_hint), color = Deck.Dim, fontSize = 12.sp,
             modifier = Modifier.align(Alignment.BottomEnd).padding(36.dp))
     }
 }
@@ -229,8 +231,8 @@ private fun EndedScreen(state: SessionUiState, onExit: () -> Unit) {
                 MacStatusDot(if (error != null) Mac.Red else Mac.Secondary)
                 Spacer(Modifier.width(Mac.S2))
                 Text(
-                    if (error != null) "No se pudo iniciar el juego"
-                    else "La sesión terminó (código ${GameSessionLogic.describeExitCode(state.exitCode)})",
+                    if (error != null) stringResource(R.string.ended_error)
+                    else stringResource(R.string.ended_exit, GameSessionLogic.describeExitCode(state.exitCode)),
                     color = Mac.Label, fontSize = Mac.Headline,
                 )
             }
@@ -246,7 +248,7 @@ private fun EndedScreen(state: SessionUiState, onExit: () -> Unit) {
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.height(Mac.S5))
-            ActionButton("Volver a la biblioteca", focused = true, style = ActionStyle.PRIMARY, onClick = onExit)
+            ActionButton(stringResource(R.string.back_to_library), focused = true, style = ActionStyle.PRIMARY, onClick = onExit)
         }
     }
 }
@@ -293,7 +295,7 @@ private fun ActionsPane(
             .background(Mac.Sidebar, RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp))
             .padding(Mac.S4),
     ) {
-        Text("Menú rápido", color = Mac.Secondary, fontSize = Mac.Caption, fontWeight = FontWeight.SemiBold)
+        Text(stringResource(R.string.info_quick_menu), color = Mac.Secondary, fontSize = Mac.Caption, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(2.dp))
         Text(state.title, color = Mac.Label, fontSize = Mac.Title, fontWeight = FontWeight.Bold,
             maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -301,27 +303,27 @@ private fun ActionsPane(
         LiveStatus(state)
         Spacer(Modifier.weight(1f))
         if (state.confirmKill) {
-            Text("¿Forzar el cierre?", color = Mac.Label, fontSize = Mac.Headline, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.kill_confirm_title), color = Mac.Label, fontSize = Mac.Headline, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(2.dp))
-            Text("Se pierde lo que no hayas guardado en el juego.", color = Mac.Secondary, fontSize = Mac.Callout)
+            Text(stringResource(R.string.kill_confirm_body), color = Mac.Secondary, fontSize = Mac.Callout)
             Spacer(Modifier.height(Mac.S3))
-            ActionButton("Cancelar", state.confirmIndex == 0, ActionStyle.SECONDARY) { onConfirmKill(false) }
+            ActionButton(stringResource(R.string.cancel), state.confirmIndex == 0, ActionStyle.SECONDARY) { onConfirmKill(false) }
             Spacer(Modifier.height(Mac.S2))
-            ActionButton(if (state.killing) "Cerrando…" else "Forzar cierre", state.confirmIndex == 1,
+            ActionButton(stringResource(if (state.killing) R.string.closing else R.string.force_close), state.confirmIndex == 1,
                 ActionStyle.DESTRUCTIVE) { onConfirmKill(true) }
         } else {
-            ActionButton("Reanudar", state.menuIndex == QuickMenuItem.RESUME.ordinal, ActionStyle.PRIMARY) {
+            ActionButton(stringResource(R.string.resume), state.menuIndex == QuickMenuItem.RESUME.ordinal, ActionStyle.PRIMARY) {
                 onMenuItem(QuickMenuItem.RESUME)
             }
             Spacer(Modifier.height(Mac.S2))
-            ActionButton("Salir (sigue en memoria)", state.menuIndex == QuickMenuItem.QUICK_EXIT.ordinal,
+            ActionButton(stringResource(R.string.quick_exit), state.menuIndex == QuickMenuItem.QUICK_EXIT.ordinal,
                 ActionStyle.SECONDARY) { onMenuItem(QuickMenuItem.QUICK_EXIT) }
             Spacer(Modifier.height(Mac.S2))
-            ActionButton("Forzar cierre", state.menuIndex == QuickMenuItem.FORCE_KILL.ordinal,
+            ActionButton(stringResource(R.string.force_close), state.menuIndex == QuickMenuItem.FORCE_KILL.ordinal,
                 ActionStyle.DESTRUCTIVE) { onMenuItem(QuickMenuItem.FORCE_KILL) }
         }
         Spacer(Modifier.height(Mac.S3))
-        Text("A elegir  ·  B volver  ·  ◀ ▶ cambiar", color = Mac.Tertiary, fontSize = Mac.Caption)
+        Text(stringResource(R.string.menu_hint), color = Mac.Tertiary, fontSize = Mac.Caption)
     }
 }
 
@@ -335,7 +337,7 @@ private fun LiveStatus(state: SessionUiState) {
         fps >= target * 0.8f -> Mac.Orange
         else -> Mac.Red
     }
-    StatusLine(fpsColor, "%.0f FPS".format(fps) + if (target > 0) "  de $target" else "")
+    StatusLine(fpsColor, if (target > 0) stringResource(R.string.fps_of, fps, target) else stringResource(R.string.fps_now, fps))
     val bat = state.perf.batteryTempC
     if (bat != null) {
         val c = when {
@@ -343,13 +345,13 @@ private fun LiveStatus(state: SessionUiState) {
             bat < ThermalGovernor.HOT_ON_C -> Mac.Orange
             else -> Mac.Red
         }
-        StatusLine(c, "Batería %.1f °C".format(bat))
+        StatusLine(c, stringResource(R.string.battery_temp, bat))
     }
     if (state.thermal.throttled) {
         StatusLine(
             Mac.Orange,
-            if (state.frameGen) "Protección térmica: HyperFG a ${FrameGenLogic.THROTTLED_GAME_FPS * 2} FPS"
-            else "Protección térmica: tope ${state.thermal.effectiveFps} FPS",
+            if (state.frameGen) stringResource(R.string.thermal_fg, FrameGenLogic.THROTTLED_GAME_FPS * 2)
+            else stringResource(R.string.thermal_cap, state.thermal.effectiveFps),
         )
     }
     state.notice?.let {
@@ -408,21 +410,21 @@ private fun SettingsPane(state: SessionUiState, onMenuItem: (QuickMenuItem) -> U
             val s = settingFor(state, item)
             SettingRow(s, focused = state.menuIndex == item.ordinal && !state.confirmKill) { onMenuItem(item) }
         }
-        MacSectionHeader("Rendimiento")
+        MacSectionHeader(stringResource(R.string.section_performance))
         MacGroup {
             row(QuickMenuItem.FPS_CAP); MacSeparator()
             row(QuickMenuItem.FRAME_GEN); MacSeparator()
             row(QuickMenuItem.THERMAL)
         }
         Spacer(Modifier.height(Mac.S3))
-        MacSectionHeader("Imagen")
+        MacSectionHeader(stringResource(R.string.section_image))
         MacGroup {
             row(QuickMenuItem.RENDER_SCALE); MacSeparator()
             row(QuickMenuItem.UPSCALER); MacSeparator()
             row(QuickMenuItem.FSR_UPSCALE)
         }
         Spacer(Modifier.height(Mac.S3))
-        MacSectionHeader("Controles y pantalla")
+        MacSectionHeader(stringResource(R.string.section_controls))
         MacGroup {
             row(QuickMenuItem.OVERLAY); MacSeparator()
             row(QuickMenuItem.PHONE_RUMBLE)
@@ -433,42 +435,45 @@ private fun SettingsPane(state: SessionUiState, onMenuItem: (QuickMenuItem) -> U
 /** Contenido de una fila de ajuste. `locked` = no se puede cambiar ahora (en gris). */
 private data class Setting(val label: String, val value: String, val hint: String? = null, val locked: Boolean = false)
 
+@Composable
 private fun settingFor(state: SessionUiState, item: QuickMenuItem): Setting = when (item) {
     QuickMenuItem.FPS_CAP -> if (!FrameGenLogic.fpsCapSelectable(state.frameGen)) {
-        Setting("Tope de FPS", "Lo fija HyperFG", hint = "Desactiva HyperFG para elegirlo", locked = true)
+        Setting(stringResource(R.string.set_fps_cap), stringResource(R.string.fps_cap_by_fg),
+            hint = stringResource(R.string.fps_cap_by_fg_hint), locked = true)
     } else {
         val auto = state.thermal.throttled && state.thermal.effectiveFps != state.fpsCap.fps
-        Setting("Tope de FPS", state.fpsCap.label, hint = if (auto) "Ahora ${state.thermal.effectiveFps} FPS por calor" else null)
+        Setting(stringResource(R.string.set_fps_cap), stringResource(state.fpsCap.label),
+            hint = if (auto) stringResource(R.string.fps_cap_heat, state.thermal.effectiveFps) else null)
     }
     QuickMenuItem.FRAME_GEN -> {
         val fps = FrameGenLogic.gameFps(state.thermal, true)
         Setting(
-            "Generación de fotogramas",
-            if (state.frameGen) "$fps → ${fps * 2} FPS" else "Desactivada",
+            stringResource(R.string.set_frame_gen),
+            if (state.frameGen) stringResource(R.string.frame_gen_value, fps, fps * 2) else stringResource(R.string.state_off_f),
             hint = when {
-                state.frameGen && state.thermal.throttled -> "Limitada a ${fps * 2} FPS hasta que se enfríe"
-                state.frameGen -> "HyperFG 2×"
+                state.frameGen && state.thermal.throttled -> stringResource(R.string.frame_gen_throttled, fps * 2)
+                state.frameGen -> stringResource(R.string.frame_gen_hint)
                 else -> null
             },
         )
     }
     QuickMenuItem.THERMAL -> Setting(
-        "Protección térmica",
-        if (state.thermalProtection) "Activada" else "Desactivada",
-        hint = "Mantiene la batería por debajo de 40 °C",
+        stringResource(R.string.set_thermal),
+        stringResource(if (state.thermalProtection) R.string.state_on_f else R.string.state_off_f),
+        hint = stringResource(R.string.thermal_hint),
     )
     QuickMenuItem.RENDER_SCALE -> Setting(
-        "Resolución de render",
-        state.renderScale.label,
-        hint = if (state.renderScale != state.sessionScale) "Se aplica al volver a abrir el juego" else null,
+        stringResource(R.string.set_render_scale),
+        stringResource(state.renderScale.label),
+        hint = if (state.renderScale != state.sessionScale) stringResource(R.string.render_scale_hint) else null,
     )
-    QuickMenuItem.UPSCALER -> Setting("Reescalado", state.upscaler.label)
-    QuickMenuItem.FSR_UPSCALE -> Setting("Nitidez FSR (CAS)", if (state.fsrUpscale) "Activada" else "Desactivada")
-    QuickMenuItem.OVERLAY -> Setting("Indicador de rendimiento", state.perfMode.label)
+    QuickMenuItem.UPSCALER -> Setting(stringResource(R.string.set_upscaler), stringResource(state.upscaler.label))
+    QuickMenuItem.FSR_UPSCALE -> Setting(stringResource(R.string.set_fsr), stringResource(if (state.fsrUpscale) R.string.state_on_f else R.string.state_off_f))
+    QuickMenuItem.OVERLAY -> Setting(stringResource(R.string.set_overlay), stringResource(state.perfMode.label))
     QuickMenuItem.PHONE_RUMBLE -> Setting(
-        "Vibrar el teléfono",
-        if (state.phoneRumble) "Sí" else "No",
-        hint = "Solo si el mando no vibra",
+        stringResource(R.string.set_phone_rumble),
+        stringResource(if (state.phoneRumble) R.string.yes else R.string.no),
+        hint = stringResource(R.string.phone_rumble_hint),
     )
     else -> Setting(item.name, "")
 }

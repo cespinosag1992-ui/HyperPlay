@@ -45,7 +45,7 @@ class QuickResumeService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL) == null) {
             nm.createNotificationChannel(
-                NotificationChannel(CHANNEL, "Juego en Quick Resume", NotificationManager.IMPORTANCE_LOW),
+                NotificationChannel(CHANNEL, getString(R.string.qr_channel), NotificationManager.IMPORTANCE_LOW),
             )
         }
         val open = PendingIntent.getActivity(
@@ -62,10 +62,10 @@ class QuickResumeService : Service() {
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(title)
-            .setContentText("En memoria: vuelve al instante donde lo dejaste")
+            .setContentText(getString(R.string.qr_text))
             .setContentIntent(open)
             .setOngoing(true)
-            .addAction(Notification.Action.Builder(null, "Cerrar juego", kill).build())
+            .addAction(Notification.Action.Builder(null, getString(R.string.qr_close), kill).build())
             .build()
     }
 

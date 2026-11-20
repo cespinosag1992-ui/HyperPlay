@@ -1,4 +1,4 @@
-package com.murdoc820.hyperplay.session
+﻿package com.murdoc820.hyperplay.session
 
 import com.murdoc820.hyperplay.engine.GameLauncher
 import org.junit.Assert.assertEquals
@@ -75,7 +75,7 @@ class GameSessionLogicTest {
         assertEquals("0 (normal)", GameSessionLogic.describeExitCode(0))
         assertEquals("137", GameSessionLogic.describeExitCode(137))
         assertEquals("1", GameSessionLogic.describeExitCode(1))
-        assertEquals("desconocido", GameSessionLogic.describeExitCode(-1))
+        assertEquals("—", GameSessionLogic.describeExitCode(-1))
         assertEquals(30f, GameSessionLogic.ratePerSecond(10, 25, 500), 1e-4f)
         assertEquals(0f, GameSessionLogic.ratePerSecond(10, 5, 500), 1e-4f)
         assertEquals(0f, GameSessionLogic.ratePerSecond(10, 20, 0), 1e-4f)

@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Español. El idioma por defecto (inglés) está en values/strings.xml. Mantener ambos iguales. -->
+<resources>
+    <!-- Comunes -->
+    <string name="cancel">Cancelar</string>
+    <string name="remove">Quitar</string>
+    <string name="yes">Sí</string>
+    <string name="no">No</string>
+    <string name="state_on">Activado</string>
+    <string name="state_off">Desactivado</string>
+    <string name="state_on_f">Activada</string>
+    <string name="state_off_f">Desactivada</string>
+    <string name="searching">Buscando…</string>
+
+    <!-- Botones del mando -->
+    <string name="hint_open">Abrir</string>
+    <string name="hint_play">Jugar</string>
+    <string name="hint_continue">Continuar</string>
+    <string name="hint_find_games">Buscar juegos</string>
+    <string name="hint_exit">Salir</string>
+    <string name="hint_back">Atrás</string>
+    <string name="hint_select">Elegir</string>
+
+    <!-- Launcher: pestañas e inicio -->
+    <string name="tab_home">Inicio</string>
+    <string name="tab_settings">Ajustes</string>
+    <string name="update_banner">Nueva versión %1$s disponible · Ajustes (RB) para instalar</string>
+    <string name="library">Biblioteca</string>
+    <string name="back_to_library_short">‹  Biblioteca</string>
+    <plurals name="games_count">
+        <item quantity="one">%d juego</item>
+        <item quantity="many">%d juegos</item>
+        <item quantity="other">%d juegos</item>
+    </plurals>
+    <string name="chip_held_home">En pausa · vuelve al instante</string>
+    <string name="chip_held">En pausa en memoria</string>
+    <string name="chip_windows_64">Windows · 64 bits</string>
+    <string name="chip_windows_32">Windows · 32 bits</string>
+    <string name="library_searching">Buscando juegos…</string>
+    <string name="library_empty">Tu biblioteca está vacía</string>
+    <string name="library_empty_hint">Copia la carpeta de un juego de PC (con su .exe) en %1$s y busca juegos.</string>
+
+    <!-- Launcher: ficha del juego -->
+    <string name="no_game_info">Sin ficha oficial todavía: conéctate a internet y vuelve a abrir la biblioteca.</string>
+    <string name="play_button">JUGAR</string>
+    <string name="continue_button">CONTINUAR</string>
+    <string name="held_hint">Vuelves justo donde lo dejaste</string>
+    <string name="cache_label">Caché: %1$s</string>
+    <string name="cache_first_time">Se crea la primera vez que juegas</string>
+    <string name="cache_stats">%1$s bloques · %2$d MB</string>
+    <string name="thousands">%1$d mil</string>
+    <string name="info_developer">Desarrollador</string>
+    <string name="info_publisher">Editor</string>
+    <string name="info_release">Lanzamiento</string>
+    <string name="info_platform">Plataforma</string>
+    <string name="info_executable">Ejecutable</string>
+    <string name="info_saves">Partidas</string>
+
+    <!-- Launcher: ajustes -->
+    <string name="add_folder">Añadir carpeta</string>
+    <string name="section_folders">Carpetas de juegos</string>
+    <string name="no_folders">Ninguna carpeta</string>
+    <string name="section_updates">Actualizaciones</string>
+    <string name="section_reports">Informes de errores</string>
+    <string name="section_device">Este dispositivo</string>
+    <string name="info_cpu">Procesador</string>
+    <string name="info_gpu">Gráficos</string>
+    <string name="info_games">Juegos</string>
+    <string name="section_controllers">Mandos</string>
+    <string name="info_supported">Compatibles</string>
+    <string name="supported_value">Xbox, PlayStation, GameSir, 8BitDo y HID</string>
+    <string name="info_rumble">Vibración</string>
+    <string name="rumble_value">Mando o, si no tiene, el teléfono</string>
+    <string name="info_quick_menu">Menú rápido</string>
+    <string name="quick_menu_value">L3 + R3 o Select + Start</string>
+    <string name="scan_preparing">Preparando escaneo…</string>
+    <string name="scan_progress">Escaneando %1$d/%2$d: %3$s · %4$d encontrados</string>
+    <string name="scan_error">Error al escanear: %1$s</string>
+
+    <!-- Actualizaciones -->
+    <string name="update_installed">Versión instalada</string>
+    <string name="update_status">Estado</string>
+    <string name="update_idle">Sin comprobar</string>
+    <string name="update_up_to_date">Tienes la última versión</string>
+    <string name="update_new">Nueva: %1$s</string>
+    <string name="update_downloading">Descargando %1$s · %2$d %%</string>
+    <string name="update_installing">Instalando %1$s…</string>
+    <string name="update_install">Descargar e instalar</string>
+    <string name="update_check">Buscar actualizaciones</string>
+    <string name="update_err_check">No se pudo comprobar: %1$s</string>
+    <string name="update_err_offline">sin conexión</string>
+    <string name="update_err_held">Cierra el juego en pausa antes de actualizar.</string>
+    <string name="update_err_permission">Permite a HyperPlay instalar apps y vuelve a pulsar Instalar.</string>
+    <string name="update_err_failed">No se pudo actualizar: %1$s</string>
+    <string name="update_err_install">La instalación falló: %1$s</string>
+    <string name="update_err_code">código %1$d</string>
+
+    <!-- Informes de errores -->
+    <string name="consent_title">¿Ayudas a mejorar HyperPlay?</string>
+    <string name="consent_body">Si un juego o la app fallan, HyperPlay puede enviar un informe con el registro del error, el modelo del teléfono, la versión de Android y el juego. No incluye tus partidas, cuentas ni archivos personales. Los informes siempre se guardan también en tu teléfono y puedes cambiarlo en Ajustes.</string>
+    <string name="consent_send">Enviar informes</string>
+    <string name="consent_decline">No, gracias</string>
+    <string name="reports_saved">Guardados en el teléfono</string>
+    <string name="reports_none">Ninguno pendiente</string>
+    <plurals name="reports_pending">
+        <item quantity="one">%d pendiente</item>
+        <item quantity="many">%d pendientes</item>
+        <item quantity="other">%d pendientes</item>
+    </plurals>
+    <string name="reports_server">Servidor</string>
+    <string name="reports_server_unset">No configurado en esta versión</string>
+    <string name="turn_on">Activar</string>
+    <string name="turn_off">Desactivar</string>
+    <string name="send_now">Enviar ahora</string>
+
+    <!-- Carpetas -->
+    <string name="remove_folder_title">¿Quitar esta carpeta?</string>
+    <string name="remove_folder_body">%1$s dejará de aparecer en la biblioteca. Los archivos no se borran.</string>
+    <string name="toast_no_picker">No hay selector de carpetas disponible</string>
+    <string name="toast_pick_internal">Elige una carpeta del almacenamiento interno o de la tarjeta SD</string>
+    <string name="toast_exe_missing">No se encuentra %1$s</string>
+
+    <!-- Permiso de almacenamiento -->
+    <string name="perm_title">Acceso a tus juegos</string>
+    <string name="perm_body">HyperPlay abre los juegos directamente desde su carpeta (por ejemplo /sdcard/PC games) y guarda las partidas junto al juego. Para eso necesita el permiso \"Acceso a todos los archivos\". Actívalo en Ajustes y vuelve.</string>
+    <string name="perm_open">Abrir Ajustes</string>
+
+    <!-- Sesión de juego -->
+    <string name="loading_quick_menu_hint">L3 + R3 abre el menú rápido</string>
+    <string name="stage_pe_load">Cargando PE e IAT…</string>
+    <string name="stage_executing">Ejecutando en Oryon JIT…</string>
+    <string name="ended_error">No se pudo iniciar el juego</string>
+    <string name="ended_exit">La sesión terminó (código %1$s)</string>
+    <string name="back_to_library">Volver a la biblioteca</string>
+    <string name="kill_confirm_title">¿Forzar el cierre?</string>
+    <string name="kill_confirm_body">Se pierde lo que no hayas guardado en el juego.</string>
+    <string name="closing">Cerrando…</string>
+    <string name="force_close">Forzar cierre</string>
+    <string name="resume">Reanudar</string>
+    <string name="quick_exit">Salir (sigue en memoria)</string>
+    <string name="menu_hint">A elegir  ·  B volver  ·  ◀ ▶ cambiar</string>
+    <string name="fps_now">%1$.0f FPS</string>
+    <string name="fps_of">%1$.0f FPS  de %2$d</string>
+    <string name="battery_temp">Batería %1$.1f °C</string>
+    <string name="thermal_fg">Protección térmica: HyperFG a %1$d FPS</string>
+    <string name="thermal_cap">Protección térmica: tope %1$d FPS</string>
+    <string name="section_performance">Rendimiento</string>
+    <string name="section_image">Imagen</string>
+    <string name="section_controls">Controles y pantalla</string>
+    <string name="set_fps_cap">Tope de FPS</string>
+    <string name="fps_cap_by_fg">Lo fija HyperFG</string>
+    <string name="fps_cap_by_fg_hint">Desactiva HyperFG para elegirlo</string>
+    <string name="fps_cap_heat">Ahora %1$d FPS por calor</string>
+    <string name="set_frame_gen">Generación de fotogramas</string>
+    <string name="frame_gen_value">%1$d → %2$d FPS</string>
+    <string name="frame_gen_throttled">Limitada a %1$d FPS hasta que se enfríe</string>
+    <string name="set_thermal">Protección térmica</string>
+    <string name="thermal_hint">Mantiene la batería por debajo de 40 °C</string>
+    <string name="set_render_scale">Resolución de render</string>
+    <string name="render_scale_hint">Se aplica al volver a abrir el juego</string>
+    <string name="set_upscaler">Reescalado</string>
+    <string name="set_fsr">Nitidez FSR (CAS)</string>
+    <string name="set_overlay">Indicador de rendimiento</string>
+    <string name="set_phone_rumble">Vibrar el teléfono</string>
+    <string name="phone_rumble_hint">Solo si el mando no vibra</string>
+    <string name="notice_fps_locked">Tope de FPS bloqueado: desactiva HyperFG para elegirlo</string>
+    <string name="notice_render_scale">La escala de render se aplica al iniciar el juego de nuevo.</string>
+
+    <!-- Opciones de la sesión -->
+    <string name="fps_cap_60">60 FPS (Eficiente)</string>
+    <string name="fps_cap_unlimited">Sin límite</string>
+    <string name="render_native" formatted="false">100 % Nativa</string>
+    <string name="upscaler_auto" formatted="false">Auto (SGSR v1 si escala &lt; 100 %)</string>
+    <string name="upscaler_sgsr">SGSR v1 siempre (nitidez)</string>
+    <string name="upscaler_off">Bilineal (OFF)</string>
+    <string name="overlay_full">Completo</string>
+
+    <!-- Indicador de rendimiento -->
+    <string name="osd_fps_min">FPS mín</string>
+    <string name="osd_thermal_headroom">Margen térm</string>
+    <string name="osd_charging">Carga</string>
+    <string name="osd_draw">Consumo</string>
+    <string name="osd_thermal">Térmico</string>
+
+    <!-- Notificación de Quick Resume -->
+    <string name="qr_channel">Juego en Quick Resume</string>
+    <string name="qr_text">En memoria: vuelve al instante donde lo dejaste</string>
+    <string name="qr_close">Cerrar juego</string>
+</resources>

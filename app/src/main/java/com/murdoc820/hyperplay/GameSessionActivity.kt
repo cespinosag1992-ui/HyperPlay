@@ -601,7 +601,7 @@ class GameSessionActivity : ComponentActivity() {
     private fun changeFpsCap(step: Int) {
         if (!FrameGenLogic.fpsCapSelectable(state.frameGen)) {
             // Con HyperFG el ritmo lo decide la generación (60 -> 120): el tope queda bloqueado.
-            state.notice = "Tope de FPS bloqueado: desactiva HyperFG para elegirlo"
+            state.notice = getString(R.string.notice_fps_locked)
             sounds.error()
             return
         }
@@ -634,7 +634,7 @@ class GameSessionActivity : ComponentActivity() {
         val next = RenderScaleOption.cycle(state.renderScale, step)
         state.renderScale = next
         prefs.edit { putString(RenderScaleOption.PREFS_KEY, next.key) }
-        if (next != state.sessionScale) state.notice = "La escala de render se aplica al iniciar el juego de nuevo."
+        if (next != state.sessionScale) state.notice = getString(R.string.notice_render_scale)
         sounds.navigate()
     }
 

@@ -1459,3 +1459,8 @@ Reglas respetadas: sin tocar `OryonEmitterBackend`, `DxbcToSpirv`, `MediaFoundat
 - **Logo propio** (`res/drawable-nodpi/hyperplay_logo.png`, recorte de `docs/icono_hyperplay.jpg`) en lugar de la "H": barra superior, permiso y pantalla de carga (`HyperLogo`).
 - **Foco con mando:** en modo táctil nada tiene foco y Compose no entrega teclas. `MainActivity.dispatchKeyEvent` sube `navKeyTick` con cruceta/A, y si no hay foco el launcher lo coloca (Inicio en la primera cápsula, ficha en JUGAR, Ajustes en el primer elemento). Verificado con `input keyevent`: anillo de foco visible y A abre la ficha.
 - El fallo `:app:mergeDexRelease` fue puntual (archivo bloqueado). Al repetir, el build pasó.
+- **Idioma del sistema** (2026-11-20): todos los textos de la interfaz pasaron a `res/values/strings.xml` (inglés, por defecto) y `res/values-es/strings.xml` (español). Launcher, sesión, menú rápido, overlay, notificación de Quick Resume, avisos y errores del actualizador.
+  - Las opciones (`FpsCapOption`, `RenderScaleOption`, `UpscalerMode`, `PerfOverlayMode`, `LoadingStage`) llevan `@StringRes`. `LibraryState.scan` es un `ScanProgress` que la UI traduce.
+  - La ficha de Steam se pide en el idioma del sistema (`steamLanguage()`). Si cambia el idioma, se vuelve a descargar (`info.json` guarda `lang`).
+  - Verificado en el teléfono con `cmd locale set-app-locales … en-US` (todo en inglés, géneros de Steam incluidos) y vuelta a `[]` (español).
+- **GitHub bilingüe**: README, CHANGELOG, docs/PUBLICAR.md, plantilla de Issue, README del Worker y texto de los Issues automáticos en inglés y español. La Release usa como notas la sección del CHANGELOG.

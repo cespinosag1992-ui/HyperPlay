@@ -1,4 +1,196 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Default language (English). Spanish lives in values-es/strings.xml. Keep both in sync. -->
 <resources>
-    <string name="app_name">HyperPlay</string>
+    <string name="app_name" translatable="false">HyperPlay</string>
+    <string name="brand_upper" translatable="false">HYPERPLAY</string>
+
+    <!-- Common -->
+    <string name="cancel">Cancel</string>
+    <string name="remove">Remove</string>
+    <string name="yes">Yes</string>
+    <string name="no">No</string>
+    <string name="state_on">On</string>
+    <string name="state_off">Off</string>
+    <string name="state_on_f">On</string>
+    <string name="state_off_f">Off</string>
+    <string name="searching">Searching…</string>
+    <string name="dash" translatable="false">—</string>
+
+    <!-- Gamepad hints -->
+    <string name="hint_open">Open</string>
+    <string name="hint_play">Play</string>
+    <string name="hint_continue">Continue</string>
+    <string name="hint_find_games">Find games</string>
+    <string name="hint_exit">Exit</string>
+    <string name="hint_back">Back</string>
+    <string name="hint_select">Select</string>
+
+    <!-- Launcher: tabs and home -->
+    <string name="tab_home">Home</string>
+    <string name="tab_settings">Settings</string>
+    <string name="update_banner">New version %1$s available · Settings (RB) to install</string>
+    <string name="library">Library</string>
+    <string name="back_to_library_short">‹  Library</string>
+    <plurals name="games_count">
+        <item quantity="one">%d game</item>
+        <item quantity="other">%d games</item>
+    </plurals>
+    <string name="chip_held_home">Paused · resume instantly</string>
+    <string name="chip_held">Paused in memory</string>
+    <string name="chip_windows_64">Windows · 64-bit</string>
+    <string name="chip_windows_32">Windows · 32-bit</string>
+    <string name="library_searching">Looking for games…</string>
+    <string name="library_empty">Your library is empty</string>
+    <string name="library_empty_hint">Copy a PC game folder (with its .exe) to %1$s and search for games.</string>
+
+    <!-- Launcher: game page -->
+    <string name="no_game_info">No official info yet: connect to the internet and reopen the library.</string>
+    <string name="play_button">PLAY</string>
+    <string name="continue_button">CONTINUE</string>
+    <string name="held_hint">You resume right where you left off</string>
+    <string name="cache_label">Cache: %1$s</string>
+    <string name="cache_first_time">Built the first time you play</string>
+    <string name="cache_stats">%1$s blocks · %2$d MB</string>
+    <string name="thousands">%1$dk</string>
+    <string name="info_developer">Developer</string>
+    <string name="info_publisher">Publisher</string>
+    <string name="info_release">Release</string>
+    <string name="info_platform">Platform</string>
+    <string name="info_executable">Executable</string>
+    <string name="info_saves">Saves</string>
+
+    <!-- Launcher: settings -->
+    <string name="add_folder">Add folder</string>
+    <string name="section_folders">Game folders</string>
+    <string name="no_folders">No folders</string>
+    <string name="section_updates">Updates</string>
+    <string name="section_reports">Error reports</string>
+    <string name="section_device">This device</string>
+    <string name="info_cpu">Processor</string>
+    <string name="info_gpu">Graphics</string>
+    <string name="info_games">Games</string>
+    <string name="section_controllers">Controllers</string>
+    <string name="info_supported">Supported</string>
+    <string name="supported_value">Xbox, PlayStation, GameSir, 8BitDo and HID</string>
+    <string name="info_rumble">Vibration</string>
+    <string name="rumble_value">Controller, or the phone if it has none</string>
+    <string name="info_quick_menu">Quick menu</string>
+    <string name="quick_menu_value">L3 + R3 or Select + Start</string>
+    <string name="scan_preparing">Preparing scan…</string>
+    <string name="scan_progress">Scanning %1$d/%2$d: %3$s · %4$d found</string>
+    <string name="scan_error">Scan error: %1$s</string>
+
+    <!-- Updates -->
+    <string name="update_installed">Installed version</string>
+    <string name="update_status">Status</string>
+    <string name="update_idle">Not checked</string>
+    <string name="update_up_to_date">You have the latest version</string>
+    <string name="update_new">New: %1$s</string>
+    <string name="update_downloading">Downloading %1$s · %2$d %%</string>
+    <string name="update_installing">Installing %1$s…</string>
+    <string name="update_install">Download and install</string>
+    <string name="update_check">Check for updates</string>
+    <string name="update_err_check">Couldn\'t check: %1$s</string>
+    <string name="update_err_offline">no connection</string>
+    <string name="update_err_held">Close the paused game before updating.</string>
+    <string name="update_err_permission">Allow HyperPlay to install apps and press Install again.</string>
+    <string name="update_err_failed">Couldn\'t update: %1$s</string>
+    <string name="update_err_install">Installation failed: %1$s</string>
+    <string name="update_err_code">code %1$d</string>
+
+    <!-- Error reports -->
+    <string name="consent_title">Help improve HyperPlay?</string>
+    <string name="consent_body">If a game or the app fails, HyperPlay can send a report with the error log, the phone model, the Android version and the game. It doesn\'t include your saves, accounts or personal files. Reports are always kept on your phone too, and you can change this in Settings.</string>
+    <string name="consent_send">Send reports</string>
+    <string name="consent_decline">No, thanks</string>
+    <string name="reports_saved">Saved on the phone</string>
+    <string name="reports_none">None pending</string>
+    <plurals name="reports_pending">
+        <item quantity="one">%d pending</item>
+        <item quantity="other">%d pending</item>
+    </plurals>
+    <string name="reports_server">Server</string>
+    <string name="reports_server_unset">Not configured in this version</string>
+    <string name="turn_on">Turn on</string>
+    <string name="turn_off">Turn off</string>
+    <string name="send_now">Send now</string>
+
+    <!-- Folders -->
+    <string name="remove_folder_title">Remove this folder?</string>
+    <string name="remove_folder_body">%1$s will no longer appear in the library. The files are not deleted.</string>
+    <string name="toast_no_picker">No folder picker available</string>
+    <string name="toast_pick_internal">Choose a folder on internal storage or the SD card</string>
+    <string name="toast_exe_missing">Can\'t find %1$s</string>
+
+    <!-- Storage permission -->
+    <string name="perm_title">Access to your games</string>
+    <string name="perm_body">HyperPlay opens games straight from their folder (for example /sdcard/PC games) and keeps saves next to the game. For that it needs the \"All files access\" permission. Turn it on in Settings and come back.</string>
+    <string name="perm_open">Open Settings</string>
+
+    <!-- Game session -->
+    <string name="loading_quick_menu_hint">L3 + R3 opens the quick menu</string>
+    <string name="stage_pe_load">Loading PE and IAT…</string>
+    <string name="stage_executing">Running on Oryon JIT…</string>
+    <string name="ended_error">Couldn\'t start the game</string>
+    <string name="ended_exit">The session ended (code %1$s)</string>
+    <string name="back_to_library">Back to library</string>
+    <string name="kill_confirm_title">Force close?</string>
+    <string name="kill_confirm_body">Anything you haven\'t saved in the game will be lost.</string>
+    <string name="closing">Closing…</string>
+    <string name="force_close">Force close</string>
+    <string name="resume">Resume</string>
+    <string name="quick_exit">Exit (stays in memory)</string>
+    <string name="menu_hint">A select  ·  B back  ·  ◀ ▶ change</string>
+    <string name="fps_now">%1$.0f FPS</string>
+    <string name="fps_of">%1$.0f FPS  of %2$d</string>
+    <string name="battery_temp">Battery %1$.1f °C</string>
+    <string name="thermal_fg">Thermal protection: HyperFG at %1$d FPS</string>
+    <string name="thermal_cap">Thermal protection: %1$d FPS cap</string>
+    <string name="section_performance">Performance</string>
+    <string name="section_image">Image</string>
+    <string name="section_controls">Controls and display</string>
+    <string name="set_fps_cap">FPS cap</string>
+    <string name="fps_cap_by_fg">Set by HyperFG</string>
+    <string name="fps_cap_by_fg_hint">Turn off HyperFG to choose it</string>
+    <string name="fps_cap_heat">Now %1$d FPS due to heat</string>
+    <string name="set_frame_gen">Frame generation</string>
+    <string name="frame_gen_value">%1$d → %2$d FPS</string>
+    <string name="frame_gen_throttled">Limited to %1$d FPS until it cools down</string>
+    <string name="frame_gen_hint" translatable="false">HyperFG 2×</string>
+    <string name="set_thermal">Thermal protection</string>
+    <string name="thermal_hint">Keeps the battery below 40 °C</string>
+    <string name="set_render_scale">Render resolution</string>
+    <string name="render_scale_hint">Applies when you reopen the game</string>
+    <string name="set_upscaler">Upscaling</string>
+    <string name="set_fsr">FSR sharpening (CAS)</string>
+    <string name="set_overlay">Performance overlay</string>
+    <string name="set_phone_rumble">Vibrate the phone</string>
+    <string name="phone_rumble_hint">Only if the controller doesn\'t vibrate</string>
+    <string name="notice_fps_locked">FPS cap locked: turn off HyperFG to choose it</string>
+    <string name="notice_render_scale">Render scale applies when the game starts again.</string>
+
+    <!-- Session options -->
+    <string name="fps_cap_60">60 FPS (Efficient)</string>
+    <string name="fps_cap_72" translatable="false">72 FPS</string>
+    <string name="fps_cap_120" translatable="false">120 FPS</string>
+    <string name="fps_cap_unlimited">Unlimited</string>
+    <string name="render_native" formatted="false">100 % Native</string>
+    <string name="render_85" translatable="false" formatted="false">85 %</string>
+    <string name="render_75" translatable="false" formatted="false">75 %</string>
+    <string name="upscaler_auto" formatted="false">Auto (SGSR v1 if scale &lt; 100 %)</string>
+    <string name="upscaler_sgsr">SGSR v1 always (sharpness)</string>
+    <string name="upscaler_off">Bilinear (OFF)</string>
+    <string name="overlay_full">Full</string>
+
+    <!-- Performance overlay -->
+    <string name="osd_fps_min">FPS min</string>
+    <string name="osd_thermal_headroom">Therm room</string>
+    <string name="osd_charging">Charge</string>
+    <string name="osd_draw">Draw</string>
+    <string name="osd_thermal">Thermal</string>
+
+    <!-- Quick Resume notification -->
+    <string name="qr_channel">Game in Quick Resume</string>
+    <string name="qr_text">In memory: resume instantly where you left off</string>
+    <string name="qr_close">Close game</string>
 </resources>

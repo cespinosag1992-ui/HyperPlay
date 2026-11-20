@@ -1,10 +1,50 @@
-# Servidor de informes de errores (Cloudflare Worker)
+# Error report server / Servidor de informes de errores (Cloudflare Worker)
+
+**[English](#english) · [Español](#español)**
+
+---
+
+## English
+
+The HyperPlay app always keeps errors on the phone (`files/diag/`). If the user agrees, it sends
+them to this Worker, which creates a GitHub **Issue** labeled `auto-report`. The GitHub token
+lives only in Cloudflare: the APK carries no secret.
+
+### Setup (once)
+
+1. **GitHub token** (fine-grained, least privilege):
+   GitHub → Settings → Developer settings → Fine-grained tokens → *Generate new token*.
+   - Repository access: *Only select repositories* → `HyperPlay`.
+   - Permissions → Repository → **Issues: Read and write** (nothing else).
+2. Free **Cloudflare account**: <https://dash.cloudflare.com/sign-up>.
+3. In this folder:
+   ```bash
+   npx wrangler login
+   npx wrangler secret put GITHUB_TOKEN      # paste the token from step 1
+   npx wrangler deploy
+   ```
+   Wrangler prints the URL, for example `https://hyperplay-reports.<your-account>.workers.dev`.
+4. Check that it answers: open the URL in a browser → `HyperPlay report worker OK`.
+5. Tell the app where to send: GitHub → repo → Settings → Secrets and variables → Actions →
+   **Variables** → `HP_REPORT_URL` = `https://hyperplay-reports.<your-account>.workers.dev/report`.
+   The next published versions will carry that URL.
+6. (Optional) per-IP limit and de-duplication: create the KV namespace as `wrangler.toml` explains.
+
+### What is sent
+
+Type (app `crash`, unexpected session end `cierre`, `juego` that exited with an error), app
+version, phone model, Android version, the error details and the last lines of the game log, the
+app log and the app's own logcat. No saves, accounts or personal files.
+
+---
+
+## Español
 
 La app HyperPlay guarda siempre los errores en el teléfono (`files/diag/`). Si el usuario lo
 acepta, los envía a este Worker, que crea un **Issue** en GitHub con la etiqueta `auto-report`.
 El token de GitHub vive solo en Cloudflare: la APK no lleva ningún secreto.
 
-## Puesta en marcha (una sola vez)
+### Puesta en marcha (una sola vez)
 
 1. **Token de GitHub** (fine-grained, mínimo privilegio):
    GitHub → Settings → Developer settings → Fine-grained tokens → *Generate new token*.
@@ -24,7 +64,7 @@ El token de GitHub vive solo en Cloudflare: la APK no lleva ningún secreto.
    Las siguientes versiones publicadas llevarán esa URL.
 6. (Opcional) límite por IP y deduplicado: crea el espacio KV como indica `wrangler.toml`.
 
-## Qué se envía
+### Qué se envía
 
 Tipo (`crash` de la app, `cierre` inesperado de una sesión, `juego` que terminó con error),
 versión de la app, modelo del teléfono, versión de Android, los detalles del error y las últimas

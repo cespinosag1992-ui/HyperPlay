@@ -17,10 +17,15 @@ import java.io.File
 data class LibraryState(
     val games: List<PortableGame> = emptyList(),
     val scanning: Boolean = false,
-    val progress: String = "",
+    /** Carpeta que se escanea ahora (null fuera del escaneo). La UI lo traduce al idioma del sistema. */
+    val scan: ScanProgress? = null,
     val scannedOnce: Boolean = false,
+    /** Detalle técnico del fallo del escaneo (la UI añade "Error al escanear"). */
     val error: String? = null,
 )
+
+/** Progreso del escaneo: carpeta [index] de [total] ([total] = 0 → preparando). */
+data class ScanProgress(val index: Int, val total: Int, val folder: String, val found: Int)
 
 /**
  * Caché en memoria (de proceso) de la biblioteca.
@@ -36,24 +41,24 @@ object LibraryRepository {
     fun scan(folders: List<String>) {
         if (scanJob?.isActive == true) return
         scanJob = scope.launch {
-            _state.update { it.copy(scanning = true, error = null, progress = "Preparando escaneo…") }
+            _state.update { it.copy(scanning = true, error = null, scan = ScanProgress(0, 0, "", 0)) }
             try {
                 val scanner = PortableExeScanner(HyperPlayNative::inspectPe, LauncherLogic.SCAN_MAX_DEPTH)
                 val results = mutableListOf<List<PortableGame>>()
                 folders.forEachIndexed { i, folder ->
                     val found = results.sumOf { it.size }
                     _state.update {
-                        it.copy(progress = "Escaneando ${i + 1}/${folders.size}: ${LauncherLogic.displayFolder(folder)} · $found encontrados")
+                        it.copy(scan = ScanProgress(i + 1, folders.size, folder, found))
                     }
                     results += scanner.scan(File(folder))
                 }
                 val games = LauncherLogic.mergeGames(results)
                 _state.update {
-                    it.copy(games = games, scanning = false, scannedOnce = true, progress = "${games.size} juegos")
+                    it.copy(games = games, scanning = false, scannedOnce = true, scan = null)
                 }
             } catch (t: Throwable) {
                 _state.update {
-                    it.copy(scanning = false, scannedOnce = true, error = "Error al escanear: ${t.message ?: t.javaClass.simpleName}")
+                    it.copy(scanning = false, scannedOnce = true, scan = null, error = t.message ?: t.javaClass.simpleName)
                 }
             }
         }
