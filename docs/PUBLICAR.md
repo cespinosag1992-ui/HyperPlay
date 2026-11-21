@@ -34,7 +34,8 @@ Repository secrets (Settings → Secrets and variables → Actions):
    git push origin v1.2.3
    ```
 3. The **Release** workflow builds the signed APK (`versionCode` = 10000·major + 100·minor +
-   patch) and publishes `HyperPlay-v1.2.3.apk`, its `.sha256` and the changelog section as notes.
+   patch) and publishes `HyperPlay-v1.2.3-Snapdragon8Elite-arm64-v8a.apk` (the name always says
+   the processor), its `.sha256` and the changelog section as notes.
 4. On phones, HyperPlay detects it (on launch, at most every 6 h, or with
    **Settings → Check for updates**), downloads it, checks the SHA-256 and installs it on top.
 
@@ -79,7 +80,8 @@ Secretos del repositorio (Settings → Secrets and variables → Actions):
    git push origin v1.2.3
    ```
 3. El workflow **Release** compila el APK firmado (`versionCode` = 10000·mayor + 100·menor +
-   parche) y publica `HyperPlay-v1.2.3.apk`, su `.sha256` y la sección del changelog como notas.
+   parche) y publica `HyperPlay-v1.2.3-Snapdragon8Elite-arm64-v8a.apk` (el nombre siempre indica el
+   procesador), su `.sha256` y la sección del changelog como notas.
 4. En los teléfonos, HyperPlay lo detecta (al abrirse, como mucho cada 6 h, o con
    **Ajustes → Buscar actualizaciones**), lo descarga, comprueba el SHA-256 e instala por encima.
 

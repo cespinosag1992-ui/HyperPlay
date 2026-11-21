@@ -84,6 +84,7 @@ struct Img {
 }  // namespace
 
 struct HyperFrameGen::Impl {
+    FrameGenHost* host = nullptr;
     DirectVulkanBridge::GpuContext ctx{};
     Fns f;
     bool deviceReady = false;
@@ -138,7 +139,7 @@ struct HyperFrameGen::Impl {
     bool loadDevice() {
         if (deviceReady) return true;
         if (failed) return false;
-        if (!DirectVulkanBridge::shared().gpuContext(ctx)) return false;
+        if (!host->gpuContext(ctx)) return false;
 #define FG_LOAD(name) f.name = reinterpret_cast<PFN_##name>(ctx.getDeviceProcAddr(ctx.device, #name));
         FG_DEVICE_FNS(FG_LOAD)
 #undef FG_LOAD
@@ -339,7 +340,8 @@ struct HyperFrameGen::Impl {
             ok = ok && makeImage(lv[2], VK_FORMAT_R16_SFLOAT, w8, h8, lumUse);
         }
         ok = ok && makeImage(flow, VK_FORMAT_R16G16_SFLOAT, w8, h8, lumUse);
-        ok = ok && makeImage(interp, VK_FORMAT_R8G8B8A8_UNORM, iw, ih, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        ok = ok && makeImage(interp, VK_FORMAT_R8G8B8A8_UNORM, iw, ih, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                                                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
         // Contadores del corte de escena (diffSum, count).
         if (ok) {
             VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -673,7 +675,7 @@ struct HyperFrameGen::Impl {
         cmdSlot ^= 1;
         f.vkWaitForFences(ctx.device, 1, &fences[slot], VK_TRUE, 200000000ull);
         DirectVulkanBridge::SwapTarget t;
-        if (!DirectVulkanBridge::shared().beginPresent(t)) return;
+        if (!host->beginPresent(t)) return;
         VkCommandBuffer cmd = cmds[slot];
         bool recorded = false;
         if (ensurePresentPipes(t.format)) {
@@ -746,7 +748,7 @@ struct HyperFrameGen::Impl {
             f.vkEndCommandBuffer(cmd);
         }
         // Una repetición (mismo frame) no cuenta como frame nuevo en el HUD; el real de HyperFG sí.
-        DirectVulkanBridge::shared().endPresent(t, cmd, fences[slot], !jobIsRepeat);
+        host->endPresent(t, cmd, fences[slot], !jobIsRepeat);
         const uint64_t n = sReal.fetch_add(1, std::memory_order_relaxed) + 1;
         if (n % 240 == 0) {
             LOGI("HyperFG: %llu sintéticos, %llu reales, %llu omitidos (frame lento), %llu cancelados, %llu repeticiones",
@@ -776,16 +778,32 @@ struct HyperFrameGen::Impl {
     }
 };
 
+namespace {
+struct BridgeHost final : FrameGenHost {
+    bool gpuContext(DirectVulkanBridge::GpuContext& out) override { return DirectVulkanBridge::shared().gpuContext(out); }
+    bool beginPresent(DirectVulkanBridge::SwapTarget& out) override { return DirectVulkanBridge::shared().beginPresent(out); }
+    bool endPresent(const DirectVulkanBridge::SwapTarget& t, VkCommandBuffer cmd, VkFence fence, bool count) override {
+        return DirectVulkanBridge::shared().endPresent(t, cmd, fence, count);
+    }
+};
+}  // namespace
+
 HyperFrameGen& HyperFrameGen::shared() {
-    static HyperFrameGen g;
+    static BridgeHost h;
+    static HyperFrameGen g(&h);
     return g;
 }
 
 HyperFrameGen::Impl& HyperFrameGen::impl() {
     std::lock_guard<std::mutex> lock(implMutex_);
-    if (impl_ == nullptr) impl_ = new Impl();
+    if (impl_ == nullptr) {
+        impl_ = new Impl();
+        impl_->host = host_;
+    }
     return *impl_;
 }
+
+VkImage HyperFrameGen::interpImage() noexcept { return impl().interp.image; }
 
 void HyperFrameGen::setEnabled(bool on) noexcept {
     if (g_enabled.exchange(on) != on) LOGI("HyperFG %s", on ? "ACTIVADO (2x)" : "desactivado");

@@ -6,9 +6,18 @@ section of the tagged version into the GitHub Release notes.
 Cada versión se describe primero en inglés y luego en español. El workflow de release copia la
 sección de la versión etiquetada en las notas de la Release de GitHub.
 
-## Unreleased
+## 1.1.0
 
 ### English
+
+- **Celeste at 120 FPS with HyperFG.** Games that draw with their own Vulkan (Celeste) now draw
+  into HyperPlay images; HyperPlay copies each frame to the screen. With HyperFG on (Quick menu),
+  HyperPlay generates one frame between each pair of game frames: Celeste runs at 60 and the
+  screen shows 120. Tested on the phone: title, main menu and 3D mountain menu at 120 FPS, no
+  crashes. Known: HyperFG uses more GPU at native resolution (about 60-80 %), and the thermal
+  protection of HyperFG does not act on these games yet.
+- The APK name now says the processor it is built for:
+  `HyperPlay-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk`.
 
 - **.NET games (Celeste)**: HyperPlay runs .NET Framework games with Mono x64 for Windows
   (translated) and FNA instead of XNA. The game's Vulkan renderer (FNA3D/SDL GPU) is passed to
@@ -85,6 +94,14 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Celeste a 120 FPS con HyperFG.** Los juegos que dibujan con su propio Vulkan (Celeste) dibujan
+  ahora en imágenes de HyperPlay, y HyperPlay copia cada frame a la pantalla. Con HyperFG activo
+  (Menú rápido), HyperPlay genera un frame entre cada par de frames del juego: Celeste va a 60 y
+  la pantalla muestra 120. Probado en el teléfono: título, menú principal y menú 3D de la montaña
+  a 120 FPS, sin cierres. Conocido: HyperFG usa más GPU a resolución nativa (60-80 %), y la
+  protección térmica de HyperFG aún no actúa en estos juegos.
+- El nombre del APK indica ahora el procesador para el que está hecho:
+  `HyperPlay-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk`.
 - **Juegos .NET (Celeste)**: HyperPlay ejecuta juegos de .NET Framework con Mono x64 para Windows
   (traducido) y FNA en lugar de XNA. El renderizador Vulkan del juego (FNA3D/SDL GPU) se pasa al
   Vulkan del teléfono casi tal cual (superficie Win32 → Android, orientación resuelta). Probado en

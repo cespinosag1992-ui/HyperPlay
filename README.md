@@ -45,7 +45,9 @@ works and is tested on a RedMagic 10S Pro (Android 15).
 
 ### Install
 
-1. Download `HyperPlay-vX.Y.Z.apk` from the latest [Release](../../releases/latest).
+1. Download `HyperPlay-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk` from the latest
+   [Release](../../releases/latest). The name says the processor it is built for: 64-bit ARM
+   (arm64-v8a), tuned for the Snapdragon 8 Elite.
 2. Install it (Android 12 or later, ARM64). The first time, Android asks you to allow apps from
    unknown sources.
 3. Grant **All files access**: games open from their own folder and saves are kept next to the
@@ -143,7 +145,9 @@ informes de errores) funciona y está probada en un RedMagic 10S Pro (Android 15
 
 ### Instalar
 
-1. Descarga el `HyperPlay-vX.Y.Z.apk` de la última [Release](../../releases/latest).
+1. Descarga el `HyperPlay-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk` de la última
+   [Release](../../releases/latest). El nombre indica el procesador para el que está hecho: ARM de
+   64 bits (arm64-v8a), optimizado para el Snapdragon 8 Elite.
 2. Instálalo (Android 12 o superior, ARM64). La primera vez Android pedirá permitir apps de
    origen desconocido.
 3. Concede **Acceso a todos los archivos**: los juegos se abren desde su carpeta y las partidas se

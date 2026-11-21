@@ -6,6 +6,10 @@
 Windows**, translated by the Oryon JIT like Unity's Mono, and replaces XNA with **FNA**. The game
 draws with FNA3D/SDL GPU over Vulkan, which HyperPlay passes to the phone's Vulkan
 (`app/src/main/cpp/loader/VulkanPassthrough.cpp`). See `app/src/main/cpp/loader/ManagedHost.h`.
+The game's swapchain is virtual (`app/src/main/cpp/gfx/GuestSwapchain.cpp`): the game draws into
+HyperPlay images and each present is copied to the real swapchain. With HyperFG on, HyperPlay
+presents an interpolated frame between the game's frames (Celeste 60 → 120).
+`setprop debug.hyperplay.vswap 0` turns the virtual swapchain off.
 
 Runtime layout on the phone (`/storage/emulated/0/HyperPlay/runtime/mono`):
 
@@ -51,6 +55,10 @@ Los juegos de .NET Framework como Celeste solo traen código IL. HyperPlay los e
 x64 para Windows**, traducido por el JIT Oryon como el Mono de Unity, y sustituye XNA por **FNA**.
 El juego dibuja con FNA3D/SDL GPU sobre Vulkan, que HyperPlay pasa al Vulkan del teléfono
 (`app/src/main/cpp/loader/VulkanPassthrough.cpp`). Ver `app/src/main/cpp/loader/ManagedHost.h`.
+El swapchain del juego es virtual (`app/src/main/cpp/gfx/GuestSwapchain.cpp`): el juego dibuja en
+imágenes de HyperPlay y cada present se copia al swapchain real. Con HyperFG activo, HyperPlay
+presenta un frame interpolado entre los del juego (Celeste 60 → 120).
+`setprop debug.hyperplay.vswap 0` apaga el swapchain virtual.
 
 Estructura del runtime en el teléfono (`/storage/emulated/0/HyperPlay/runtime/mono`):
 

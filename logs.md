@@ -5,6 +5,11 @@
 - Generado: 2026-11-17 17:48:28. Actualizado: 2026-11-17 20:30.
 - Archivos de log de la app: 114.
 
+## Corridas 2026-11-21 07:15-07:42 (Celeste 120 FPS) — ADB `192.168.0.2:33237`
+- Build release (la del móvil es release; la actividad de juego no se exporta: lanzar tocando portada → JUGAR).
+- `vswap 1`: `Swapchain virtual: 4 imágenes 2688x1216 formato 37`, primer frame presentado; FpsDetect 60; imagen correcta.
+- `vswap 1` + `fg 1`: `HyperFG en el swapchain del juego: 2688x1216, juego a 60 -> 120`; cada 4 s +240 sintéticos y +240 reales, 34-41 omitidos (frame lento) en total; FpsDetect 117-120; HUD 120-125 FPS, GPU 59-81 %, 40-43 °C. Sin FATAL/SIGSEGV/DEVICE_LOST. Propiedades devueltas a vacío y red de la app activada.
+
 ## Corridas 2026-11-18 17:20-18:40 (HK en partida, rendimiento, mando nuevo) — ADB `192.168.0.9:33145`
 | Corrida | Resultado | Notas |
 |---|---|---|

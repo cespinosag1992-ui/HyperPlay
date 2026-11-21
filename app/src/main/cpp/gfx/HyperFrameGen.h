@@ -19,11 +19,31 @@
 // Todos los recursos se crean una vez (al activar o si cambia el tamaño) y se liberan al
 // desactivar. Sin asignaciones por frame ni vkDeviceWaitIdle: barreras y fences por frame.
 // Apagado (por defecto) no hace nada: la ruta de presentación es exactamente la de siempre.
+#include "DirectVulkanBridge.h"
+
 namespace hyperplay::gpu {
+
+/// Dispositivo y swapchain donde trabaja HyperFG: el de HyperPlay (DirectVulkanBridge, juegos
+/// D3D) o el del juego (GuestSwapchain, juegos con Vulkan propio).
+class FrameGenHost {
+public:
+    virtual ~FrameGenHost() = default;
+    virtual bool gpuContext(DirectVulkanBridge::GpuContext& out) = 0;
+    /// Si devuelve true, el llamador DEBE llamar a endPresent.
+    virtual bool beginPresent(DirectVulkanBridge::SwapTarget& out) = 0;
+    virtual bool endPresent(const DirectVulkanBridge::SwapTarget& target, VkCommandBuffer cmd, VkFence fence,
+                            bool countFrame) = 0;
+};
 
 class HyperFrameGen {
 public:
+    /// HyperFG del renderizador D3D de HyperPlay.
     static HyperFrameGen& shared();
+    /// HyperFG propio para otro dispositivo (el del juego).
+    explicit HyperFrameGen(FrameGenHost* host) : host_(host) {}
+
+    /// Imagen del último frame intermedio (R8G8B8A8_UNORM, SHADER_READ_ONLY_OPTIMAL tras record()).
+    [[nodiscard]] VkImage interpImage() noexcept;
 
     /// Interruptor del Quick Menu; `debug.hyperplay.fg` (0/1) tiene prioridad (A/B).
     static void setEnabled(bool on) noexcept;
@@ -68,7 +88,7 @@ public:
     static constexpr float kCutThr = 0.12f;            // escudo 2 (Δ luminancia media)
 
 private:
-    HyperFrameGen() = default;
+    FrameGenHost* host_;
     struct Impl;
     Impl* impl_ = nullptr;
     std::mutex implMutex_;

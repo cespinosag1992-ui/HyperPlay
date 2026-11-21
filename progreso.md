@@ -8,7 +8,8 @@
 - **Hecho**:
   - Sonido de Celeste terminado (buses, snapshots, transiciones con condición). Faltan solo efectos (reverb) y tono.
   - 120 FPS, paso 1: swapchain virtual (`gfx/GuestSwapchain`, `setprop debug.hyperplay.vswap 1`). El juego dibuja en imágenes de HyperPlay y cada present se copia al swapchain real. Probado: Celeste se ve bien a 60 FPS. Apagado por defecto.
-  - Paso 2 (siguiente): HyperFG desacoplado de DirectVulkanBridge para interpolar entre las imágenes virtuales y presentar 120.
+  - Paso 2 HECHO: HyperFG enchufable (`FrameGenHost`; `GuestSwapchain::Impl` es el host del dispositivo del juego). El trabajo de HyperFG (historial/flujo/interp) va en un envío propio fuera de `presentMutex` (record() espera al hilo de HyperFG, que toma ese mutex). Swapchain virtual activo por defecto (`vswap 0` lo apaga). Probado: Celeste 120 FPS (FpsDetect 119-120) en título, menú y menú 3D; GPU 59-81 %. Pendiente: protección térmica de HyperFG en este camino.
+  - Versión 1.1.0; el APK se llama `HyperPlay-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk` (pedido del usuario).
   - Nota de pruebas: el móvil tiene la build release (la actividad del juego no se exporta): lanzar Celeste tocando la portada y luego JUGAR.
   - Silksong sin internet: 10/10 arranques al menú; partida nueva jugable.
   - Cierre por desbordamiento de pila en CreateFileW (búfer de 64 KB del parche de Cuphead).
