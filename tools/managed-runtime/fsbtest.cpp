@@ -1,4 +1,5 @@
 #include "audio/FsbVorbis.h"
+#include <dlfcn.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -18,13 +19,15 @@ static std::vector<uint8_t> readAll(const char* p) {
 }
 
 int main(int argc, char** argv) {
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    if (void* h = dlopen("libbinder_ndk.so", RTLD_NOW)) { auto mx = (bool(*)(unsigned))dlsym(h, "ABinderProcess_setThreadPoolMaxThreadCount"); auto st = (void(*)())dlsym(h, "ABinderProcess_startThreadPool"); if (mx) mx(2); if (st) st(); std::printf("binder pool %s\n", st ? "OK" : "no"); }
     auto bank = readAll(argv[1]);
     auto dll = readAll(argv[2]);
     std::printf("bank=%zu dll=%zu\n", bank.size(), dll.size());
     size_t at = 0;
     for (size_t i = 0; i + 4 <= bank.size(); ++i) if (!std::memcmp(&bank[i], "FSB5", 4)) { at = i; break; }
     Fsb5 fsb;
-    if (!parseFsb5(&bank[at], bank.size() - at, at, fsb)) { std::puts("parse FSB5 falló"); return 1; }
+    if (!parseFsb5(&bank[at], bank.size() - at, at, fsb)) { std::puts("parse FSB5 fall??"); return 1; }
     std::printf("FSB5 @%zu codec=%u muestras=%zu\n", at, fsb.codec, fsb.samples.size());
     std::vector<uint32_t> crcs;
     for (auto& s : fsb.samples) crcs.push_back(s.vorbisCrc);
@@ -33,7 +36,7 @@ int main(int argc, char** argv) {
     int ok = 0;
     for (size_t i = 0; i < fsb.samples.size() && i < 8; ++i) {
         const auto& s = fsb.samples[i];
-        std::vector<int16_t> pcm;
+        std::printf("decodificando %zu...\n", i); std::vector<int16_t> pcm;
         std::string err;
         const bool r = decodeVorbisSample(bank.data(), s, table, pcm, &err);
         int peak = 0;
@@ -54,3 +57,5 @@ int main(int argc, char** argv) {
     std::printf("decodificadas OK: %d\n", ok);
     return ok > 0 ? 0 : 1;
 }
+
+

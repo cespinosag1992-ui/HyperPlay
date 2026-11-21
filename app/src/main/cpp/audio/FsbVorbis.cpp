@@ -3,6 +3,8 @@
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaFormat.h>
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace hyperplay::fmodlite {
@@ -155,8 +157,9 @@ bool decodeVorbisSample(const uint8_t* bank, const FsbSample& s, const VorbisSet
     AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, static_cast<int32_t>(s.channels));
     AMediaFormat_setBuffer(fmt, "csd-0", ident, sizeof(ident));
     AMediaFormat_setBuffer(fmt, "csd-1", const_cast<uint8_t*>(setup->data()), setup->size());
-    const bool configured = AMediaCodec_configure(codec, fmt, nullptr, nullptr, 0) == AMEDIA_OK &&
-                            AMediaCodec_start(codec) == AMEDIA_OK;
+    const media_status_t cfg = AMediaCodec_configure(codec, fmt, nullptr, nullptr, 0);
+    const media_status_t st = cfg == AMEDIA_OK ? AMediaCodec_start(codec) : cfg;
+    const bool configured = cfg == AMEDIA_OK && st == AMEDIA_OK;
     AMediaFormat_delete(fmt);
     if (!configured) {
         AMediaCodec_delete(codec);
@@ -170,7 +173,8 @@ bool decodeVorbisSample(const uint8_t* bank, const FsbSample& s, const VorbisSet
     bool inputDone = false;
     int idle = 0;
     int64_t pts = 0;
-    while (true) {
+    // Tope de vueltas: un decodificador que no avanza no debe colgar al llamador.
+    for (int guard = 0; guard < 200000; ++guard) {
         if (!inputDone) {
             const ssize_t ib = AMediaCodec_dequeueInputBuffer(codec, 2000);
             if (ib >= 0) {
@@ -185,7 +189,7 @@ bool decodeVorbisSample(const uint8_t* bank, const FsbSample& s, const VorbisSet
                     // Paquete + int32 "fotogramas de la página" (-1 = desconocido), como lo deja el
                     // extractor Ogg de Android para su decodificador Vorbis.
                     std::memcpy(buf, p + 2, len);
-                    const int32_t unknown = -1;
+                    const int32_t unknown = -1;  // sin el entero, los estéreo no producen audio
                     std::memcpy(buf + len, &unknown, 4);
                     AMediaCodec_queueInputBuffer(codec, static_cast<size_t>(ib), 0, len + 4u, pts, 0);
                     p += 2 + len;
@@ -208,6 +212,8 @@ bool decodeVorbisSample(const uint8_t* bank, const FsbSample& s, const VorbisSet
             if (eos) break;
         } else if (ob == AMEDIACODEC_INFO_TRY_AGAIN_LATER && inputDone && ++idle > 200) {
             break;  // el decodificador no marcó fin: nada más que sacar
+        } else if (ob == AMEDIACODEC_INFO_TRY_AGAIN_LATER && !inputDone && ++idle > 5000) {
+            break;  // ni acepta entrada ni produce salida: atascado
         }
     }
     AMediaCodec_stop(codec);
