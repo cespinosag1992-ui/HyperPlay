@@ -29,6 +29,7 @@ add_library(hyperplay SHARED
     gfx/HyperFrameGen.cpp
     gfx/DirectVulkanBridge.cpp
     audio/DirectAAudioEngine.cpp
+    audio/FsbVorbis.cpp
     input/DirectXInputBridge.cpp
     media/MediaFoundationBridge.cpp
 )
