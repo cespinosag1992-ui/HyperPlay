@@ -212,8 +212,8 @@ bool Model::ingest(Bank& bank, int bankIndex) {
     std::vector<std::pair<Guid, std::pair<const uint8_t*, size_t>>> rawTimelines, rawMulti, rawScatter, rawTransitions;
     Guid lastMulti, lastScatter, lastTimeline, lastInst;
     // Dueño de los PRPS siguientes (instrumento) y parámetro/evento del último PMLB.
-    Guid propOwner, pmlParam, pmlEvent;
-    bool haveOwner = false, havePml = false;
+    Guid propOwner, pmlParam, pmlEvent, lastBus;
+    bool haveOwner = false, havePml = false, haveBus = false;
     std::vector<std::pair<Guid, SheetItem>> sheetItems;  // (evento, instrumento sobre parámetro)
     static Guid kVolumeProps[3];
     static bool kPropsInit = false;
@@ -250,6 +250,43 @@ bool Model::ingest(Bank& bank, int bankIndex) {
             if (volume && list(body + 24, sz - 24, n, elem) && elem >= 16) {
                 auto& ctrls = instruments[propOwner].volumeCtrls;
                 for (size_t k = 0; k < n; ++k) ctrls.push_back(Guid::at(body + 28 + k * elem));
+            }
+            return;
+        }
+        if ((tag(c, "GBSB") || tag(c, "MBSB") || tag(c, "IBSB") || tag(c, "RBSB")) && sz >= 34) {
+            lastBus = Guid::at(body);
+            buses[lastBus].parent = Guid::at(body + 18);
+            haveBus = true;
+            return;
+        }
+        if (tag(c, "BUS ") && haveBus && sz >= 9) {
+            // Dos listas (vacía = 2 bytes), u16 y el fader en dB.
+            size_t p = 5;
+            for (int k = 0; k < 2 && p + 2 <= sz; ++k) {
+                const size_t n = rd<uint16_t>(body + p) >> 1;
+                p += n == 0 ? 2 : 4 + n * (p + 4 <= sz ? rd<uint16_t>(body + p + 2) : 0);
+            }
+            p += 2;
+            if (p + 4 <= sz) {
+                const float db = rd<float>(body + p);
+                if (db >= -100.f && db <= 30.f) buses[lastBus].faderDb = db;
+            }
+            haveBus = false;
+            return;
+        }
+        if (tag(c, "SNAB") && sz >= 24) {
+            auto& entries = snapshots[Guid::at(body)];
+            entries.clear();
+            size_t n = 0, elem = 0;
+            if (list(body + 20, sz - 20, n, elem) && elem >= 28) {
+                for (size_t k = 0; k < n; ++k) {
+                    const uint8_t* e = body + 24 + k * elem;
+                    SnapEntry s;
+                    s.bus = Guid::at(e + 4);
+                    s.type = rd<uint32_t>(e + 20);
+                    s.value = rd<float>(e + 24);
+                    entries.push_back(s);
+                }
             }
             return;
         }
@@ -311,13 +348,10 @@ bool Model::ingest(Bank& bank, int bankIndex) {
             EventDef e;
             e.id = Guid::at(body);
             e.timeline = Guid::at(body + 32);
+            e.snapshotRef = Guid::at(body + 16);
+            if (sz >= 64) e.inputBus = Guid::at(body + 48);
             events[e.id] = e;
             bank.events.push_back(e.id);
-        } else if (tag(c, "SNAB") && sz >= 16) {
-            EventDef e;
-            e.id = Guid::at(body);
-            e.snapshot = true;
-            events.emplace(e.id, e);
         } else if (tag(c, "TLNB") && sz >= 32) {
             lastTimeline = Guid::at(body);
             haveTimeline = true;
@@ -358,6 +392,9 @@ bool Model::ingest(Bank& bank, int bankIndex) {
         }
     });
 
+    for (auto& [id, e] : events) {
+        if (!e.snapshotRef.isZero() && snapshots.count(e.snapshotRef) != 0) e.snapshot = true;
+    }
     for (auto& [ev, it] : sheetItems) {
         auto e = events.find(ev);
         if (e != events.end() && instruments.count(it.instrument) != 0) e->second.sheet.push_back(it);
@@ -387,20 +424,37 @@ bool Model::ingest(Bank& bank, int bankIndex) {
         // Saltos: TRNB = id, región destino (+16), inicio (+32), fin (+36). Los de 60 bytes con
         // inicio == fin son el final de una región de bucle: vuelven al inicio de la región, cuya
         // posición está en la TLNB tras su GUID (u32). Sin encontrarla, al principio.
+        // Los de 86 bytes llevan en +40 una lista de condiciones {parámetro, mín, máx}: con
+        // inicio == fin saltan al llegar solo si se cumple; con inicio < fin son una región de
+        // transición: mientras el playhead esté dentro, saltan en cuanto se cumple.
         for (auto& [p, sz] : transitions[id]) {
-            if (sz != 60) continue;
+            if (sz != 60 && sz != 86) continue;
             const uint32_t s = rd<uint32_t>(p + 32), e = rd<uint32_t>(p + 36);
-            if (s != e || s == 0) continue;
             TimelineJump j;
             j.at = s;
+            if (sz == 86) {
+                size_t n = 0, elem = 0;
+                if (!list(p + 40, sz - 40, n, elem) || n == 0 || elem < 24) continue;
+                j.hasCond = true;
+                j.condParam = Guid::at(p + 44);
+                j.condMin = rd<float>(p + 60);
+                j.condMax = rd<float>(p + 64);
+                if (e > s) j.regionEnd = e;
+            } else if (s != e || s == 0) {
+                continue;
+            }
             const Guid region = Guid::at(p + 16);
+            bool found = false;
             for (size_t o = 32; o + 20 <= raw.second; ++o) {
                 if (std::memcmp(raw.first + o, region.b, 16) == 0) {
                     j.to = rd<uint32_t>(raw.first + o + 16);
+                    found = true;
                     break;
                 }
             }
-            if (j.to < j.at) t.jumps.push_back(j);
+            if (!found && j.hasCond) continue;  // destino fuera de esta línea de tiempo
+            if (j.regionEnd > j.at && j.to >= j.at && j.to < j.regionEnd) continue;  // saltaría en bucle
+            if (j.hasCond ? j.to != j.at : j.to < j.at) t.jumps.push_back(j);
         }
     }
     for (auto& [id, raw] : rawMulti) {

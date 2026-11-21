@@ -40,7 +40,10 @@ events; `event:/ui/game/pause` = `c6311b80-2ae7-4155-80f1-d3e2713efaa3` (index 7
 | `WAVS/WAV ` | +0 waveform GUID, `u32 0x0C`, `u16 fsb index?`, `u16 subsound index` (`ui_game_pause` = 2) |
 | `MUIS/MUIT` (`MUIB`, `PLST`) | multi instrument: playlist of instruments (random/sequential) |
 | `SPIS/SPIT` (`SPIB`, `PLST`) | scatterer instrument |
-| `TRNS/TRAN` (`TRNB`, `TRTL`) | transitions: `TRNB` +0 id, +16 region, +32 `u32 start`, +36 `u32 end`. 60 bytes with start == end = end of a loop region: jump back to the region start (its position follows the region GUID in the `TLNB`). 86-byte ones carry conditions (parameters) |
+| `TRNS/TRAN` (`TRNB`, `TRTL`) | transitions: `TRNB` +0 id, +16 region/destination, +32 `u32 start`, +36 `u32 end`. 60 bytes with start == end = end of a loop region: jump back to the region start (its position follows the region GUID in the `TLNB`). 86 bytes: +40 list of conditions `{parameter GUID, f32 min, f32 max}`; start == end = conditional jump marker, start < end = transition region (jumps as soon as the condition holds) |
+| `GBSB`/`MBSB`/`IBSB`/`RBSB` + `BUS ` | bus: +0 id, +18 parent bus; `BUS `: two lists (empty = `01 00`), u16, `f32` fader dB |
+| `EVTB` (more) | +16 snapshot (`SNAB` id) for snapshot events, +48 the event's input bus (`IBUS`, parent = its group bus) |
+| `SNAS/SNAP/SNAB` | snapshot: +0 id, +20 list of `{u32, bus GUID, u32 type (0 = volume), f32 value (dB)}` |
 | `INST` (in every instrument LIST) | +0 owner timeline GUID, **+24 `int32` loop count** (0 = once, -1 = forever) / +0 GUID de la línea de tiempo, **+24 nº de bucles** |
 | `PRMS/PARM/PRMB` | parameter: +0 GUID, +21 `u16` name length, name (no NUL), then `f32` min, max, **default** (checked with FMOD's `GetParameterByIndex`) |
 | `PMLS/PMLO` (`PMLB`, `CTRO`) | `PMLB` +16 parameter GUID, +32 event GUID, +48 list of instruments placed on the parameter axis (`GUID, f32 start, f32 length`); `CTRO` = list of the controllers that parameter drives |

@@ -352,6 +352,8 @@ struct Desc {
     std::string path;
     void* userData = nullptr;
     int category = 0;  // 0 sfx, 1 música, 2 interfaz
+    std::vector<Guid> chain;  // buses del evento (entrada -> ... -> bus:/)
+    bool chainBuilt = false;
 };
 
 struct Instance {
@@ -363,6 +365,7 @@ struct Instance {
     bool stopping = false;
     float volume = 1.f, pitch = 1.f;
     float fade = 1.f, fadeStep = 0.f;
+    float busNow = -1.f;  // ganancia de buses/snapshots suavizada
     int64_t playhead = 0;
     std::vector<bool> active;           // instrumento activo en la vuelta actual
     std::vector<bool> sheetActive;      // instrumentos de la hoja de parámetro sonando
@@ -449,7 +452,54 @@ Desc* descFor(const Guid& id) {
 }
 
 /// Ganancia de los buses/VCA que el juego haya tocado para la categoría del evento.
-float busGain(int category, bool& paused) {
+/// Cadena de buses del evento: su bus de entrada y los padres hasta bus:/.
+const std::vector<Guid>& busChain(Desc& d) {
+    if (!d.chainBuilt) {
+        d.chainBuilt = true;
+        if (d.def != nullptr) {
+            Guid b = d.def->inputBus;
+            for (int i = 0; i < 32 && !b.isZero(); ++i) {
+                auto it = g_engine->model.buses.find(b);
+                if (it == g_engine->model.buses.end()) break;
+                d.chain.push_back(b);
+                b = it->second.parent;
+            }
+        }
+    }
+    return d.chain;
+}
+
+float busGainHeuristic(int category, bool& paused);
+
+/// Ganancia de los buses del evento: faders del banco + snapshots activas (dB) y lo que el juego
+/// haya puesto con Bus/VCA SetVolume, SetPaused o SetMute.
+float busGain(Desc& d, const std::unordered_map<Guid, float, GuidHash>& snapDb, bool& paused) {
+    const auto& chain = busChain(d);
+    if (chain.empty()) return busGainHeuristic(d.category, paused);
+    paused = false;
+    float db = 0.f, g = 1.f;
+    for (const Guid& b : chain) {
+        db += g_engine->model.buses.at(b).faderDb;
+        auto s = snapDb.find(b);
+        if (s != snapDb.end()) db += s->second;
+    }
+    for (auto& [path, bo] : g_studio->buses) {
+        bool applies = false;
+        if (path.rfind("vca:/", 0) == 0) {  // VCA: por categoría
+            const bool music = path.find("music") != std::string::npos;
+            applies = path == "vca:/" || (d.category == 1 ? music : !music);
+        } else {
+            applies = std::find(chain.begin(), chain.end(), bo->id) != chain.end();
+        }
+        if (!applies) continue;
+        g *= bo->mute ? 0.f : bo->volume;
+        paused = paused || bo->paused;
+    }
+    if (db <= -79.f) return 0.f;
+    return g * std::pow(10.f, db / 20.f);
+}
+
+float busGainHeuristic(int category, bool& paused) {
     float g = 1.f;
     paused = false;
     for (auto& [path, b] : g_studio->buses) {
@@ -638,7 +688,14 @@ bool mixInstance(Instance& in, float* out, int frames, float gain, float panL = 
     const TimelineJump* jump = nullptr;
     if (!in.stopping) {
         for (const auto& j : tl->jumps) {
-            if (in.playhead <= j.at && in.playhead + frames >= j.at) {  // >=: el bloque acaba justo ahí
+            if (j.hasCond) {
+                const float x = paramValue(in, j.condParam);
+                if (x < j.condMin || x > j.condMax) continue;
+            }
+            const bool hit = j.regionEnd > j.at
+                                 ? in.playhead >= j.at && in.playhead < j.regionEnd  // región: ya
+                                 : in.playhead <= j.at && in.playhead + frames >= j.at;  // >=: acaba justo ahí
+            if (hit) {
                 jump = &j;
                 break;
             }
@@ -761,8 +818,11 @@ bool mixInstance(Instance& in, float* out, int frames, float gain, float panL = 
     in.playhead += frames;
     // Salto: vuelta al inicio de la región; los instrumentos que la cubren vuelven a sonar.
     if (jump != nullptr && in.playhead >= jump->at) {
-        if (in.desc->category == 1) LOGI("Bucle %s: %u -> %u", in.desc->path.c_str(), jump->at, jump->to);
-        in.playhead = jump->to + (in.playhead - jump->at);
+        if (in.desc->category == 1) {
+            LOGI("%s %s: %u -> %u", jump->hasCond ? "Transición" : "Bucle", in.desc->path.c_str(), jump->at, jump->to);
+        }
+        in.playhead = jump->regionEnd > jump->at ? static_cast<int64_t>(jump->to)
+                                                 : jump->to + (in.playhead - jump->at);
         for (auto& v : in.voices) {
             if (v.item < 0) continue;  // hoja de parámetro: no depende de la línea de tiempo
             const TimelineItem& it = tl->items[static_cast<size_t>(v.item)];
@@ -795,6 +855,25 @@ bool mixInstance(Instance& in, float* out, int frames, float gain, float panL = 
     return !in.voices.empty() || !in.children.empty() || pending || jump != nullptr || sheetHold;
 }
 
+/// Snapshots colocadas en la línea de tiempo de un evento (instrumento-evento que es snapshot):
+/// se aplican mientras el playhead esté dentro de su región. También en eventos anidados.
+void collectTimelineSnapshots(const Instance& in, std::unordered_map<Guid, float, GuidHash>& snapDb, int depth) {
+    if (depth > 4 || in.desc->tl == nullptr || in.stopping) return;
+    for (const TimelineItem& it : in.desc->tl->items) {
+        if (in.playhead < it.start || in.playhead >= static_cast<int64_t>(it.start) + it.length) continue;
+        auto idef = g_engine->model.instruments.find(it.instrument);
+        if (idef == g_engine->model.instruments.end() || idef->second.kind != InstKind::Event) continue;
+        auto ev = g_engine->model.events.find(idef->second.target);
+        if (ev == g_engine->model.events.end() || !ev->second.snapshot) continue;
+        auto s = g_engine->model.snapshots.find(ev->second.snapshotRef);
+        if (s == g_engine->model.snapshots.end()) continue;
+        for (const SnapEntry& e : s->second) {
+            if (e.type == 0) snapDb[e.bus] += e.value;
+        }
+    }
+    for (const auto& c : in.children) collectTimelineSnapshots(*c, snapDb, depth + 1);
+}
+
 void mixerLoop() {
     Engine& e = *g_engine;
     DirectAAudioEngine out;
@@ -822,11 +901,40 @@ void mixerLoop() {
             std::lock_guard<std::recursive_mutex> lock(g_mu);
             if (g_studio != nullptr) {
                 std::vector<Instance*> finished;
+                // Snapshots activas: dB que suman a sus buses (volumen, tipo 0).
+                std::unordered_map<Guid, float, GuidHash> snapDb;
+                for (Instance* in : g_studio->instances) {
+                    const EventDef* def = in->desc->def;
+                    if (def == nullptr || !def->snapshot || !in->started || in->state == kStopped) continue;
+                    if (in->state == kStarting) in->state = kPlaying;
+                    if (in->stopping) {  // una snapshot parada deja de aplicarse
+                        in->state = kStopped;
+                        if (in->released) finished.push_back(in);
+                        continue;
+                    }
+                    auto s = g_engine->model.snapshots.find(def->snapshotRef);
+                    if (s == g_engine->model.snapshots.end()) continue;
+                    for (const SnapEntry& e : s->second) {
+                        if (e.type == 0) snapDb[e.bus] += e.value;
+                    }
+                }
+                for (Instance* in : g_studio->instances) {
+                    if (in->started && !in->paused && in->state != kStopped) collectTimelineSnapshots(*in, snapDb, 0);
+                }
+                static size_t s_lastSnap = 0;
+                if (snapDb.size() != s_lastSnap) {
+                    s_lastSnap = snapDb.size();
+                    LOGI("Snapshots activas: %zu buses afectados", s_lastSnap);
+                }
                 for (Instance* in : g_studio->instances) {
                     if (!in->started || in->paused || in->state == kStopped) continue;
+                    if (in->desc->def != nullptr && in->desc->def->snapshot) continue;
                     bool busPaused = false;
-                    const float g = busGain(in->desc->category, busPaused);
+                    const float target = busGain(*in->desc, snapDb, busPaused);
                     if (busPaused) continue;
+                    // Cambios de bus/snapshot suavizados (~50 ms).
+                    in->busNow = in->busNow < 0.f ? target : in->busNow + (target - in->busNow) * 0.2f;
+                    const float g = in->busNow;
                     if (in->state == kStarting) in->state = kPlaying;
                     if (!mixInstance(*in, mix.data(), kBlock, g)) {
                         if (in->desc->category == 1) {

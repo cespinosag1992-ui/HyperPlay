@@ -765,3 +765,10 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - Pasos quedaban vivos (10 eventos, 2 voces): bucle forzado en la hoja y "sheetLive"/retención con release. Arreglado: 2 eventos.
 - Ganancia general 0,8 (pico 1,0 frecuente; faltan volúmenes de buses).
 - Guardado: pausa -> Save and Quit -> `Saves/0.celeste` 14787 B; al reiniciar: "Madeline · Prologue · 1 muerte · 01:29.692".
+## 2026-11-21 — FMOD nativo: buses, snapshots, transiciones con condición
+- Buses: GBSB/MBSB/IBSB/RBSB +0 id, +18 PADRE (no el propio); BUS: dos listas (vacía = 2 bytes), u16, f32 fader. 25/209 buses con fader != 0 (los con nombre casi todos -80).
+- EVTB+48 = IBUS del evento (ui 104/104, sfx 566/566, music 84/84); IBSB+18 = bus de grupo. EVTB+16 = SNAB en eventos snapshot (env_allamb_down: ambience -80).
+- SNAB +20 lista {u32, bus, u32 tipo, f32 dB}. Snapshots de la línea de tiempo (instrumento-evento) aplicadas mientras el playhead está dentro.
+- Teléfono: "Snapshots activas: 3 buses" en el prólogo; pausa -> 6; unpause -> 3.
+- TRNB 86 bytes: +40 condiciones {parámetro, mín, máx}. music: 88x60 (s==e), 19x86 región, 3x86 marcador; sfx 3529/80/540.
+- `Bucle event:/music/lvl0/intro: 2636089 -> 427056`.

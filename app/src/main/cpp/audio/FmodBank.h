@@ -54,6 +54,11 @@ struct TimelineItem {
 /// (parámetros) y aún no se aplican.
 struct TimelineJump {
     uint32_t at = 0, to = 0;
+    uint32_t regionEnd = 0;  // > at: región de transición [at, regionEnd) (salta en cuanto se cumple)
+    // Condición (TRNB de 86 bytes): el valor del parámetro debe estar en [condMin, condMax].
+    bool hasCond = false;
+    Guid condParam;
+    float condMin = 0, condMax = 0;
 };
 
 /// Instrumento colocado sobre el eje de un parámetro (hoja de parámetro): suena mientras el valor
@@ -70,6 +75,21 @@ struct EventDef {
     std::string path;
     bool snapshot = false;
     std::vector<SheetItem> sheet;
+    Guid inputBus;     // EVTB+48: bus de entrada del evento (IBUS), cuyo padre es su bus de grupo
+    Guid snapshotRef;  // EVTB+16: SNAB de una snapshot (cero en eventos normales)
+};
+
+/// Bus del mezclador (GBSB/MBSB/IBSB/RBSB +0 id, +18 padre; fader en dB del chunk BUS).
+struct BusDef {
+    Guid parent;
+    float faderDb = 0;
+};
+
+/// Entrada de una snapshot (SNAB +20): propiedad `type` (0 = volumen, dB) del bus `bus`.
+struct SnapEntry {
+    Guid bus;
+    uint32_t type = 0;
+    float value = 0;
 };
 
 /// Parámetro (PRMB): nombre y rango; el valor por defecto lo da el banco (comprobado con FMOD).
@@ -142,6 +162,8 @@ public:
     std::unordered_map<Guid, ParamDef, GuidHash> params;
     std::unordered_map<Guid, std::vector<CurvePoint>, GuidHash> curves;  // por controlador
     std::unordered_map<Guid, Guid, GuidHash> ctrlParam;                  // controlador -> parámetro
+    std::unordered_map<Guid, BusDef, GuidHash> buses;
+    std::unordered_map<Guid, std::vector<SnapEntry>, GuidHash> snapshots;  // por id de SNAB
 
     /// Valor en dB de la curva de un controlador para el valor `x` del parámetro.
     float evalCurve(const Guid& ctrl, float x) const;

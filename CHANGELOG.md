@@ -58,8 +58,10 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   points, bus/VCA volume and pause, long music decoded in blocks, a soft limiter. Tested in the
   prologue: footsteps, jump, landing, ambience and music. Also: game parameters (music layers fade
   in and out like on PC; defaults read from the bank), sounds chosen by a parameter, and stereo
-  position (left/right, quieter off screen). Still missing: snapshots (for example the muffled
-  music when paused). Celeste's saves were checked: "Save and Quit" writes the file and it loads
+  position (left/right, quieter off screen), the mixer buses and their faders, snapshots (the
+  pause menu lowers the music and ambience; story moments lower the ambience) and music that
+  changes section when the game says so. Not done: effects such as reverb. Celeste's saves were
+  checked: "Save and Quit" writes the file and it loads
   after restarting.
 - Loading screen: games that draw with their own Vulkan (Celeste) now leave it as soon as they
   show something (before it stayed up to 45 s).
@@ -134,8 +136,10 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   decodificada por bloques y un limitador suave. Probado en el prólogo: pasos, salto, aterrizaje,
   ambiente y música. Además: parámetros del juego (las capas de la música entran y salen como en
   PC; valores por defecto leídos del banco), sonidos elegidos por un parámetro y posición en
-  estéreo (izquierda/derecha, más bajo fuera de la pantalla). Falta: snapshots (por ejemplo la
-  música apagada en la pausa). Comprobado el guardado de Celeste: "Save and Quit" escribe la
+  estéreo (izquierda/derecha, más bajo fuera de la pantalla), los buses del mezclador y sus
+  faders, snapshots (el menú de pausa baja la música y el ambiente; momentos de la historia bajan
+  el ambiente) y música que cambia de sección cuando el juego lo indica. No hecho: efectos como la
+  reverberación. Comprobado el guardado de Celeste: "Save and Quit" escribe la
   partida y se carga al reiniciar.
 - Pantalla de carga: los juegos que dibujan con su propio Vulkan (Celeste) la quitan en cuanto
   muestran algo (antes podía durar hasta 45 s).

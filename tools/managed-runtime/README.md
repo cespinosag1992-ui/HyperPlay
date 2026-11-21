@@ -40,8 +40,8 @@ for a function, HyperPlay answers with its own native FMOD Studio
 at 48 kHz into AAudio. No Firelight code is used. Done: events, timelines, multi/random
 instruments, nested events, loops and loop regions, parameters (defaults from the bank, volume
 automation curves: music layers; instruments placed on a parameter), stereo 3D position,
-buses/VCAs (volume, pause), long music streamed. Still missing: snapshots, bus mixer volumes,
-conditional transitions.
+mixer buses (routing, faders, Bus/VCA volume and pause), snapshots (pause menu, ambience down…),
+conditional transitions, long music streamed. Not done: effects (reverb, filters) and pitch.
 `setprop debug.hyperplay.fmodnative 0` goes back to the silent shim. Your own FMOD 1.10 x64
 (`fmod64.dll`, `fmodstudio64.dll` in `/sdcard/HyperPlay/fmod/`) is still used as is if present.
 
@@ -85,7 +85,8 @@ Sonido: FMOD es propietario y no se distribuye. Cuando el juego pide una funció
 a 48 kHz hacia AAudio. No se usa código de Firelight. Hecho: eventos, líneas de tiempo,
 instrumentos multi/aleatorios, eventos anidados, bucles y regiones de bucle, parámetros (valores
 por defecto del banco, curvas de volumen: capas de la música; instrumentos colocados sobre un
-parámetro), posición 3D en estéreo, buses/VCA (volumen, pausa), música larga por bloques. Falta:
-snapshots, volúmenes de los buses del mezclador, transiciones con condición. `setprop debug.hyperplay.fmodnative 0` vuelve al shim mudo. Tu
+parámetro), posición 3D en estéreo, buses del mezclador (enrutado, faders, volumen y pausa de
+Bus/VCA), snapshots (menú de pausa, ambiente bajado…), transiciones con condición, música larga
+por bloques. No hecho: efectos (reverberación, filtros) y tono. `setprop debug.hyperplay.fmodnative 0` vuelve al shim mudo. Tu
 propio FMOD 1.10 x64 (`fmod64.dll`, `fmodstudio64.dll` en `/sdcard/HyperPlay/fmod/`) se sigue
 usando tal cual si está.
