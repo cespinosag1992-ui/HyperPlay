@@ -10829,11 +10829,27 @@ int64_t OryonEmitterBackend::callDllEntry(void* entryPoint, void* dllBase) {
     return retVal;
 }
 
+namespace {
+// Llamada anidada al huésped desde un thunk nativo: mientras corre el código invitado el hilo está
+// "ejecutando" (puede aparcarse en SuspendThread); al volver al thunk recupera el estado previo
+// ("en nativo"). Sin esto quedaba en "ejecutando" aunque el thunk siguiera esperando (APC de una
+// espera alertable de Mono), GetThreadContext no veía nunca un punto seguro y el GC de Mono se
+// quedaba esperando para siempre (Silksong: pantalla negra al arrancar, intermitente).
+struct NestedRunState {
+    std::atomic<int>& state;
+    const int saved;
+    explicit NestedRunState(std::atomic<int>& s, int running)
+        : state(s), saved(s.exchange(running, std::memory_order_seq_cst)) {}
+    ~NestedRunState() { state.store(saved, std::memory_order_seq_cst); }
+};
+}  // namespace
+
 int64_t OryonEmitterBackend::callGuestNested(uintptr_t fn, const uint64_t* args, size_t argCount) {
     if (fn == 0 || argCount > 8 || (argCount > 0 && args == nullptr)) {
         lastError_ = "callGuestNested: función nula o más de 8 argumentos";
         return -1;
     }
+    const NestedRunState nestedState(runState_, kRunning);
     const CpuContext savedCtx = ctx_;
     uintptr_t sp = ctx_.gpr[4];
     if (sp == 0 || (stackBase_ != nullptr && (sp < reinterpret_cast<uintptr_t>(stackBase_) ||
@@ -10896,6 +10912,7 @@ int64_t OryonEmitterBackend::callDllEntryNested(void* entryPoint, void* dllBase)
         return -1;
     }
 
+    const NestedRunState nestedState(runState_, kRunning);
     // Preservar exactamente el contexto del CPU llamador
     CpuContext savedCtx = ctx_;
 

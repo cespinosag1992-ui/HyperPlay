@@ -27,7 +27,10 @@
 
 #include <android/log.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <unwind.h>
 #include <fnmatch.h>
 #include <pthread.h>
 #include <sys/mman.h>
@@ -492,12 +495,12 @@ static bool copyFile(const std::string& from, const std::string& to, bool failIf
         errno = e;
         return false;
     }
-    char buf[65536];
+    std::vector<char> buf(65536);  // en el heap: la pila host del juego puede ir muy justa
     bool ok = true;
     for (;;) {
-        const ssize_t n = read(in, buf, sizeof(buf));
+        const ssize_t n = read(in, buf.data(), buf.size());
         if (n == 0) break;
-        if (n < 0 || write(out, buf, static_cast<size_t>(n)) != n) {
+        if (n < 0 || write(out, buf.data(), static_cast<size_t>(n)) != n) {
             ok = false;
             break;
         }
@@ -3475,15 +3478,25 @@ static int widescreenOverlayFd(const std::string& realPath) {
     if (!widescreen::isCupheadAssembly(realPath.c_str())) return -1;
     const int in = open(realPath.c_str(), O_RDONLY | O_CLOEXEC);
     if (in < 0) return -1;
+    // Lectura directa al vector (nada grande en la pila: esta función se integra en CreateFileW,
+    // que se llama con pilas host muy profundas; un búfer de 64 KB aquí la desbordaba).
     std::vector<uint8_t> bytes;
     {
         struct stat st{};
-        if (fstat(in, &st) == 0 && st.st_size > 0) bytes.reserve(static_cast<size_t>(st.st_size));
-        uint8_t buf[1 << 16];
-        ssize_t n;
-        while ((n = read(in, buf, sizeof(buf))) > 0) bytes.insert(bytes.end(), buf, buf + n);
+        if (fstat(in, &st) != 0 || st.st_size <= 0) {
+            close(in);
+            return -1;
+        }
+        bytes.resize(static_cast<size_t>(st.st_size));
+        size_t got = 0;
+        while (got < bytes.size()) {
+            const ssize_t n = read(in, bytes.data() + got, bytes.size() - got);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) break;
+            got += static_cast<size_t>(n);
+        }
         close(in);
-        if (n < 0) return -1;
+        if (got != bytes.size()) return -1;
     }
     const float aspect = static_cast<float>(win32::screenWidth()) / static_cast<float>(win32::screenHeight());
     if (widescreen::patchCupheadUpdateRect(bytes.data(), bytes.size(), aspect) == 0) {
@@ -4036,7 +4049,10 @@ void* NativeDllInterceptor::win_CreateThread(void*, size_t stackSize, void* lpSt
     pthread_t thread;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    if (stackSize > 0) pthread_attr_setstacksize(&attr, stackSize);
+    // Pila host (no la del juego, que el JIT reserva aparte): al menos 8 MB, porque el despachador
+    // anida thunks y callbacks; el tamaño que pide el juego es para su propia pila x86.
+    constexpr size_t kMinHostStack = 8u * 1024 * 1024;
+    pthread_attr_setstacksize(&attr, std::max(stackSize, kMinHostStack));
 
     bool isHostFn = false;
     {
@@ -8127,6 +8143,95 @@ uint32_t NativeDllInterceptor::win_SuspendThread(void* hThread) {
     return target->requestSuspend();
 }
 
+// Pila nativa de otro hilo: se le envía una señal y su manejador recorre su propia pila.
+namespace hoststack {
+constexpr int kMax = 24;
+std::atomic<int> s_count{-1};
+uintptr_t s_pcs[kMax];
+
+_Unwind_Reason_Code unwindStep(_Unwind_Context* uc, void* arg) {
+    int& n = *static_cast<int*>(arg);
+    if (n >= kMax) return _URC_END_OF_STACK;
+    s_pcs[n++] = _Unwind_GetIP(uc);
+    return _URC_NO_REASON;
+}
+
+void handler(int, siginfo_t*, void*) {
+    int n = 0;
+    _Unwind_Backtrace(unwindStep, &n);
+    s_count.store(n, std::memory_order_release);
+}
+
+void dump(int tid) {
+    static std::mutex s_mutex;
+    std::lock_guard<std::mutex> lock(s_mutex);
+    const int sig = SIGRTMAX - 3;
+    static bool s_installed = false;
+    if (!s_installed) {
+        struct sigaction sa{};
+        sa.sa_sigaction = handler;
+        sa.sa_flags = SA_SIGINFO | SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        sigaction(sig, &sa, nullptr);
+        s_installed = true;
+    }
+    s_count.store(-1, std::memory_order_release);
+    if (syscall(SYS_tgkill, getpid(), tid, sig) != 0) return;
+    for (int i = 0; i < 200 && s_count.load(std::memory_order_acquire) < 0; ++i) usleep(1000);
+    const int n = s_count.load(std::memory_order_acquire);
+    for (int i = 0; i < n; ++i) {
+        Dl_info di{};
+        const bool ok = dladdr(reinterpret_cast<void*>(s_pcs[i]), &di) != 0;
+        const char* lib = ok && di.dli_fname ? std::strrchr(di.dli_fname, '/') : nullptr;
+        LOGW("[Punto seguro] tid=%d #%d %s %s+0x%llx", tid, i, lib ? lib + 1 : "?",
+             ok && di.dli_sname ? di.dli_sname : "?",
+             static_cast<unsigned long long>(s_pcs[i] - reinterpret_cast<uintptr_t>(ok && di.dli_saddr ? di.dli_saddr
+                                                                                          : di.dli_fbase)));
+    }
+}
+}  // namespace hoststack
+
+// Diagnóstico (una vez por hilo): qué hace en el host un hilo que no llega al punto seguro
+// (estado del kernel, syscall en curso y su PC, función nativa rápida en curso y pila invitada).
+static void logStuckHostThread(int tid, OryonEmitterBackend* target) {
+    static std::mutex s_mutex;
+    static std::unordered_set<int> s_done;
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        if (!s_done.insert(tid).second) return;
+    }
+    auto readSmall = [](const std::string& path) {
+        char buf[256] = {};
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) return std::string("?");
+        const ssize_t n = ::read(fd, buf, sizeof(buf) - 1);
+        ::close(fd);
+        std::string s(buf, n > 0 ? static_cast<size_t>(n) : 0);
+        while (!s.empty() && (s.back() == '\n' || s.back() == ' ')) s.pop_back();
+        return s;
+    };
+    const std::string base = "/proc/self/task/" + std::to_string(tid) + "/";
+    const std::string stat = readSmall(base + "stat");
+    const size_t close = stat.rfind(')');
+    const char kstate = close != std::string::npos && close + 2 < stat.size() ? stat[close + 2] : '?';
+    const std::string sc = readSmall(base + "syscall");
+    // Formato: "nr a0 a1 a2 a3 a4 a5 sp pc" (o "running").
+    uintptr_t pc = 0;
+    if (const size_t sp = sc.rfind(' '); sp != std::string::npos) pc = std::strtoull(sc.c_str() + sp + 1, nullptr, 16);
+    Dl_info di{};
+    const char* lib = pc != 0 && dladdr(reinterpret_cast<void*>(pc), &di) && di.dli_fname ? di.dli_fname : "?";
+    const char* sym = di.dli_sname ? di.dli_sname : "?";
+    const uintptr_t fn = target->context().nativeFn;
+    Dl_info fi{};
+    const char* fnSym = fn != 0 && dladdr(reinterpret_cast<void*>(fn), &fi) && fi.dli_sname ? fi.dli_sname : "?";
+    LOGW("[Punto seguro] tid=%d kernel=%c estado=%d syscall='%s' pc=%s!%s nativo=%s RIP=0x%llx", tid, kstate,
+         target->runState(), sc.c_str(), lib, sym, fnSym, static_cast<unsigned long long>(target->context().rip));
+    char tag[48];
+    std::snprintf(tag, sizeof(tag), "[Punto seguro] tid=%d", tid);
+    target->logGuestStackChain(tag);
+    hoststack::dump(tid);
+}
+
 int32_t NativeDllInterceptor::win_GetThreadContext(void* hThread, void* lpContext) {
     s_kernel32Calls.fetch_add(1);
     if (lpContext == nullptr) {
@@ -8141,6 +8246,7 @@ int32_t NativeDllInterceptor::win_GetThreadContext(void* hThread, void* lpContex
     }
     if (tid != static_cast<int>(gettid()) && !target->waitUntilSuspended(2000)) {
         LOGW("GetThreadContext: el hilo %d no llegó a un punto seguro en 2 s", tid);
+        logStuckHostThread(tid, target);
         win_SetLastError(31);  // ERROR_GEN_FAILURE
         return 0;
     }
@@ -8704,8 +8810,12 @@ int32_t NativeDllInterceptor::win_DisableThreadLibraryCalls(void* /*hLibModule*/
 
 int32_t NativeDllInterceptor::win_TryEnterCriticalSection(void* lpCriticalSection) {
     s_kernel32Calls.fetch_add(1);
-    win_EnterCriticalSection(lpCriticalSection);
-    return 1;
+    // Nunca espera: si otro hilo la tiene, devuelve 0. Antes esperaba como EnterCriticalSection;
+    // va en la lista rápida como "no bloqueante", así que el hilo dormía marcado como "ejecutando"
+    // y el GC de Mono (que lo usa mientras suspende hilos) se quedaba esperando para siempre
+    // (Silksong: pantalla negra al arrancar, 1 de cada ~5 veces).
+    if (lpCriticalSection == nullptr) return 0;
+    return pthread_mutex_trylock(reinterpret_cast<pthread_mutex_t*>(lpCriticalSection)) == 0 ? 1 : 0;
 }
 
 void NativeDllInterceptor::win_InitializeSRWLock(void* srwLock) {

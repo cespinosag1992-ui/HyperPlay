@@ -720,3 +720,15 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - Teléfono, en orden: IAT de mono.exe incompleta (mono-2.0-sgen/CRT) → DllMain de Mono antes que el CRT (RIP basura) → "Usage is: mono" (CommandLineToArgvW) → `System` no encontrado (MONO_PATH) → CSteamworks (sin .reloc) → `SetProp() failed` → `msvcrt!memcpy` stub → ContentTypeReader (GetStringTypeW) → `SleepConditionVariableCS failed with error 0` → `NtCreateFile` → `refcount.h:44` (ExitThread) → `mono-mmap-windows.c:132` (VirtualFree) → imagen girada 90° → congelado (SUBOPTIMAL) → funciona.
 - MonoTest.exe (Type.GetType): antes `NULL System.Int32, mscorlib`; tras GetStringTypeW, igual que en el PC.
 - Final: intro, título, menú, selección de partida y prólogo a 60-63 FPS, GPU 12-23 %, 2.0-2.6 W.
+
+## 2026-11-20 — Silksong sin internet, pila, informes al servidor
+- Red de HyperPlay cortada con `cmd connectivity set-package-networking-enabled false`: pantalla negra 1 de cada ~5 arranques (también pasa con red). `GetThreadContext: el hilo N no llegó a un punto seguro en 2 s` en bucle (GC de Mono).
+- Diagnóstico nuevo (`[Punto seguro]`: estado del kernel + pila nativa por señal): `kernel=S estado=0`, pila `syscall` ← `win_TryEnterCriticalSection+0x3c`. TryEnterCriticalSection llamaba a EnterCriticalSection (esperaba) y va en la lista rápida como no bloqueante.
+- Arreglo: `pthread_mutex_trylock`. También `callGuestNested`/`callDllEntryNested` restauran el estado del hilo al volver.
+- 10/10 arranques sin red llegan al menú (`Unloading ... unused Assets` x6), ~115 FPS.
+- Partida nueva: `Fatal signal 11 (SEGV_ACCERR)`, "stack pointer is not in a rw map", en `wcharToUtf8` ← `win_CreateFileW`: búfer de 64 KB en la pila del overlay panorámico de Cuphead (integrado en CreateFileW). Arreglado (lectura al vector), pila del hilo del juego 64 MB y mínimo 8 MB en CreateThread.
+- Tras el arreglo: partida nueva sin cierre, jugable a 60 FPS. La cinemática de inicio sale negra: `WindowsVideoMedia error 0xc00d36c4` (Media Foundation, `CreateObjectFromByteStream`).
+- Silksong: no hay ningún `user*.dat` en `_HyperPlaySaves` (solo AppConfig.ini); guarda en bancos y la partida de prueba no llegó a ninguno.
+- adb inalámbrico se cae varias veces durante las pruebas sin red (puertos 44421 → 35691 → 192.168.0.2:33237).
+- Servidor de informes: `wrangler kv namespace create REPORTS_KV` (id 4eba172d…), `wrangler deploy` → `https://hyperplay-reports.cespinosag1992.workers.dev` responde `HyperPlay report worker OK`. Variable `HP_REPORT_URL` en el repo. Etiquetas `auto-report`, `kind:*` creadas. Falta el secreto `GITHUB_TOKEN` (lo pone el usuario).
+- LogStorage: 5/5 tests. `testDebugUnitTest lintDebug assembleRelease` exit=0.

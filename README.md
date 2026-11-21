@@ -91,7 +91,9 @@ More technical detail in [ARCHITECTURE.md](ARCHITECTURE.md). The work log (in Sp
 
 If the user agrees, the app sends each crash, unexpected session end or game that exits with an
 error to a Cloudflare Worker, which opens an Issue labeled `auto-report`. See
-[server/report-worker](server/report-worker/README.md). To report a problem yourself, open an
+[server/report-worker](server/report-worker/README.md). Sending starts with the next release.
+To save space on the phone, the app log is cleared once reports are sent, and only the last 20
+unsent reports and the last 5 game session logs are kept. To report a problem yourself, open an
 [Issue](../../issues/new/choose).
 
 ### License
@@ -187,8 +189,10 @@ Más detalle técnico en [ARCHITECTURE.md](ARCHITECTURE.md); historial de trabaj
 
 Si el usuario lo acepta, la app envía cada crash, cierre inesperado o juego que termina con error
 a un Worker de Cloudflare que abre un Issue con la etiqueta `auto-report`. Ver
-[server/report-worker](server/report-worker/README.md). Para avisar de un fallo a mano, abre un
-[Issue](../../issues/new/choose).
+[server/report-worker](server/report-worker/README.md). El envío empieza con la próxima versión.
+Para ahorrar espacio en el teléfono, el registro de la app se vacía al enviar los informes y solo
+se guardan los 20 últimos informes sin enviar y los 5 últimos logs de sesión. Para avisar de un
+fallo a mano, abre un [Issue](../../issues/new/choose).
 
 ### Licencia
 

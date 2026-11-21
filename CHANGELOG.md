@@ -41,6 +41,20 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   forward).
 - Gamepad: very short button presses are held for at least 40 ms, so games that read the pad
   once per frame no longer miss them.
+- **Hollow Knight: Silksong starts without internet.** About 1 launch in 5 stayed on a black
+  screen (with or without internet; it looked like a network problem). Cause:
+  `TryEnterCriticalSection` waited like `EnterCriticalSection` and the Mono garbage collector,
+  which uses it while it pauses threads, waited forever. Tested on the phone: 10 of 10 launches
+  without internet reach the menu (~115 FPS), and a new game is playable.
+- Fixed a crash when a game opened a file deep in its call stack (Silksong when starting a game):
+  the Cuphead widescreen code used 64 KB of stack in every file open. The game thread and the
+  threads games create now also get a larger native stack.
+- A thread that runs game code from inside a native call (callbacks, exceptions) is marked as
+  "in native code" again when it returns, so pausing it never waits forever.
+- **Error reports reach the server.** With your permission, reports are sent to the HyperPlay
+  report server, which opens an issue on GitHub (no token in the app). To use little space on
+  the phone: the app log is cleared after reports are sent, at most 20 unsent reports (under 30
+  days old) are kept, and only the last 5 game session logs.
 
 ### Español
 
@@ -75,6 +89,22 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 - Menú rápido: tocar ‹ ahora retrocede el ajuste y › lo avanza (antes cualquier toque avanzaba).
 - Mando: las pulsaciones muy cortas se mantienen al menos 40 ms, así los juegos que leen el mando
   una vez por frame ya no las pierden.
+- **Hollow Knight: Silksong arranca sin internet.** Alrededor de 1 de cada 5 arranques se quedaba
+  en pantalla negra (con o sin internet; parecía un problema de red). Causa:
+  `TryEnterCriticalSection` esperaba como `EnterCriticalSection` y el recolector de memoria de
+  Mono, que la usa mientras pausa hilos, esperaba para siempre. Probado en el teléfono: 10 de 10
+  arranques sin internet llegan al menú (~115 FPS) y una partida nueva se puede jugar.
+- Arreglado un cierre cuando un juego abría un archivo con la pila de llamadas muy llena
+  (Silksong al empezar partida): el código de panorámica de Cuphead usaba 64 KB de pila en cada
+  apertura de archivo. El hilo del juego y los hilos que crean los juegos tienen ahora también
+  más pila nativa.
+- Un hilo que ejecuta código del juego desde dentro de una llamada nativa (callbacks,
+  excepciones) vuelve a marcarse "en código nativo" al terminar, así pausarlo nunca espera para
+  siempre.
+- **Los informes de errores llegan al servidor.** Con tu permiso, los informes se envían al
+  servidor de informes de HyperPlay, que abre un issue en GitHub (sin token en la app). Para
+  ocupar poco en el teléfono: el registro de la app se vacía al enviar los informes, se guardan
+  como mucho 20 informes sin enviar (de menos de 30 días) y solo los 5 últimos logs de sesión.
 
 ## 1.0.0
 

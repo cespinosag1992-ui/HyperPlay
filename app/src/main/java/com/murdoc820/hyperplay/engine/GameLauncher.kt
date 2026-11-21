@@ -50,6 +50,8 @@ class GameLauncher(context: Context) {
             "[hyperplay] Ejecutable: ${game.exePath} (${game.arch.badge}, LAA=${game.pe.largeAddressAware}, is64=$is64)\n" +
             "[hyperplay] ========================================================\n"
         )
+        // Solo se guardan los últimos logs de sesión (espacio del teléfono).
+        com.murdoc820.hyperplay.diag.LogStorage.pruneGameLogs(logsDir, current = log)
 
         // 1. Cargar PE en memoria y secuestrar IAT con trampolines C++20 nativos. Un juego .NET
         //    (solo IL) se ejecuta con Mono x64 (ManagedRuntime).
@@ -95,7 +97,9 @@ class GameLauncher(context: Context) {
 
         // 4. Ejecutar el punto de entrada PE en el traductor Oryon. El dispatcher corre en su
         // propio hilo: `launch` debe devolver el log y dejar que la UI muestre la sesión.
-        val thread = Thread({
+        // Pila host grande: el despachador anida thunks y callbacks del juego (excepciones, APC,
+        // ventanas) y con la pila por defecto de un hilo Java (~1 MB) se desbordaba.
+        val thread = Thread(null, Runnable {
             try {
                 val exit = HyperPlayNative.nativeDirectLaunch()
                 lastExitCode = exit
@@ -107,7 +111,7 @@ class GameLauncher(context: Context) {
             } finally {
                 runningDirect = false
             }
-        }, "hyperplay-direct")
+        }, "hyperplay-direct", GAME_THREAD_STACK_BYTES)
         gameThread = thread
         thread.start()
         log
@@ -128,6 +132,9 @@ class GameLauncher(context: Context) {
 
     companion object {
         const val LOGS_DIR_NAME = "logs"
+
+        /** Pila host del hilo principal del juego. */
+        const val GAME_THREAD_STACK_BYTES = 64L * 1024 * 1024
 
         /** Línea del log que marca que el punto de entrada PE ya corre en el traductor Oryon. */
         const val RUNNING_MARKER = "[hyperplay] Motor Directo Bionic en ejecución continua"

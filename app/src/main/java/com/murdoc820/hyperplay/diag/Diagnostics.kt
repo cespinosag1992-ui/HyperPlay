@@ -27,9 +27,10 @@ import java.util.UUID
  * Registro local y envío de informes de errores.
  *
  * En el teléfono (siempre, en `files/diag/`):
- *  - `hyperplay.log`: registro de la app (rotativo, 2 × 1 MB);
+ *  - `hyperplay.log`: registro de la app (rotativo, 2 × 512 KB; se vacía al enviarse un informe);
  *  - `reports/` (un .json por informe): pendientes de enviar (crash de la app, cierre inesperado de una
- *    sesión de juego, juego que terminó con error).
+ *    sesión de juego, juego que terminó con error); como mucho 20 y de menos de 30 días
+ *    ([LogStorage]). Los logs de sesión de juego (`files/logs/`) guardan solo los 5 últimos.
  *
  * Envío: si el usuario lo aceptó y la app se compiló con [BuildConfig.REPORT_URL] (el Cloudflare
  * Worker de `server/report-worker`, que crea un Issue en GitHub), los informes se mandan al abrir
@@ -37,7 +38,7 @@ import java.util.UUID
  */
 object Diagnostics {
     private const val TAG = "HyperPlayDiag"
-    private const val LOG_MAX = 1024 * 1024
+    private const val LOG_MAX = 512 * 1024
     private const val MAX_FIELD = 60_000
     private const val PREFS = "diagnostics"
     private const val KEY_ENABLED = "reports_enabled"
@@ -194,6 +195,7 @@ object Diagnostics {
                 .put("appLog", tail(logFile, 20_000))
                 .put("logcat", if (synchronous) "" else logcatTail())
             runCatching { File(reportsDir, "$kind-${System.currentTimeMillis()}-$id.json").writeText(json.toString()) }
+            runCatching { LogStorage.pruneReports(reportsDir) }
             refreshPending()
         }
         if (synchronous) work() else scope.launch { work(); uploadPending() }
@@ -204,10 +206,13 @@ object Diagnostics {
         if (!::dir.isInitialized || reportsEnabled != true || !uploadConfigured) return
         scope.launch {
             val files = reportsDir.listFiles { f -> f.extension == "json" }?.sortedBy { it.name } ?: return@launch
+            var sent = 0
             for (f in files.take(10)) {
                 val ok = runCatching { post(f.readText()) }.getOrDefault(false)
-                if (ok) f.delete() else break
+                if (ok) { f.delete(); sent++ } else break
             }
+            // Lo enviado ya está en el servidor: el registro de la app empieza de nuevo.
+            if (sent > 0) clearAppLog(sent)
             refreshPending()
         }
     }
@@ -229,6 +234,16 @@ object Diagnostics {
         } finally {
             c.disconnect()
         }
+    }
+
+    private fun clearAppLog(sent: Int) {
+        synchronized(lock) {
+            runCatching {
+                File(dir, "hyperplay.1.log").delete()
+                logFile.writeText("")
+            }
+        }
+        log("I", "app", "$sent informe(s) enviados; registro reiniciado")
     }
 
     private fun refreshPending() {

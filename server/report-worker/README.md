@@ -28,7 +28,12 @@ lives only in Cloudflare: the APK carries no secret.
 5. Tell the app where to send: GitHub → repo → Settings → Secrets and variables → Actions →
    **Variables** → `HP_REPORT_URL` = `https://hyperplay-reports.<your-account>.workers.dev/report`.
    The next published versions will carry that URL.
-6. (Optional) per-IP limit and de-duplication: create the KV namespace as `wrangler.toml` explains.
+6. Per-IP limit (20 reports per hour) and de-duplication use a KV namespace. The official server
+   has one (id in `wrangler.toml`); for your own copy create it with
+   `npx wrangler kv namespace create REPORTS_KV` and replace the id.
+
+**Status:** the official server is deployed at
+`https://hyperplay-reports.cespinosag1992.workers.dev` and `HP_REPORT_URL` is set in the repo.
 
 ### What is sent
 
@@ -62,7 +67,12 @@ El token de GitHub vive solo en Cloudflare: la APK no lleva ningún secreto.
 5. Dile a la app dónde enviar: en GitHub → repo → Settings → Secrets and variables → Actions →
    **Variables** → `HP_REPORT_URL` = `https://hyperplay-reports.<tu-cuenta>.workers.dev/report`.
    Las siguientes versiones publicadas llevarán esa URL.
-6. (Opcional) límite por IP y deduplicado: crea el espacio KV como indica `wrangler.toml`.
+6. El límite por IP (20 informes por hora) y el deduplicado usan un espacio KV. El servidor
+   oficial ya tiene uno (id en `wrangler.toml`); para tu propia copia créalo con
+   `npx wrangler kv namespace create REPORTS_KV` y cambia el id.
+
+**Estado:** el servidor oficial está publicado en
+`https://hyperplay-reports.cespinosag1992.workers.dev` y `HP_REPORT_URL` está configurada en el repo.
 
 ### Qué se envía
 

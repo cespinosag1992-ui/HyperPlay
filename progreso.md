@@ -1,8 +1,21 @@
 # HyperPlay · Progreso
 
 > Leer ANTES de empezar a trabajar y actualizar AL TERMINAR cada sesión/tarea.
-> Última actualización: 2026-11-19 16:05 (nueva interfaz estilo macOS; guardado de HK arreglado con NtQueryDirectoryFile; PSHUFLW corregido en el JIT; repetición de frames contra el límite de CPU de nubia; Quick Resume; protección térmica reforzada; gate verde)
-> **ADB:** el puerto de depuración inalámbrica cambia al reactivarla; descubrir con `adb mdns services` (último: `192.168.0.9:44517`; si mDNS no lo ve: barrido de ping + `scratchpad/portscan.ps1` 30000-50000).
+> Última actualización: 2026-11-20 20:10 (Silksong arranca sin internet: TryEnterCriticalSection; cierre por pila en CreateFileW; servidor de informes publicado; registros que se borran al enviarse; gate verde)
+> **ADB:** el puerto de depuración inalámbrica cambia al reactivarla; descubrir con `adb mdns services` (último: `192.168.0.2:33237`; si mDNS no lo ve: barrido de ping + `scratchpad/portscan.ps1` 30000-50000). Tras pruebas sin red, SIEMPRE `cmd connectivity set-package-networking-enabled true com.murdoc820.hyperplay`.
+
+## Estado y pendientes (2026-11-20 20:10)
+- **Hecho**:
+  - Silksong sin internet: 10/10 arranques al menú; partida nueva jugable.
+  - Cierre por desbordamiento de pila en CreateFileW (búfer de 64 KB del parche de Cuphead).
+  - Servidor de informes publicado (`https://hyperplay-reports.cespinosag1992.workers.dev`), `HP_REPORT_URL` en el repo, límite por IP con KV.
+  - Registros: el de la app se vacía al enviar; 20 informes y 5 logs de sesión como máximo.
+- **Pendiente del usuario**: crear el token fine-grained (Issues RW solo en HyperPlay) y pegarlo con `npx wrangler secret put GITHUB_TOKEN` en `server/report-worker`.
+- **Pendiente técnico**:
+  - Silksong: cinemática de inicio negra (Media Foundation `0xc00d36c4`); comprobar el guardado en un banco.
+  - Celeste al 100 %: audio sin FMOD (efectos y música), aviso de que no puede guardar las opciones, guardado de partida.
+  - Celeste a 120 FPS: generación de fotogramas en el camino Vulkan.
+  - Regla: en cada juego, verificar guardado (partida y opciones) y que todo funcione.
 
 ## Estado actual y pendientes (2026-11-19 16:05)
 - **Hecho hoy**:
