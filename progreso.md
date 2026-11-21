@@ -4,8 +4,12 @@
 > Última actualización: 2026-11-20 20:10 (Silksong arranca sin internet: TryEnterCriticalSection; cierre por pila en CreateFileW; servidor de informes publicado; registros que se borran al enviarse; gate verde)
 > **ADB:** el puerto de depuración inalámbrica cambia al reactivarla; descubrir con `adb mdns services` (último: `192.168.0.2:33237`; si mDNS no lo ve: barrido de ping + `scratchpad/portscan.ps1` 30000-50000). Tras pruebas sin red, SIEMPRE `cmd connectivity set-package-networking-enabled true com.murdoc820.hyperplay`.
 
-## Estado y pendientes (2026-11-20 20:10)
+## Estado y pendientes (2026-11-21 07:20)
 - **Hecho**:
+  - Sonido de Celeste terminado (buses, snapshots, transiciones con condición). Faltan solo efectos (reverb) y tono.
+  - 120 FPS, paso 1: swapchain virtual (`gfx/GuestSwapchain`, `setprop debug.hyperplay.vswap 1`). El juego dibuja en imágenes de HyperPlay y cada present se copia al swapchain real. Probado: Celeste se ve bien a 60 FPS. Apagado por defecto.
+  - Paso 2 (siguiente): HyperFG desacoplado de DirectVulkanBridge para interpolar entre las imágenes virtuales y presentar 120.
+  - Nota de pruebas: el móvil tiene la build release (la actividad del juego no se exporta): lanzar Celeste tocando la portada y luego JUGAR.
   - Silksong sin internet: 10/10 arranques al menú; partida nueva jugable.
   - Cierre por desbordamiento de pila en CreateFileW (búfer de 64 KB del parche de Cuphead).
   - Servidor de informes publicado (`https://hyperplay-reports.cespinosag1992.workers.dev`), `HP_REPORT_URL` en el repo, límite por IP con KV.
@@ -13,7 +17,7 @@
 - **Pendiente del usuario**: crear el token fine-grained (Issues RW solo en HyperPlay) y pegarlo con `npx wrangler secret put GITHUB_TOKEN` en `server/report-worker`.
 - **Pendiente técnico**:
   - Silksong: cinemática de inicio negra (Media Foundation `0xc00d36c4`); comprobar el guardado en un banco.
-  - Celeste: audio sin FMOD con parámetros (capas), hojas de parámetro, 3D estéreo, bucles. Guardado de opciones y de partida COMPROBADOS. Falta: snapshots, volúmenes de buses del mezclador, transiciones con condición (música por secciones), 120 FPS.
+  - Celeste: audio sin FMOD con parámetros (capas), hojas de parámetro, 3D estéreo, bucles. Guardado de opciones y de partida COMPROBADOS. Falta: 120 FPS (paso 2: generación de fotogramas).
   - Después de Celeste (pedido del usuario, todos los juegos): quitar Estirar/Ampliar y la resolución en % del menú; aspecto, resolución y pantalla completa desde el propio juego; nativa a pantalla completa por defecto; tope de FPS 60/90/120 (sin 72) y que el limitador del juego funcione.
   - DmC: faltan ~2170 imports (WSOCK32 y otros).
   - Celeste a 120 FPS: generación de fotogramas en el camino Vulkan.
