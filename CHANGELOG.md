@@ -51,6 +51,15 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   threads games create now also get a larger native stack.
 - A thread that runs game code from inside a native call (callbacks, exceptions) is marked as
   "in native code" again when it returns, so pausing it never waits forever.
+- **Celeste has sound, without FMOD.** HyperPlay now has its own FMOD Studio (native code, no
+  Firelight code): it reads the game's sound banks, decodes their Vorbis sounds with Android and
+  mixes them at 48 kHz. Tested on the phone: title ambience (looping), menu music and interface
+  sounds. Supported: events and timelines, random variations, nested events, loops and sustain
+  points, bus/VCA volume and pause, long music decoded in blocks, a soft limiter. Still missing:
+  music layers driven by game parameters, 3D position and snapshots.
+- Fixed: Mono sometimes aborted (`mono-mmap-windows.c:132`) because `VirtualQuery` reported a
+  just-reserved region as free; and a folder listing could come back empty when a handle number
+  was reused (Celeste: "Missing Language Files").
 - **Celeste saves again.** Changing an option showed "Save Failed": Mono creates the `Saves`
   folder with a Win32 long path (`\\?\D:\Saves`) and HyperPlay did not understand the `\\?\`
   prefix. Tested on the phone: an option changed in Celeste is still there after restarting.
@@ -111,6 +120,16 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 - Un hilo que ejecuta código del juego desde dentro de una llamada nativa (callbacks,
   excepciones) vuelve a marcarse "en código nativo" al terminar, así pausarlo nunca espera para
   siempre.
+- **Celeste tiene sonido, sin FMOD.** HyperPlay tiene ahora su propio FMOD Studio (código nativo,
+  sin código de Firelight): lee los bancos de sonido del juego, decodifica sus sonidos Vorbis con
+  Android y los mezcla a 48 kHz. Probado en el teléfono: ambiente del título (en bucle), música
+  del menú y sonidos de la interfaz. Incluye: eventos y líneas de tiempo, variaciones aleatorias,
+  eventos anidados, bucles y puntos de sostén, volumen y pausa de buses/VCA, música larga
+  decodificada por bloques y un limitador suave. Falta: capas de la música según los parámetros
+  del juego, posición 3D y snapshots.
+- Arreglado: Mono a veces abortaba (`mono-mmap-windows.c:132`) porque `VirtualQuery` daba por
+  libre una región recién reservada; y el listado de una carpeta podía salir vacío al reutilizarse
+  un número de handle (Celeste: "Missing Language Files").
 - **Celeste vuelve a guardar.** Al cambiar una opción salía "Save Failed": Mono crea la carpeta
   `Saves` con una ruta larga de Win32 (`\\?\D:\Saves`) y HyperPlay no entendía el prefijo `\\?\`.
   Probado en el teléfono: una opción cambiada en Celeste sigue igual tras reiniciar el juego.

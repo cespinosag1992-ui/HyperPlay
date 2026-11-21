@@ -225,4 +225,121 @@ bool decodeVorbisSample(const uint8_t* bank, const FsbSample& s, const VorbisSet
     return true;
 }
 
+// ------------------------------------------------------------------ decodificación por bloques
+
+VorbisStream::~VorbisStream() { close(); }
+
+void VorbisStream::close() {
+    if (codec_ != nullptr) {
+        auto* codec = static_cast<AMediaCodec*>(codec_);
+        AMediaCodec_stop(codec);
+        AMediaCodec_delete(codec);
+        codec_ = nullptr;
+    }
+}
+
+bool VorbisStream::open(const uint8_t* bank, const FsbSample& s, const VorbisSetupTable& setups, std::string* error) {
+    close();
+    bank_ = bank;
+    sample_ = s;
+    setup_ = setups.find(s.vorbisCrc);
+    if (setup_ == nullptr) {
+        if (error) *error = "sin cabecera setup para el CRC";
+        return false;
+    }
+    if (!start()) {
+        if (error) *error = "AMediaCodec no aceptó el formato";
+        return false;
+    }
+    return true;
+}
+
+bool VorbisStream::start() {
+    uint8_t ident[30] = {0x01, 'v', 'o', 'r', 'b', 'i', 's'};
+    ident[11] = static_cast<uint8_t>(sample_.channels);
+    std::memcpy(ident + 12, &sample_.rate, 4);
+    ident[28] = 0xB8;
+    ident[29] = 0x01;
+    AMediaCodec* codec = AMediaCodec_createDecoderByType("audio/vorbis");
+    if (codec == nullptr) return false;
+    AMediaFormat* fmt = AMediaFormat_new();
+    AMediaFormat_setString(fmt, AMEDIAFORMAT_KEY_MIME, "audio/vorbis");
+    AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, static_cast<int32_t>(sample_.rate));
+    AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, static_cast<int32_t>(sample_.channels));
+    AMediaFormat_setBuffer(fmt, "csd-0", ident, sizeof(ident));
+    AMediaFormat_setBuffer(fmt, "csd-1", const_cast<uint8_t*>(setup_->data()), setup_->size());
+    const bool ok = AMediaCodec_configure(codec, fmt, nullptr, nullptr, 0) == AMEDIA_OK && AMediaCodec_start(codec) == AMEDIA_OK;
+    AMediaFormat_delete(fmt);
+    if (!ok) {
+        AMediaCodec_delete(codec);
+        return false;
+    }
+    codec_ = codec;
+    p_ = bank_ + sample_.dataOffset;
+    end_ = p_ + sample_.dataSize;
+    inputDone_ = false;
+    finished_ = false;
+    pts_ = 0;
+    produced_ = 0;
+    return true;
+}
+
+bool VorbisStream::restart() {
+    close();
+    return setup_ != nullptr && start();
+}
+
+size_t VorbisStream::read(std::vector<int16_t>& out, size_t frames) {
+    if (codec_ == nullptr || finished_) return 0;
+    auto* codec = static_cast<AMediaCodec*>(codec_);
+    const size_t ch = sample_.channels;
+    const uint64_t total = sample_.numSamples;
+    size_t got = 0;
+    int idle = 0;
+    while (got < frames && !finished_) {
+        if (!inputDone_) {
+            const ssize_t ib = AMediaCodec_dequeueInputBuffer(codec, 0);
+            if (ib >= 0) {
+                size_t cap = 0;
+                uint8_t* buf = AMediaCodec_getInputBuffer(codec, static_cast<size_t>(ib), &cap);
+                uint16_t len = 0;
+                if (p_ + 2 <= end_) len = rd<uint16_t>(p_);
+                if (len == 0 || p_ + 2 + len > end_ || len + 4u > cap) {
+                    AMediaCodec_queueInputBuffer(codec, static_cast<size_t>(ib), 0, 0, pts_, AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
+                    inputDone_ = true;
+                } else {
+                    std::memcpy(buf, p_ + 2, len);
+                    const int32_t unknown = -1;
+                    std::memcpy(buf + len, &unknown, 4);
+                    AMediaCodec_queueInputBuffer(codec, static_cast<size_t>(ib), 0, len + 4u, pts_, 0);
+                    p_ += 2 + len;
+                    pts_ += 1000;
+                }
+            }
+        }
+        AMediaCodecBufferInfo info;
+        const ssize_t ob = AMediaCodec_dequeueOutputBuffer(codec, &info, inputDone_ ? 2000 : 500);
+        if (ob >= 0) {
+            idle = 0;
+            size_t cap = 0;
+            const uint8_t* buf = AMediaCodec_getOutputBuffer(codec, static_cast<size_t>(ob), &cap);
+            if (buf != nullptr && info.size > 0) {
+                const auto* s16 = reinterpret_cast<const int16_t*>(buf + info.offset);
+                size_t n = static_cast<size_t>(info.size) / 2 / ch;
+                if (total > 0 && produced_ + n > total) n = produced_ < total ? static_cast<size_t>(total - produced_) : 0;
+                out.insert(out.end(), s16, s16 + n * ch);
+                produced_ += n;
+                got += n;
+            }
+            const bool eos = (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0;
+            AMediaCodec_releaseOutputBuffer(codec, static_cast<size_t>(ob), false);
+            if (eos || (total > 0 && produced_ >= total)) finished_ = true;
+        } else if (ob == AMEDIACODEC_INFO_TRY_AGAIN_LATER && ++idle > (inputDone_ ? 200 : 4000)) {
+            finished_ = inputDone_;
+            break;
+        }
+    }
+    return got;
+}
+
 }  // namespace hyperplay::fmodlite

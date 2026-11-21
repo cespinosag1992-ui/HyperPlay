@@ -23,6 +23,7 @@
 #include "gfx/DirectVulkanBridge.h"
 #include "input/DirectXInputBridge.h"
 #include "audio/DirectAAudioEngine.h"
+#include "audio/FmodStudioHost.h"
 #include "media/MediaFoundationBridge.h"
 
 #include <android/log.h>
@@ -2209,6 +2210,8 @@ IatHijackStats NativeDllInterceptor::hijackLocalDllIat(LoadedPeImage& image) {
 struct DirListing {
     std::vector<std::string> names;
     size_t next = 0;
+    dev_t dev = 0;
+    ino_t ino = 0;  // carpeta a la que pertenece (el número de fd se reutiliza)
 };
 static std::mutex s_dirMutex;
 static std::unordered_map<int, DirListing> s_dirListings;
@@ -2260,6 +2263,7 @@ static uint32_t hp_NtCreateFile(void** fileHandle, uint32_t desiredAccess, const
     LOGI("NtCreateFile('%s' dir=%d acc=0x%x disp=%u) -> fd=%d status=0x%x", real.c_str(), wantDir ? 1 : 0,
          desiredAccess, disposition, fd, status);
     if (fd < 0) return status;
+    forgetDirListing(fd);  // apertura nueva: nada del listado de un fd anterior con el mismo número
     *fileHandle = handleFromFd(fd);
     return 0;
 }
@@ -2284,8 +2288,17 @@ static uint32_t hp_NtQueryDirectoryFile(void* fileHandle, void*, void*, void*, v
     std::lock_guard<std::mutex> lock(s_dirMutex);
     auto [it, fresh] = s_dirListings.try_emplace(fd);
     DirListing& dl = it->second;
-    if (fresh || restart) {
+    // Si el fd se cerró por otra vía (NtClose, close) y ahora es otra carpeta, el listado viejo no
+    // vale: antes se devolvía agotado (vacío) y Celeste fallaba con "Missing Language Files".
+    struct stat dst{};
+    const bool haveStat = fstat(fd, &dst) == 0;
+    const bool otherDir = haveStat && (dst.st_dev != dl.dev || dst.st_ino != dl.ino);
+    if (fresh || restart || otherDir) {
         dl = DirListing{};
+        if (haveStat) {
+            dl.dev = dst.st_dev;
+            dl.ino = dst.st_ino;
+        }
         dl.names = {".", ".."};
         const int dupFd = dup(fd);
         if (DIR* d = dupFd >= 0 ? fdopendir(dupFd) : nullptr) {
@@ -4519,6 +4532,35 @@ static void enableMonoTraceIfRequested(void* base, const PeInfo& pe) {
     LOGI("monotrace: mono_jit_set_trace_options(\"%s\") -> %lld", s_spec.c_str(), static_cast<long long>(ok));
 }
 
+// ¿Es el fmodstudio.dll mudo que trae el runtime de HyperPlay (y no un FMOD real del usuario)?
+static bool isHyperPlayFmodShim(const std::string& hostPath) {
+    if (!managed::active() || hostPath.compare(0, managed::g_runtimeDir.size(), managed::g_runtimeDir) != 0) {
+        return false;
+    }
+    std::string base = hostPath.substr(hostPath.find_last_of('/') + 1);
+    for (char& c : base) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (base != "fmodstudio.dll" && base != "fmodstudio64.dll") return false;
+    // setprop debug.hyperplay.fmodnative 0: usa el shim mudo (diagnóstico).
+    char prop[PROP_VALUE_MAX] = {};
+    __system_property_get("debug.hyperplay.fmodnative", prop);
+    if (prop[0] == '0') return false;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        fmodhost::Hooks hooks;
+        hooks.resolvePath = [](const std::string& winPath) {
+            return s_activeImage ? BionicPeLoader::resolveVirtualPath(*s_activeImage, winPath) : winPath;
+        };
+        hooks.xmm = [](int i) -> const uint8_t* {
+            if (t_dispatchBackend == nullptr || i < 0 || i > 15) return nullptr;
+            return t_dispatchBackend->context().simd[i];
+        };
+        hooks.gameDir = managed::g_gameDir;
+        fmodhost::init(hooks);
+        LOGI("FMOD nativo de HyperPlay activo para %s", hooks.gameDir.c_str());
+    });
+    return true;
+}
+
 void* NativeDllInterceptor::win_GetProcAddress(void* hModule, const char* lpProcName) {
     s_kernel32Calls.fetch_add(1);
     if (lpProcName == nullptr || hModule == nullptr) {
@@ -4542,6 +4584,20 @@ void* NativeDllInterceptor::win_GetProcAddress(void* hModule, const char* lpProc
             if (kv.second.base == hModule) {
                 if (!byOrdinal && std::strcmp(lpProcName, "mono_jit_init_version") == 0) {
                     enableMonoTraceIfRequested(hModule, kv.second.peInfo);
+                }
+                // fmodstudio.dll del runtime (shim mudo): FMOD Studio nativo de HyperPlay. Con el
+                // FMOD propio del usuario (/sdcard/HyperPlay/fmod) se usa el suyo tal cual.
+                if (!byOrdinal && isHyperPlayFmodShim(kv.second.hostPath)) {
+                    if (void* p = fmodhost::resolveExport(lpProcName)) {
+                        registerTrampolineAddress(p, std::string("fmodstudio.dll!") + lpProcName);
+                        return p;
+                    }
+                    static std::mutex s_missMu;
+                    static std::unordered_set<std::string> s_missing;
+                    std::lock_guard<std::mutex> lock(s_missMu);
+                    if (s_missing.insert(lpProcName).second) {
+                        LOGW("FMOD nativo: %s sin implementar (se usa el shim)", lpProcName);
+                    }
                 }
                 if (void* p = resolvePeExport(hModule, kv.second.peInfo, lpProcName, 0)) return p;
                 if (byOrdinal) {
@@ -8550,6 +8606,22 @@ size_t NativeDllInterceptor::win_VirtualQuery(const void* lpAddress, void* lpBuf
         if (!mapped && nowMs - s_hostMapsStampMs > 2) {  // pudo mapearse hace un instante
             refreshHostMapsLocked();
             lookup();
+        }
+    }
+    if (!mapped) {
+        // Reserva de VirtualAlloc más reciente que la copia de /proc/self/maps: la tabla propia
+        // manda. Sin esto salía MEM_FREE con AllocationBase 0 y Mono (mono_vfree) hacía
+        // VirtualFree(NULL) y abortaba (Celeste: mono-mmap-windows.c:132).
+        std::lock_guard<std::mutex> lock(s_allocMutex);
+        for (const auto& [b, sz] : s_allocations) {
+            if (page >= b && page < b + sz) {
+                hit.start = b;
+                hit.end = b + sz;
+                hit.protect = 0x04;  // PAGE_READWRITE
+                hit.file = false;
+                mapped = true;
+                break;
+            }
         }
     }
 

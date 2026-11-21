@@ -740,3 +740,12 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - DmC después: SIGSEGV en `hijackLocalDllIat` (memcpy de 8 B en la última palabra de la página): `dllModule.is32Bit` nunca se ponía. Además NTPhysX_* en 0x7466xxxxxx (>4 GB). `allocateArena` de 32 bits con MAP_FIXED_NOREPLACE y pasos de 16 MB: NTPhysX en 0x18000000, wx en 0x1a-0x21000000.
 - DmC ahora: "IAT incompleta: 1036/3206 resueltas, 2170 sin resolver" (WSOCK32 y más). No es regresión.
 - Regresión: Celeste por Mono OK; HK título a 120 FPS sin fallos. Pantalla de carga: "Ya casi está… · 0:07 / Calentando los shaders (y tus manos)".
+## 2026-11-20 — FMOD Studio nativo (Celeste con sonido)
+- `FmodBank.cpp` (modelo de bancos) + `FmodStudioHost.cpp` (API + mezclador 48 kHz + AAudio) + `VorbisStream` (decodificación por bloques). GetProcAddress del `fmodstudio.dll` del runtime -> funciones nativas.
+- 1ª prueba: 0 eventos. Causas: (1) STDT: GUID en `8 + 4*palabras` (no `8*nodos`) y etiquetas 2 bytes después de los GUID (u16) -> 378 nombres en vez de 996; (2) Desc creadas por GetEventList antes del banco de nombres con ruta vacía -> ruta refrescada del modelo.
+- Tras arreglar: `GetEvent(event:/env/amb/worldmap) -> ok`, `Start event:/music/menu/level_select`, mezclador "2 eventos, 3 voces, pico 1.00" -> limitador suave (x0,9; curva sobre 0,8).
+- `env/amb/worldmap` se cortaba a los 33 s: `INST+24` = -1 (bucle) y TRNB con inicio == fin (punto de sostén). Implementados: sigue sonando a los 70 s.
+- Mono abortó una vez: "Assertion at ..\mono\utils\mono-mmap-windows.c:132, condition `res' not met" (VirtualFree(AllocationBase=0)): VirtualQuery mira ya `s_allocations` si /proc/self/maps aún no tiene la reserva.
+- Una vez "System.Exception: Missing Language Files" (intermitente): NtCreateFile olvida el listado del fd y el listado se rehace si el fd es otra carpeta (dev/ino).
+- UI: con pulsación larga (700 ms) en el título: `title_firstinput`, `whoosh_list_in`, `rollover_down`, `rollover_up`.
+- `setprop debug.hyperplay.fmodnative 0` = shim mudo. Gate: `testDebugUnitTest lintDebug assembleRelease` exit=0.

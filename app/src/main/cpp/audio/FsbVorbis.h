@@ -59,6 +59,36 @@ private:
 bool decodeVorbisSample(const uint8_t* bank, const FsbSample& s, const VorbisSetupTable& setups,
                         std::vector<int16_t>& pcm, std::string* error = nullptr);
 
+/// Decodificación por bloques (música larga): mantiene el AMediaCodec abierto y entrega PCM
+/// int16 entrelazado a medida que se pide. `restart()` vuelve al principio de la muestra.
+class VorbisStream {
+public:
+    VorbisStream() = default;
+    ~VorbisStream();
+    VorbisStream(const VorbisStream&) = delete;
+    VorbisStream& operator=(const VorbisStream&) = delete;
+
+    bool open(const uint8_t* bank, const FsbSample& s, const VorbisSetupTable& setups, std::string* error = nullptr);
+    /// Añade a `out` hasta `frames` fotogramas. Devuelve los añadidos (0 = fin de la muestra).
+    size_t read(std::vector<int16_t>& out, size_t frames);
+    bool restart();
+    [[nodiscard]] bool finished() const noexcept { return finished_; }
+    void close();
+
+private:
+    bool start();
+    const uint8_t* bank_ = nullptr;
+    FsbSample sample_;
+    const std::vector<uint8_t>* setup_ = nullptr;
+    void* codec_ = nullptr;  // AMediaCodec*
+    const uint8_t* p_ = nullptr;
+    const uint8_t* end_ = nullptr;
+    bool inputDone_ = false;
+    bool finished_ = false;
+    int64_t pts_ = 0;
+    uint64_t produced_ = 0;  // fotogramas entregados (para recortar el relleno final)
+};
+
 uint32_t crc32(const uint8_t* data, size_t size);
 
 }  // namespace hyperplay::fmodlite

@@ -22,7 +22,7 @@ u16 ?
 nodes[]: w1 = value(24) | char(8) << 24      value = label offset (or 0xFFFFFF)
          w2 = first(24) | count(8) << 24     children = nodes[first .. first+count-1]
 GUID table at 8 + 4*nodeWords: 16 bytes per string, indexed by the leaf's `first`
-labels right after the GUID table: NUL-terminated; a node's label = labels[value..]
+then u16 (label block size) and the labels: NUL-terminated; a node's label = labels[value..]
 (it includes the node's own first char)
 ```
 
@@ -40,7 +40,8 @@ events; `event:/ui/game/pause` = `c6311b80-2ae7-4155-80f1-d3e2713efaa3` (index 7
 | `WAVS/WAV ` | +0 waveform GUID, `u32 0x0C`, `u16 fsb index?`, `u16 subsound index` (`ui_game_pause` = 2) |
 | `MUIS/MUIT` (`MUIB`, `PLST`) | multi instrument: playlist of instruments (random/sequential) |
 | `SPIS/SPIT` (`SPIB`, `PLST`) | scatterer instrument |
-| `TRNS/TRAN` (`TRNB`, `TRTL`) | transitions / loop regions on the timeline |
+| `TRNS/TRAN` (`TRNB`, `TRTL`) | transitions: `TRNB` +0 id, +16 region/marker, +32 `u32 start`, +36 `u32 end`; start < end = loop region (jump back to start), start == end = sustain point (the timeline holds there until the event is stopped) |
+| `INST` (in every instrument LIST) | +0 owner timeline GUID, **+24 `int32` loop count** (0 = once, -1 = forever) / +0 GUID de la línea de tiempo, **+24 nº de bucles** |
 | `PRMS/PARM/PRMB` | parameters (Celeste music uses them for layers and sections) |
 | `CTRS/CTRL`, `CRVS/CURV` | automation curves (parameter -> property) |
 | `MODS/MODU/MODB` | modulators (random pitch/volume, AHDSR) |

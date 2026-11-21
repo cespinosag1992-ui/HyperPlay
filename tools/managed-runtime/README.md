@@ -33,9 +33,15 @@ and FNA's licenses), published as the prerelease `runtime-mono-x64-N`. The app d
 first time a .NET game opens (`ManagedRuntime.kt`, SHA-256 checked) into
 `Android/data/<package>/files/runtime/mono` (case-insensitive storage, like Windows).
 
-Audio: FMOD is proprietary and is not distributed. If you put `fmod64.dll` and
-`fmodstudio64.dll` from "FMOD Engine 1.10.x" for Windows (fmod.com, free account) in
-`/sdcard/HyperPlay/fmod/`, HyperPlay uses them instead of the silent shims.
+Audio: FMOD is proprietary and is not distributed. When the game asks the shim `fmodstudio.dll`
+for a function, HyperPlay answers with its own native FMOD Studio
+(`app/src/main/cpp/audio/FmodStudioHost.cpp`): it reads the game's banks (`FmodBank.cpp`, format in
+[FMOD_BANK_FORMAT.md](FMOD_BANK_FORMAT.md)), decodes their Vorbis sounds with Android and mixes them
+at 48 kHz into AAudio. No Firelight code is used. Done: events, timelines, multi/random
+instruments, nested events, loops and sustain points, buses/VCAs (volume, pause), long music
+streamed. Still missing: parameters (music layers, ambience by parameter), 3D position, snapshots.
+`setprop debug.hyperplay.fmodnative 0` goes back to the silent shim. Your own FMOD 1.10 x64
+(`fmod64.dll`, `fmodstudio64.dll` in `/sdcard/HyperPlay/fmod/`) is still used as is if present.
 
 ## Español
 
@@ -70,6 +76,13 @@ las licencias de FNA), publicado como prerelease `runtime-mono-x64-N`. La app lo
 primera vez que se abre un juego .NET (`ManagedRuntime.kt`, con SHA-256) en
 `Android/data/<paquete>/files/runtime/mono` (almacenamiento sin mayúsculas, como Windows).
 
-Sonido: FMOD es propietario y no se distribuye. Si pones `fmod64.dll` y `fmodstudio64.dll` de
-"FMOD Engine 1.10.x" para Windows (fmod.com, cuenta gratuita) en `/sdcard/HyperPlay/fmod/`,
-HyperPlay los usa en lugar de los shims mudos.
+Sonido: FMOD es propietario y no se distribuye. Cuando el juego pide una función al shim
+`fmodstudio.dll`, HyperPlay responde con su propio FMOD Studio nativo
+(`app/src/main/cpp/audio/FmodStudioHost.cpp`): lee los bancos del juego (`FmodBank.cpp`, formato en
+[FMOD_BANK_FORMAT.md](FMOD_BANK_FORMAT.md)), decodifica sus sonidos Vorbis con Android y los mezcla
+a 48 kHz hacia AAudio. No se usa código de Firelight. Hecho: eventos, líneas de tiempo,
+instrumentos multi/aleatorios, eventos anidados, bucles y puntos de sostén, buses/VCA (volumen,
+pausa), música larga por bloques. Falta: parámetros (capas de la música, ambientes por
+parámetro), posición 3D, snapshots. `setprop debug.hyperplay.fmodnative 0` vuelve al shim mudo. Tu
+propio FMOD 1.10 x64 (`fmod64.dll`, `fmodstudio64.dll` en `/sdcard/HyperPlay/fmod/`) se sigue
+usando tal cual si está.

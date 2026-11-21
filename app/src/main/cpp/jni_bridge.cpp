@@ -3,6 +3,8 @@
 #include <android/log.h>
 #include <android/native_window_jni.h>
 
+#include "audio/FmodStudioHost.h"
+
 #include <cstdlib>
 #include <exception>
 #include <sys/system_properties.h>
@@ -274,6 +276,7 @@ HP_JNI(void, nativeDirectStop)(JNIEnv*, jclass) {
 // Quick Resume: congela el juego en su siguiente Present (y el audio) o lo reanuda.
 HP_JNI(void, nativeSetPaused)(JNIEnv*, jclass, jboolean paused) {
     hyperplay::pacing::setPaused(paused == JNI_TRUE);
+    hyperplay::fmodhost::setOutputPaused(paused == JNI_TRUE);  // FMOD nativo (Celeste)
 }
 
 HP_JNI(jstring, nativeDirectGetLastLoadReport)(JNIEnv* env, jclass) {
@@ -457,6 +460,7 @@ HP_JNI(jboolean, nativeDirectStartAudio)(JNIEnv*, jclass, jint rate, jint channe
 
 HP_JNI(void, nativeDirectStopAudio)(JNIEnv*, jclass) {
     directAudio().stop();
+    hyperplay::fmodhost::setOutputPaused(true);
 }
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
