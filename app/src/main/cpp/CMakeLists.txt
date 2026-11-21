@@ -28,6 +28,7 @@ add_library(hyperplay SHARED
     gfx/FsrUpscalePass.cpp
     gfx/HyperFrameGen.cpp
     gfx/DirectVulkanBridge.cpp
+    gfx/GuestSwapchain.cpp
     audio/DirectAAudioEngine.cpp
     audio/FsbVorbis.cpp
     audio/FmodBank.cpp

@@ -1,6 +1,7 @@
 #include "VulkanPassthrough.h"
 
 #include "gfx/DirectVulkanBridge.h"
+#include "gfx/GuestSwapchain.h"
 
 #include <android/log.h>
 #include <vulkan/vulkan.h>
@@ -148,12 +149,69 @@ VKAPI_ATTR VkResult VKAPI_CALL hpGetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysi
     return r;
 }
 
+// Punteros reales de las funciones de dispositivo que se envuelven para el swapchain virtual.
+PFN_vkCreateDevice s_createDevice = nullptr;
+PFN_vkGetDeviceQueue s_getDeviceQueue = nullptr;
+PFN_vkQueueSubmit s_queueSubmit = nullptr;
+PFN_vkQueueWaitIdle s_queueWaitIdle = nullptr;
+PFN_vkGetSwapchainImagesKHR s_getSwapchainImages = nullptr;
+PFN_vkDestroySwapchainKHR s_destroySwapchain = nullptr;
+
+gpu::GuestSwapchain& guestSwap() { return gpu::GuestSwapchain::shared(); }
+
+VKAPI_ATTR VkResult VKAPI_CALL hpCreateDevice(VkPhysicalDevice pd, const VkDeviceCreateInfo* ci,
+                                              const VkAllocationCallbacks*, VkDevice* out) {
+    if (s_createDevice == nullptr) {
+        s_createDevice = reinterpret_cast<PFN_vkCreateDevice>(loader()(s_instance.load(), "vkCreateDevice"));
+    }
+    if (s_createDevice == nullptr || ci == nullptr) return VK_ERROR_INITIALIZATION_FAILED;
+    const VkResult r = s_createDevice(pd, ci, nullptr, out);
+    if (r == VK_SUCCESS && out != nullptr && ci->queueCreateInfoCount > 0) {
+        guestSwap().setLoader(loader(), s_instance.load());
+        guestSwap().onCreateDevice(pd, *out, ci->pQueueCreateInfos[0].queueFamilyIndex);
+    }
+    return r;
+}
+
+VKAPI_ATTR void VKAPI_CALL hpGetDeviceQueue(VkDevice device, uint32_t family, uint32_t index, VkQueue* out) {
+    if (s_getDeviceQueue == nullptr) return;
+    s_getDeviceQueue(device, family, index, out);
+    if (out != nullptr && index == 0) guestSwap().onGetDeviceQueue(device, family, *out);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL hpQueueSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo* submits, VkFence fence) {
+    if (s_queueSubmit == nullptr) return VK_ERROR_DEVICE_LOST;
+    std::lock_guard<std::mutex> lock(guestSwap().queueMutex());
+    return s_queueSubmit(queue, count, submits, fence);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL hpQueueWaitIdle(VkQueue queue) {
+    if (s_queueWaitIdle == nullptr) return VK_ERROR_DEVICE_LOST;
+    std::lock_guard<std::mutex> lock(guestSwap().queueMutex());
+    return s_queueWaitIdle(queue);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL hpGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR sc, uint32_t* count,
+                                                       VkImage* images) {
+    if (guestSwap().active()) return guestSwap().getImages(device, sc, count, images);
+    if (s_getSwapchainImages == nullptr) return VK_ERROR_INITIALIZATION_FAILED;
+    return s_getSwapchainImages(device, sc, count, images);
+}
+
+VKAPI_ATTR void VKAPI_CALL hpDestroySwapchainKHR(VkDevice device, VkSwapchainKHR sc, const VkAllocationCallbacks*) {
+    if (guestSwap().active()) {
+        guestSwap().destroySwapchain(device, sc);
+        return;
+    }
+    if (s_destroySwapchain != nullptr) s_destroySwapchain(device, sc, nullptr);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL hpCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR* ci,
                                                     const VkAllocationCallbacks*, VkSwapchainKHR* out) {
     if (s_createSwapchain == nullptr || ci == nullptr) return VK_ERROR_INITIALIZATION_FAILED;
     VkSwapchainCreateInfoKHR info = *ci;
     info.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-    const VkResult r = s_createSwapchain(device, &info, nullptr, out);
+    const VkResult r = guestSwap().createSwapchain(device, &info, out, s_createSwapchain);
     LOGI("vkCreateSwapchainKHR %ux%u formato %d modo %d (preTransform IDENTITY) -> %d", info.imageExtent.width,
          info.imageExtent.height, info.imageFormat, info.presentMode, r);
     return r;
@@ -166,14 +224,25 @@ PFN_vkAcquireNextImageKHR s_acquire = nullptr;
 
 VKAPI_ATTR VkResult VKAPI_CALL hpAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
                                                      VkSemaphore semaphore, VkFence fence, uint32_t* index) {
+    if (guestSwap().active()) return guestSwap().acquire(device, swapchain, timeout, semaphore, fence, index);
     if (s_acquire == nullptr) return VK_ERROR_DEVICE_LOST;
     const VkResult r = s_acquire(device, swapchain, timeout, semaphore, fence, index);
     return r == VK_SUBOPTIMAL_KHR ? VK_SUCCESS : r;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL hpQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* info) {
+    if (guestSwap().active()) {
+        const VkResult r = guestSwap().present(queue, info);
+        DirectVulkanBridge::shared().countGuestPresent();
+        s_presents.fetch_add(1, std::memory_order_relaxed);
+        return r;
+    }
     if (s_queuePresent == nullptr) return VK_ERROR_DEVICE_LOST;
-    VkResult r = s_queuePresent(queue, info);
+    VkResult r;
+    {
+        std::lock_guard<std::mutex> lock(guestSwap().queueMutex());
+        r = s_queuePresent(queue, info);
+    }
     if (r == VK_SUBOPTIMAL_KHR) r = VK_SUCCESS;
     if (info != nullptr && info->pResults != nullptr) {
         for (uint32_t i = 0; i < info->swapchainCount; ++i) {
@@ -218,6 +287,12 @@ void* wrapperFor(const char* name) {
         {"vkGetPhysicalDeviceSurfaceCapabilitiesKHR", reinterpret_cast<void*>(&hpGetPhysicalDeviceSurfaceCapabilitiesKHR)},
         {"vkCreateSwapchainKHR", reinterpret_cast<void*>(&hpCreateSwapchainKHR)},
         {"vkAcquireNextImageKHR", reinterpret_cast<void*>(&hpAcquireNextImageKHR)},
+        {"vkCreateDevice", reinterpret_cast<void*>(&hpCreateDevice)},
+        {"vkGetDeviceQueue", reinterpret_cast<void*>(&hpGetDeviceQueue)},
+        {"vkQueueSubmit", reinterpret_cast<void*>(&hpQueueSubmit)},
+        {"vkQueueWaitIdle", reinterpret_cast<void*>(&hpQueueWaitIdle)},
+        {"vkGetSwapchainImagesKHR", reinterpret_cast<void*>(&hpGetSwapchainImagesKHR)},
+        {"vkDestroySwapchainKHR", reinterpret_cast<void*>(&hpDestroySwapchainKHR)},
         {"vkCmdSetLineWidth", reinterpret_cast<void*>(&hpCmdSetLineWidth)},
         {"vkCmdSetDepthBias", reinterpret_cast<void*>(&hpCmdSetDepthBias)},
         {"vkCmdSetDepthBounds", reinterpret_cast<void*>(&hpCmdSetDepthBounds)},
@@ -233,20 +308,40 @@ void* wrapperFor(const char* name) {
     return nullptr;
 }
 
+// Guarda el puntero real de una función envuelta. `deviceLevel`: el de vkGetDeviceProcAddr
+// manda sobre el de instancia (evita el trampolín del cargador).
+void captureReal(const char* name, void* fn, bool deviceLevel) {
+    if (fn == nullptr) return;
+    struct Slot { const char* name; void** dst; };
+    static const Slot kSlots[] = {
+        {"vkQueuePresentKHR", reinterpret_cast<void**>(&s_queuePresent)},
+        {"vkCreateSwapchainKHR", reinterpret_cast<void**>(&s_createSwapchain)},
+        {"vkAcquireNextImageKHR", reinterpret_cast<void**>(&s_acquire)},
+        {"vkCreateDevice", reinterpret_cast<void**>(&s_createDevice)},
+        {"vkGetDeviceQueue", reinterpret_cast<void**>(&s_getDeviceQueue)},
+        {"vkQueueSubmit", reinterpret_cast<void**>(&s_queueSubmit)},
+        {"vkQueueWaitIdle", reinterpret_cast<void**>(&s_queueWaitIdle)},
+        {"vkGetSwapchainImagesKHR", reinterpret_cast<void**>(&s_getSwapchainImages)},
+        {"vkDestroySwapchainKHR", reinterpret_cast<void**>(&s_destroySwapchain)},
+    };
+    for (const auto& s : kSlots) {
+        if (std::strcmp(s.name, name) == 0) {
+            if (deviceLevel || *s.dst == nullptr) *s.dst = fn;
+            return;
+        }
+    }
+}
+
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL hpGetInstanceProcAddr(VkInstance instance, const char* name) {
     if (name == nullptr || loader() == nullptr) return nullptr;
     if (void* w = wrapperFor(name)) {
         if (w == reinterpret_cast<void*>(-1)) return nullptr;
         if (instance != VK_NULL_HANDLE) {
             // Punteros reales que usan los envoltorios (nivel de instancia).
-            if (std::strcmp(name, "vkQueuePresentKHR") == 0 && s_queuePresent == nullptr) {
-                s_queuePresent = reinterpret_cast<PFN_vkQueuePresentKHR>(loader()(instance, name));
-            } else if (std::strcmp(name, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR") == 0) {
+            if (std::strcmp(name, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR") == 0) {
                 s_getCaps = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR>(loader()(instance, name));
-            } else if (std::strcmp(name, "vkCreateSwapchainKHR") == 0 && s_createSwapchain == nullptr) {
-                s_createSwapchain = reinterpret_cast<PFN_vkCreateSwapchainKHR>(loader()(instance, name));
-            } else if (std::strcmp(name, "vkAcquireNextImageKHR") == 0 && s_acquire == nullptr) {
-                s_acquire = reinterpret_cast<PFN_vkAcquireNextImageKHR>(loader()(instance, name));
+            } else {
+                captureReal(name, reinterpret_cast<void*>(loader()(instance, name)), false);
             }
         }
         return reinterpret_cast<PFN_vkVoidFunction>(expose(w, name));
@@ -261,13 +356,7 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL hpGetDeviceProcAddr(VkDevice device, co
     if (gdpa == nullptr) return nullptr;
     if (void* w = wrapperFor(name)) {
         if (w == reinterpret_cast<void*>(-1)) return nullptr;
-        if (std::strcmp(name, "vkQueuePresentKHR") == 0) {
-            s_queuePresent = reinterpret_cast<PFN_vkQueuePresentKHR>(gdpa(device, name));
-        } else if (std::strcmp(name, "vkCreateSwapchainKHR") == 0) {
-            s_createSwapchain = reinterpret_cast<PFN_vkCreateSwapchainKHR>(gdpa(device, name));
-        } else if (std::strcmp(name, "vkAcquireNextImageKHR") == 0) {
-            s_acquire = reinterpret_cast<PFN_vkAcquireNextImageKHR>(gdpa(device, name));
-        }
+        captureReal(name, reinterpret_cast<void*>(gdpa(device, name)), true);
         return reinterpret_cast<PFN_vkVoidFunction>(expose(w, name));
     }
     return reinterpret_cast<PFN_vkVoidFunction>(expose(reinterpret_cast<void*>(gdpa(device, name)), name));
