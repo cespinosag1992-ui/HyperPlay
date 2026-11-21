@@ -13,7 +13,7 @@
 - **Pendiente del usuario**: crear el token fine-grained (Issues RW solo en HyperPlay) y pegarlo con `npx wrangler secret put GITHUB_TOKEN` en `server/report-worker`.
 - **Pendiente técnico**:
   - Silksong: cinemática de inicio negra (Media Foundation `0xc00d36c4`); comprobar el guardado en un banco.
-  - Celeste al 100 %: audio sin FMOD FUNCIONA (FmodStudioHost: ambiente, música del menú, interfaz). Falta: parámetros (capas de música, ambientes por parámetro), 3D, snapshots, revisar en partida. Guardado de opciones ARREGLADO (`\\?\`); falta comprobar el guardado de partida.
+  - Celeste: audio sin FMOD con parámetros (capas), hojas de parámetro, 3D estéreo, bucles. Guardado de opciones y de partida COMPROBADOS. Falta: snapshots, volúmenes de buses del mezclador, transiciones con condición (música por secciones), 120 FPS.
   - Después de Celeste (pedido del usuario, todos los juegos): quitar Estirar/Ampliar y la resolución en % del menú; aspecto, resolución y pantalla completa desde el propio juego; nativa a pantalla completa por defecto; tope de FPS 60/90/120 (sin 72) y que el limitador del juego funcione.
   - DmC: faltan ~2170 imports (WSOCK32 y otros).
   - Celeste a 120 FPS: generación de fotogramas en el camino Vulkan.

@@ -40,10 +40,14 @@ events; `event:/ui/game/pause` = `c6311b80-2ae7-4155-80f1-d3e2713efaa3` (index 7
 | `WAVS/WAV ` | +0 waveform GUID, `u32 0x0C`, `u16 fsb index?`, `u16 subsound index` (`ui_game_pause` = 2) |
 | `MUIS/MUIT` (`MUIB`, `PLST`) | multi instrument: playlist of instruments (random/sequential) |
 | `SPIS/SPIT` (`SPIB`, `PLST`) | scatterer instrument |
-| `TRNS/TRAN` (`TRNB`, `TRTL`) | transitions: `TRNB` +0 id, +16 region/marker, +32 `u32 start`, +36 `u32 end`; start < end = loop region (jump back to start), start == end = sustain point (the timeline holds there until the event is stopped) |
+| `TRNS/TRAN` (`TRNB`, `TRTL`) | transitions: `TRNB` +0 id, +16 region, +32 `u32 start`, +36 `u32 end`. 60 bytes with start == end = end of a loop region: jump back to the region start (its position follows the region GUID in the `TLNB`). 86-byte ones carry conditions (parameters) |
 | `INST` (in every instrument LIST) | +0 owner timeline GUID, **+24 `int32` loop count** (0 = once, -1 = forever) / +0 GUID de la línea de tiempo, **+24 nº de bucles** |
-| `PRMS/PARM/PRMB` | parameters (Celeste music uses them for layers and sections) |
-| `CTRS/CTRL`, `CRVS/CURV` | automation curves (parameter -> property) |
+| `PRMS/PARM/PRMB` | parameter: +0 GUID, +21 `u16` name length, name (no NUL), then `f32` min, max, **default** (checked with FMOD's `GetParameterByIndex`) |
+| `PMLS/PMLO` (`PMLB`, `CTRO`) | `PMLB` +16 parameter GUID, +32 event GUID, +48 list of instruments placed on the parameter axis (`GUID, f32 start, f32 length`); `CTRO` = list of the controllers that parameter drives |
+| `CTRS/CTRL` | controller: +0 id, +16 owner (instrument), +32 curve id |
+| `CRVS/CURV` | curve: +0 id, +32 list of points `{f32 x, f32 y, u32 shape, f32 ?}` (y in dB for volume; -42 = silence) |
+| `PRPS/PROP` | property of the owner: +8 property GUID (`7400f0ce…` instrument volume, `d65ba128…`, `c021a555…` also dB), +24 list of its controllers |
+| lists / listas | `u16 (n << 1 | 1)`, `u16` element size, elements |
 | `MODS/MODU/MODB` | modulators (random pitch/volume, AHDSR) |
 | `GBSS`, `IBSS`, `MBSS`, `VCAS` | buses and VCAs |
 

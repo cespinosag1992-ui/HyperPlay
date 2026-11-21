@@ -38,8 +38,10 @@ for a function, HyperPlay answers with its own native FMOD Studio
 (`app/src/main/cpp/audio/FmodStudioHost.cpp`): it reads the game's banks (`FmodBank.cpp`, format in
 [FMOD_BANK_FORMAT.md](FMOD_BANK_FORMAT.md)), decodes their Vorbis sounds with Android and mixes them
 at 48 kHz into AAudio. No Firelight code is used. Done: events, timelines, multi/random
-instruments, nested events, loops and sustain points, buses/VCAs (volume, pause), long music
-streamed. Still missing: parameters (music layers, ambience by parameter), 3D position, snapshots.
+instruments, nested events, loops and loop regions, parameters (defaults from the bank, volume
+automation curves: music layers; instruments placed on a parameter), stereo 3D position,
+buses/VCAs (volume, pause), long music streamed. Still missing: snapshots, bus mixer volumes,
+conditional transitions.
 `setprop debug.hyperplay.fmodnative 0` goes back to the silent shim. Your own FMOD 1.10 x64
 (`fmod64.dll`, `fmodstudio64.dll` in `/sdcard/HyperPlay/fmod/`) is still used as is if present.
 
@@ -81,8 +83,9 @@ Sonido: FMOD es propietario y no se distribuye. Cuando el juego pide una funció
 (`app/src/main/cpp/audio/FmodStudioHost.cpp`): lee los bancos del juego (`FmodBank.cpp`, formato en
 [FMOD_BANK_FORMAT.md](FMOD_BANK_FORMAT.md)), decodifica sus sonidos Vorbis con Android y los mezcla
 a 48 kHz hacia AAudio. No se usa código de Firelight. Hecho: eventos, líneas de tiempo,
-instrumentos multi/aleatorios, eventos anidados, bucles y puntos de sostén, buses/VCA (volumen,
-pausa), música larga por bloques. Falta: parámetros (capas de la música, ambientes por
-parámetro), posición 3D, snapshots. `setprop debug.hyperplay.fmodnative 0` vuelve al shim mudo. Tu
+instrumentos multi/aleatorios, eventos anidados, bucles y regiones de bucle, parámetros (valores
+por defecto del banco, curvas de volumen: capas de la música; instrumentos colocados sobre un
+parámetro), posición 3D en estéreo, buses/VCA (volumen, pausa), música larga por bloques. Falta:
+snapshots, volúmenes de los buses del mezclador, transiciones con condición. `setprop debug.hyperplay.fmodnative 0` vuelve al shim mudo. Tu
 propio FMOD 1.10 x64 (`fmod64.dll`, `fmodstudio64.dll` en `/sdcard/HyperPlay/fmod/`) se sigue
 usando tal cual si está.

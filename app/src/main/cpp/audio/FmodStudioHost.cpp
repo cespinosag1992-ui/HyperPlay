@@ -336,10 +336,12 @@ struct Voice {
     double pos = 0;                  // fotograma de la muestra (si pcm)
     double frac = 0;                 // fase para streaming
     int16_t last[2] = {0, 0}, prev[2] = {0, 0};
-    int item = -1;                   // índice del instrumento en la línea de tiempo
+    int item = -1;                   // índice en la línea de tiempo (>= 0) o -1 - k en la hoja de parámetro
     uint32_t endAt = 0;              // playhead en el que termina (fin del instrumento)
     int loops = 0;                   // bucles que quedan (-1 = infinito)
     uint32_t loopStart = 0;          // fotograma de la muestra al que vuelve
+    const InstrumentDef* inst[3] = {nullptr, nullptr, nullptr};  // cadena de instrumentos (volumen automatizado)
+    float gainNow = -1.f;            // ganancia automatizada actual (suavizada)
     bool done = false;
 };
 
@@ -363,6 +365,7 @@ struct Instance {
     float fade = 1.f, fadeStep = 0.f;
     int64_t playhead = 0;
     std::vector<bool> active;           // instrumento activo en la vuelta actual
+    std::vector<bool> sheetActive;      // instrumentos de la hoja de parámetro sonando
     std::vector<Voice> voices;
     std::vector<std::unique_ptr<Instance>> children;  // eventos anidados
     std::unordered_map<std::string, float> params;
@@ -469,18 +472,36 @@ float busGain(int category, bool& paused) {
 
 // ------------------------------------------------------------------ mezcla
 
-void startVoiceFor(Instance& in, int itemIdx, const Guid& inst, uint32_t offsetFrames, int depth, int loops = 0);
+struct VoiceStart {
+    int item = -1;
+    uint32_t endAt = UINT32_MAX;
+    int loops = 0;
+    const InstrumentDef* chain[3] = {nullptr, nullptr, nullptr};
+    int chainLen = 0;
+};
 
-void startWave(Instance& in, int itemIdx, const Guid& waveId, uint32_t offset, int loops) {
+void startVoiceFor(Instance& in, VoiceStart vs, const Guid& inst, uint32_t offsetFrames, int depth);
+
+/// Arranca un instrumento de la línea de tiempo (índice `itemIdx`).
+void startItem(Instance& in, int itemIdx, const Guid& inst, uint32_t offset) {
+    VoiceStart vs;
+    vs.item = itemIdx;
+    const TimelineItem& it = in.desc->tl->items[static_cast<size_t>(itemIdx)];
+    vs.endAt = it.start + it.length;
+    startVoiceFor(in, vs, inst, offset, 0);
+}
+
+void startWave(Instance& in, const VoiceStart& vs, const Guid& waveId, uint32_t offset) {
     auto w = g_engine->model.waves.find(waveId);
     if (w == g_engine->model.waves.end()) return;
     const FsbSample* s = sampleOf(w->second.bank, w->second.subsound);
     if (s == nullptr) return;
-    const TimelineItem& it = in.desc->tl->items[static_cast<size_t>(itemIdx)];
+    const int loops = vs.loops;
     Voice v;
-    v.item = itemIdx;
-    v.endAt = it.start + it.length;
+    v.item = vs.item;
+    v.endAt = vs.endAt;
     v.loops = loops;
+    for (int i = 0; i < vs.chainLen && i < 3; ++i) v.inst[i] = vs.chain[i];
     v.loopStart = s->hasLoop && s->loopStart < s->numSamples ? s->loopStart : 0;
     double srcOffset = static_cast<double>(offset) * s->rate / kRate;
     if (loops != 0 && s->numSamples > 0 && srcOffset >= s->numSamples) {  // entra a mitad de un bucle
@@ -506,43 +527,112 @@ void startWave(Instance& in, int itemIdx, const Guid& waveId, uint32_t offset, i
     in.voices.push_back(std::move(v));
 }
 
-void startVoiceFor(Instance& in, int itemIdx, const Guid& instId, uint32_t offset, int depth, int loops) {
+void startVoiceFor(Instance& in, VoiceStart vs, const Guid& instId, uint32_t offset, int depth) {
     if (depth > 6) return;
     auto it = g_engine->model.instruments.find(instId);
     if (it == g_engine->model.instruments.end()) return;
     const InstrumentDef& d = it->second;
-    if (d.loopCount != 0) loops = d.loopCount;  // el bucle lo marca el instrumento o su contenedor
+    if (d.loopCount != 0) vs.loops = d.loopCount;  // el bucle lo marca el instrumento o su contenedor
+    if (!d.volumeCtrls.empty() && vs.chainLen < 3) vs.chain[vs.chainLen++] = &d;
     switch (d.kind) {
         case InstKind::Wave:
-            startWave(in, itemIdx, d.target, offset, loops);
+            startWave(in, vs, d.target, offset);
             break;
         case InstKind::Multi:
         case InstKind::Scatter:
             if (!d.children.empty()) {
                 std::uniform_int_distribution<size_t> pick(0, d.children.size() - 1);
-                startVoiceFor(in, itemIdx, d.children[pick(g_studio->rng)], offset, depth + 1, loops);
+                startVoiceFor(in, vs, d.children[pick(g_studio->rng)], offset, depth + 1);
             }
             break;
         case InstKind::Event: {
             Desc* cd = descFor(d.target);
-            if (cd == nullptr || cd->tl == nullptr || (cd->def && cd->def->snapshot)) break;
+            if (cd == nullptr || (cd->def && cd->def->snapshot)) break;
+            if (cd->tl == nullptr && (cd->def == nullptr || cd->def->sheet.empty())) break;
             auto child = std::make_unique<Instance>();
             child->desc = cd;
             child->started = true;
             child->state = kPlaying;
             child->playhead = offset;
-            child->active.assign(cd->tl->items.size(), false);
+            if (cd->tl) child->active.assign(cd->tl->items.size(), false);
             in.children.push_back(std::move(child));
             break;
         }
     }
 }
 
+/// Valor actual de un parámetro en la instancia: el que puso el juego o el del banco.
+float paramValue(const Instance& in, const Guid& param) {
+    auto p = g_engine->model.params.find(param);
+    if (p == g_engine->model.params.end()) return 0.f;
+    const ParamDef& d = p->second;
+    auto v = in.params.find(d.name);
+    const float x = v != in.params.end() ? v->second : d.defaultValue;
+    return std::max(d.minimum, std::min(d.maximum, x));
+}
+
+/// Ganancia lineal de la automatización de volumen de una voz (suma de dB de sus controladores).
+float voiceGain(const Instance& in, const Voice& v) {
+    float db = 0.f;
+    bool any = false;
+    for (const InstrumentDef* d : v.inst) {
+        if (d == nullptr) continue;
+        for (const Guid& c : d->volumeCtrls) {
+            auto p = g_engine->model.ctrlParam.find(c);
+            if (p == g_engine->model.ctrlParam.end()) continue;
+            db += g_engine->model.evalCurve(c, paramValue(in, p->second));
+            any = true;
+        }
+    }
+    if (!any) return 1.f;
+    if (db <= -41.9f) return 0.f;  // el fondo de las curvas de FMOD Studio es silencio
+    return std::pow(10.f, db / 20.f);
+}
+
 /// Mezcla `frames` fotogramas de la instancia en `out` (estéreo float). Devuelve false al acabar.
-bool mixInstance(Instance& in, float* out, int frames, float gain) {
-    const TimelineDef* tl = in.desc->tl;
-    if (tl == nullptr) return false;
+bool mixInstance(Instance& in, float* out, int frames, float gain, float panL = 1.f, float panR = 1.f) {
+    static const TimelineDef kEmpty;
+    const TimelineDef* tl = in.desc->tl ? in.desc->tl : &kEmpty;
+    const std::vector<SheetItem>* sheet = in.desc->def ? &in.desc->def->sheet : nullptr;
+    if (in.desc->tl == nullptr && (sheet == nullptr || sheet->empty())) return false;
     if (in.active.size() != tl->items.size()) in.active.assign(tl->items.size(), false);
+
+    // Posición 3D (Celeste: relativa a la cámara, unidades de píxel, oyente en z = -345):
+    // paneo por el ángulo (0 dB en el centro) y atenuación suave fuera de la pantalla.
+    float gl = panL, gr = panR;
+    if (in.has3d && g_studio != nullptr) {
+        const float dx = in.pos[0] - g_studio->listener[0];
+        const float dy = in.pos[1] - g_studio->listener[1];
+        const float dz = in.pos[2] - g_studio->listener[2];
+        const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist > 1e-3f) {
+            const float pan = std::max(-1.f, std::min(1.f, dx / dist));  // seno del ángulo horizontal
+            constexpr float kMinDist = 420.f;                             // dentro: volumen completo
+            const float att = dist <= kMinDist ? 1.f : std::max(0.f, kMinDist / dist);
+            gl *= att * std::min(1.f, 1.f - pan * 0.8f);
+            gr *= att * std::min(1.f, 1.f + pan * 0.8f);
+        }
+    }
+
+    // Hoja de parámetro: cada instrumento suena mientras el valor esté en su rango.
+    if (sheet != nullptr && !sheet->empty()) {
+        if (in.sheetActive.size() != sheet->size()) in.sheetActive.assign(sheet->size(), false);
+        for (size_t k = 0; k < sheet->size(); ++k) {
+            const SheetItem& si = (*sheet)[k];
+            const float x = paramValue(in, si.param);
+            const bool inRange = !in.stopping && x >= si.start && x <= si.start + si.length;
+            const int tag = -1 - static_cast<int>(k);
+            if (inRange && !in.sheetActive[k]) {
+                in.sheetActive[k] = true;
+                VoiceStart vs;
+                vs.item = tag;  // el bucle (si lo hay) lo marca el instrumento; suena una vez al entrar
+                startVoiceFor(in, vs, si.instrument, 0, 0);
+            } else if (!inRange && in.sheetActive[k]) {
+                in.sheetActive[k] = false;
+                for (auto& v : in.voices) if (v.item == tag) v.done = true;
+            }
+        }
+    }
 
     // Salto (fin de una región de bucle) que cae en este bloque, mientras no se esté parando.
     const TimelineJump* jump = nullptr;
@@ -562,13 +652,17 @@ bool mixInstance(Instance& in, float* out, int frames, float gain) {
         if (inside && !in.active[i]) {
             in.active[i] = true;
             const uint32_t off = in.playhead > it.start ? static_cast<uint32_t>(in.playhead - it.start) : 0;
-            startVoiceFor(in, static_cast<int>(i), it.instrument, off, 0);
+            startItem(in, static_cast<int>(i), it.instrument, off);
         }
     }
 
     const float vol = gain * in.volume;
     for (auto& v : in.voices) {
         if (v.done) continue;
+        // Volumen automatizado, suavizado (~50 ms) para que los cambios de parámetro no chasqueen.
+        const float target = voiceGain(in, v);
+        v.gainNow = v.gainNow < 0.f ? target : v.gainNow + (target - v.gainNow) * 0.2f;
+        const float vol = gain * in.volume * v.gainNow;
         const int64_t localEnd = static_cast<int64_t>(v.endAt) - in.playhead;  // fotogramas que le quedan
         int n = static_cast<int>(std::min<int64_t>(frames, std::max<int64_t>(0, localEnd)));
         if (n <= 0) {
@@ -606,8 +700,8 @@ bool mixInstance(Instance& in, float* out, int frames, float gain) {
                     l = (a[0] + (b[0] - a[0]) * t) * (1.f / 32768.f);
                     r = (a[1] + (b[1] - a[1]) * t) * (1.f / 32768.f);
                 }
-                out[2 * f] += l * vol * in.fade;
-                out[2 * f + 1] += r * vol * in.fade;
+                out[2 * f] += l * vol * in.fade * gl;
+                out[2 * f + 1] += r * vol * in.fade * gr;
                 v.pos += step;
             }
         } else if (v.stream) {
@@ -631,8 +725,8 @@ bool mixInstance(Instance& in, float* out, int frames, float gain) {
                 const float t = static_cast<float>(std::min(1.0, v.frac));
                 const float l = (v.prev[0] + (v.last[0] - v.prev[0]) * t) * (1.f / 32768.f);
                 const float r = (v.prev[1] + (v.last[1] - v.prev[1]) * t) * (1.f / 32768.f);
-                out[2 * f] += l * vol * in.fade;
-                out[2 * f + 1] += r * vol * in.fade;
+                out[2 * f] += l * vol * in.fade * gl;
+                out[2 * f + 1] += r * vol * in.fade * gr;
             }
             if (s.eof && s.buf.empty()) {
                 if (v.loops != 0) {  // bucle: el decodificador vuelve a empezar
@@ -652,7 +746,7 @@ bool mixInstance(Instance& in, float* out, int frames, float gain) {
         if (c->state == kStopped) continue;
         c->stopping = in.stopping;
         c->fade = in.fade;
-        if (!mixInstance(*c, out, frames, vol)) c->state = kStopped;
+        if (!mixInstance(*c, out, frames, vol, gl, gr)) c->state = kStopped;
     }
 
     // Fundido de salida.
@@ -670,6 +764,7 @@ bool mixInstance(Instance& in, float* out, int frames, float gain) {
         if (in.desc->category == 1) LOGI("Bucle %s: %u -> %u", in.desc->path.c_str(), jump->at, jump->to);
         in.playhead = jump->to + (in.playhead - jump->at);
         for (auto& v : in.voices) {
+            if (v.item < 0) continue;  // hoja de parámetro: no depende de la línea de tiempo
             const TimelineItem& it = tl->items[static_cast<size_t>(v.item)];
             if (it.start + it.length > jump->to) v.done = true;  // se reinicia
         }
@@ -693,7 +788,11 @@ bool mixInstance(Instance& in, float* out, int frames, float gain) {
         const TimelineItem& it = tl->items[i];
         pending = !in.active[i] && in.playhead < static_cast<int64_t>(it.start) + it.length;
     }
-    return !in.voices.empty() || !in.children.empty() || pending || jump != nullptr;
+    // Un evento con hoja de parámetro sigue vivo (en silencio) hasta que lo paren: el juego puede
+    // mover el parámetro dentro del rango más tarde.
+    // Una instancia ya liberada (Play + release de un efecto) termina al quedarse sin voces.
+    const bool sheetHold = sheet != nullptr && !sheet->empty() && !in.stopping && !in.released;
+    return !in.voices.empty() || !in.children.empty() || pending || jump != nullptr || sheetHold;
 }
 
 void mixerLoop() {
@@ -749,7 +848,7 @@ void mixerLoop() {
         static int s_blocks = 0;
         for (int i = 0; i < kBlock * 2; ++i) {
             // Limitador suave: lineal hasta 0,8 y curva hacia 1,0 (sin el chasquido de recortar).
-            float v = mix[static_cast<size_t>(i)] * 0.9f;
+            float v = mix[static_cast<size_t>(i)] * 0.8f;  // margen: aún no se aplican los volúmenes de los buses
             const float a = std::fabs(v);
             if (a > 0.8f) v = std::copysign(0.8f + 0.2f * std::tanh((a - 0.8f) / 0.2f), v);
             s_peak = std::max(s_peak, std::fabs(v));
@@ -765,7 +864,19 @@ void mixerLoop() {
                         if (in->state == kStopped || !in->started) continue;
                         ++live;
                         voices += in->voices.size();
-                        if (names.size() < 300) names += in->desc->path + " ";
+                        if (names.size() < 400) {
+                            names += in->desc->path;
+                            if (in->desc->category == 1) {  // música: ganancia de cada capa
+                                names += "[";
+                                for (const auto& v : in->voices) {
+                                    char g[12];
+                                    std::snprintf(g, sizeof(g), "%.2f ", v.gainNow);
+                                    names += g;
+                                }
+                                names += "]";
+                            }
+                            names += " ";
+                        }
                     }
                 }
             }
@@ -1232,6 +1343,12 @@ u64 Inst_Set3DAttributes(void* p, const float* attr) {
     if (attr) {
         std::memcpy(in->pos, attr, sizeof(in->pos));
         in->has3d = true;
+        static int s_logged = 0;
+        if (s_logged < 25) {
+            ++s_logged;
+            LOGI("3D %s pos=(%.2f, %.2f, %.2f) oyente=(%.2f, %.2f, %.2f)", in->desc->path.c_str(), attr[0], attr[1],
+                 attr[2], g_studio->listener[0], g_studio->listener[1], g_studio->listener[2]);
+        }
     }
     return kOk;
 }

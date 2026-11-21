@@ -56,11 +56,30 @@ struct TimelineJump {
     uint32_t at = 0, to = 0;
 };
 
+/// Instrumento colocado sobre el eje de un parámetro (hoja de parámetro): suena mientras el valor
+/// del parámetro esté en [start, start + length].
+struct SheetItem {
+    Guid param;
+    Guid instrument;
+    float start = 0, length = 0;
+};
+
 struct EventDef {
     Guid id;
     Guid timeline;
     std::string path;
     bool snapshot = false;
+    std::vector<SheetItem> sheet;
+};
+
+/// Parámetro (PRMB): nombre y rango; el valor por defecto lo da el banco (comprobado con FMOD).
+struct ParamDef {
+    std::string name;
+    float minimum = 0, maximum = 1, defaultValue = 0;
+};
+
+struct CurvePoint {
+    float x = 0, y = 0;  // y en dB para las propiedades de volumen
 };
 
 struct TimelineDef {
@@ -76,6 +95,7 @@ struct InstrumentDef {
     Guid target;                   // onda (Wave) o evento (Event)
     std::vector<Guid> children;    // Multi / Scatter
     int32_t loopCount = 0;         // INST+24: 0 = una vez, -1 = bucle infinito, n = repeticiones
+    std::vector<Guid> volumeCtrls; // controladores (automatización) de su volumen, en dB
 };
 
 struct WaveDef {
@@ -119,6 +139,12 @@ public:
     std::unordered_map<Guid, TimelineDef, GuidHash> timelines;
     std::unordered_map<Guid, InstrumentDef, GuidHash> instruments;
     std::unordered_map<Guid, WaveDef, GuidHash> waves;
+    std::unordered_map<Guid, ParamDef, GuidHash> params;
+    std::unordered_map<Guid, std::vector<CurvePoint>, GuidHash> curves;  // por controlador
+    std::unordered_map<Guid, Guid, GuidHash> ctrlParam;                  // controlador -> parámetro
+
+    /// Valor en dB de la curva de un controlador para el valor `x` del parámetro.
+    float evalCurve(const Guid& ctrl, float x) const;
     std::unordered_map<std::string, Guid> idByPath;      // "event:/ui/game/pause", "bus:/...", "vca:/..."
     std::unordered_map<Guid, std::string, GuidHash> pathById;
 

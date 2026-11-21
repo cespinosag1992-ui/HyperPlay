@@ -757,3 +757,11 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - Pantalla de carga de HyperPlay en Celeste tardaba 45 s (esperaba draws de D3D11): cuenta también los presentes de Vulkan -> "arranque: juego dibujando a 60 FPS tras 11312 ms".
 - Diagnóstico nuevo: `setprop debug.hyperplay.dumpstacks <n>` -> estado, RIP, pila invitada y nativa de cada hilo.
 - El "congelado" del título era la pantalla de carga/pulsaciones perdidas, no un cuelgue (volcado: hilos en esperas normales, título a 60 FPS después).
+## 2026-11-21 — FMOD nativo: parámetros, hojas, 3D; guardado de partida
+- Oráculo 2 (PC, FMOD real): `GetParameterByIndex` por evento -> params.txt. lvl1/main: layer1/2/3 def=1, fade def=1, end def=0; level_select: fade 1, moon 0.
+- PRMB: +21 u16 longitud, nombre sin NUL, f32 min, max, defecto (coincide con el oráculo). PMLB +16 parámetro (273/273 apuntan a un PRMB), +32 evento, +48 instrumentos sobre el eje (GUID, f32 inicio, f32 largo); CTRO = controladores. CURV puntos {x, y, forma, ?}, y en dB. PROP +8 propiedad (7400f0ce volumen de instrumento; d65ba128 y c021a555 también dB).
+- level_select: `[1.00 0.00]` (capa moon apagada; antes sonaban las dos). lvl0/intro `[1.00]`.
+- 3D: posiciones relativas a la cámara (x -176..-60, y 40.5), oyente (0,0,-345). Paneo dx/dist (0 dB centro), atenuación > 420.
+- Pasos quedaban vivos (10 eventos, 2 voces): bucle forzado en la hoja y "sheetLive"/retención con release. Arreglado: 2 eventos.
+- Ganancia general 0,8 (pico 1,0 frecuente; faltan volúmenes de buses).
+- Guardado: pausa -> Save and Quit -> `Saves/0.celeste` 14787 B; al reiniciar: "Madeline · Prologue · 1 muerte · 01:29.692".

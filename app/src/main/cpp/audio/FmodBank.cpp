@@ -127,6 +127,22 @@ bool Bank::load(const std::string& hostPath, int index, std::string* error) {
     return true;
 }
 
+float Model::evalCurve(const Guid& ctrl, float x) const {
+    auto it = curves.find(ctrl);
+    if (it == curves.end() || it->second.empty()) return 0.f;
+    const auto& p = it->second;
+    if (x <= p.front().x) return p.front().y;
+    if (x >= p.back().x) return p.back().y;
+    for (size_t i = 1; i < p.size(); ++i) {
+        if (x <= p[i].x) {
+            const float span = p[i].x - p[i - 1].x;
+            const float t = span > 0 ? (x - p[i - 1].x) / span : 1.f;
+            return p[i - 1].y + (p[i].y - p[i - 1].y) * t;  // tramo lineal (la forma se ignora)
+        }
+    }
+    return p.back().y;
+}
+
 void Model::readStrings(const uint8_t* d, size_t size) {
     if (size < 8) return;
     // u16 en +4 = palabras de 4 bytes del área de nodos (nodos de 8 bytes: n/2).
@@ -195,10 +211,100 @@ bool Model::ingest(Bank& bank, int bankIndex) {
     const size_t size = bank.size();
     std::vector<std::pair<Guid, std::pair<const uint8_t*, size_t>>> rawTimelines, rawMulti, rawScatter, rawTransitions;
     Guid lastMulti, lastScatter, lastTimeline, lastInst;
+    // Dueño de los PRPS siguientes (instrumento) y parámetro/evento del último PMLB.
+    Guid propOwner, pmlParam, pmlEvent;
+    bool haveOwner = false, havePml = false;
+    std::vector<std::pair<Guid, SheetItem>> sheetItems;  // (evento, instrumento sobre parámetro)
+    static Guid kVolumeProps[3];
+    static bool kPropsInit = false;
+    if (!kPropsInit) {
+        // Propiedades de volumen (dB) con automatización: instrumento, pista/evento y otra.
+        parseGuid("7400f0ce-d180-44f9-94a2-dbe1fe7dbaf4", kVolumeProps[0]);
+        parseGuid("d65ba128-a6f5-41d9-b6a1-a7c402f329ac", kVolumeProps[1]);
+        parseGuid("c021a555-2747-4628-a01b-b732941315e2", kVolumeProps[2]);
+        kPropsInit = true;
+    }
+    // Lista FMOD: u16 (n << 1 | 1), u16 tamaño del elemento, elementos.
+    auto list = [](const uint8_t* p, size_t avail, size_t& count, size_t& elem) -> bool {
+        if (avail < 4) return false;
+        count = rd<uint16_t>(p) >> 1;
+        elem = rd<uint16_t>(p + 2);
+        return elem > 0 && 4 + count * elem <= avail;
+    };
     bool haveTimeline = false;
     std::unordered_map<Guid, std::vector<std::pair<const uint8_t*, size_t>>, GuidHash> transitions;
 
     walk(b, 12, size, "FEV ", [&](const char* parent, const uint8_t* c, const uint8_t* body, size_t sz) {
+        const bool instHeader = tag(c, "WAIB") || tag(c, "MUIB") || tag(c, "SPIB") || tag(c, "EVIB");
+        if (instHeader && sz >= 16) {
+            propOwner = Guid::at(body);
+            haveOwner = true;
+        } else if (c[3] == 'B') {
+            haveOwner = false;  // cabecera de otro objeto: sus PRPS no son de un instrumento
+        }
+        if (tag(c, "PROP") && haveOwner && sz >= 28 && std::strcmp(parent, "PRPS") == 0) {
+            const Guid prop = Guid::at(body + 8);
+            bool volume = false;
+            for (const Guid& v : kVolumeProps) volume = volume || v == prop;
+            size_t n = 0, elem = 0;
+            if (volume && list(body + 24, sz - 24, n, elem) && elem >= 16) {
+                auto& ctrls = instruments[propOwner].volumeCtrls;
+                for (size_t k = 0; k < n; ++k) ctrls.push_back(Guid::at(body + 28 + k * elem));
+            }
+            return;
+        }
+        if (tag(c, "PRMB") && sz >= 23) {
+            const size_t n = static_cast<size_t>(body[21]) | (static_cast<size_t>(body[22]) << 8);
+            if (23 + n + 12 <= sz) {
+                ParamDef p;
+                p.name.assign(reinterpret_cast<const char*>(body + 23), n);
+                while (!p.name.empty() && p.name.back() == '\0') p.name.pop_back();
+                p.minimum = rd<float>(body + 23 + n);
+                p.maximum = rd<float>(body + 27 + n);
+                p.defaultValue = rd<float>(body + 31 + n);
+                params[Guid::at(body)] = p;
+            }
+            return;
+        }
+        if (tag(c, "CURV") && sz >= 36) {
+            size_t n = 0, elem = 0;
+            if (list(body + 32, sz - 32, n, elem) && elem >= 8) {
+                auto& pts = curves[Guid::at(body)];
+                pts.clear();
+                for (size_t k = 0; k < n; ++k) {
+                    CurvePoint pt;
+                    pt.x = rd<float>(body + 36 + k * elem);
+                    pt.y = rd<float>(body + 40 + k * elem);
+                    pts.push_back(pt);
+                }
+            }
+            return;
+        }
+        if (tag(c, "PMLB") && sz >= 50) {
+            pmlParam = Guid::at(body + 16);
+            pmlEvent = Guid::at(body + 32);
+            havePml = true;
+            size_t n = 0, elem = 0;
+            if (list(body + 48, sz - 48, n, elem) && elem >= 24) {
+                for (size_t k = 0; k < n; ++k) {
+                    const uint8_t* e = body + 52 + k * elem;
+                    SheetItem it;
+                    it.param = pmlParam;
+                    it.instrument = Guid::at(e);
+                    it.start = rd<float>(e + 16);
+                    it.length = rd<float>(e + 20);
+                    sheetItems.push_back({pmlEvent, it});
+                }
+            }
+            return;
+        }
+        if (tag(c, "CTRO") && havePml && std::strcmp(parent, "PMLO") == 0) {
+            size_t n = 0, elem = 0;
+            if (list(body, sz, n, elem) && elem >= 16) {
+                for (size_t k = 0; k < n; ++k) ctrlParam[Guid::at(body + 4 + k * elem)] = pmlParam;
+            }
+            return;
+        }
         if (tag(c, "STDT")) {
             readStrings(body, sz);
         } else if (tag(c, "EVTB") && sz >= 48) {
@@ -251,6 +357,11 @@ bool Model::ingest(Bank& bank, int bankIndex) {
             waves[Guid::at(body)] = w;
         }
     });
+
+    for (auto& [ev, it] : sheetItems) {
+        auto e = events.find(ev);
+        if (e != events.end() && instruments.count(it.instrument) != 0) e->second.sheet.push_back(it);
+    }
 
     // Referencias por GUID: se buscan las de instrumentos conocidos dentro de cada registro.
     auto findRefs = [&](const uint8_t* p, size_t sz, size_t from, const std::function<void(size_t, const Guid&)>& fn) {
