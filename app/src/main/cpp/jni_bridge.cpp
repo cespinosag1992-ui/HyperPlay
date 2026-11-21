@@ -5,6 +5,7 @@
 
 #include "audio/FmodStudioHost.h"
 #include "loader/VulkanPassthrough.h"
+#include "gfx/GuestOpenGl.h"
 
 #include <cstdlib>
 #include <exception>
@@ -401,7 +402,8 @@ HP_JNI(jboolean, nativeIsFrameGenActive)(JNIEnv*, jclass) {
 // La pantalla de carga de la app se quita cuando el juego empieza a dibujar de verdad.
 HP_JNI(jlong, nativeDirectDrawCount)(JNIEnv*, jclass) {
     // Draws de D3D11 + fotogramas presentados por Vulkan (juegos con Vulkan propio: Celeste).
-    return static_cast<jlong>(hyperplay::gpu::Renderer::shared().stats().draws + hyperplay::vkpass::presentCount());
+    return static_cast<jlong>(hyperplay::gpu::Renderer::shared().stats().draws + hyperplay::vkpass::presentCount() +
+                              hyperplay::guestgl::presentCount());
 }
 
 HP_JNI(jlongArray, nativeGetFrameGenStats)(JNIEnv* env, jclass) {

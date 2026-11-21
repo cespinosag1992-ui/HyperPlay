@@ -30,6 +30,7 @@ add_library(hyperplay SHARED
     gfx/HyperFrameGen.cpp
     gfx/DirectVulkanBridge.cpp
     gfx/GuestSwapchain.cpp
+    gfx/GuestOpenGl.cpp
     audio/DirectAAudioEngine.cpp
     audio/FsbVorbis.cpp
     audio/FmodBank.cpp
@@ -39,7 +40,7 @@ add_library(hyperplay SHARED
 )
 
 target_include_directories(hyperplay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(hyperplay vulkan aaudio android nativewindow mediandk log dl)
+target_link_libraries(hyperplay vulkan EGL GLESv3 aaudio android nativewindow mediandk log dl)
 # El motor (JIT, despachador, intÃ©rprete DXBC, rasterizador) es inutilizable a -O0: tambiÃ©n la
 # variante debug se compila optimizada (los sÃ­mbolos -g se conservan).
 target_compile_options(hyperplay PRIVATE -O2)

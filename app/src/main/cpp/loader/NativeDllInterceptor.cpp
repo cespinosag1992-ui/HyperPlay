@@ -19,6 +19,7 @@
 #include "Win64ThunkAbi.h"
 #include "Win64Context.h"
 #include "GuestSeh.h"
+#include "gfx/GuestOpenGl.h"
 #include "cpu/OryonEmitterBackend.h"
 #include "cpu/OryonSiliconScheduler.h"
 #include "gfx/DirectVulkanBridge.h"
@@ -1206,6 +1207,55 @@ int32_t win_SetFileInformationByHandle(void* h, uint32_t infoClass, const void* 
     }
 }
 
+// ntdll!NtQuerySystemInformation: SystemProcessInformation (5) con un único proceso, el juego
+// (System.Diagnostics.Process de .NET: nombre, id, memoria). El resto: clase no soportada.
+uint32_t win_NtQuerySystemInformation(uint32_t infoClass, void* buffer, uint32_t length, uint32_t* returnLength) {
+    if (infoClass != 5) return 0xC0000003u;  // STATUS_INVALID_INFO_CLASS
+    std::string exe = "game.exe";
+    if (s_activeImage != nullptr) {
+        exe = s_activeImage->filePath;
+        if (const size_t slash = exe.find_last_of("/\\"); slash != std::string::npos) exe = exe.substr(slash + 1);
+    }
+    std::u16string name;
+    for (char c : exe) name.push_back(static_cast<char16_t>(static_cast<uint8_t>(c)));
+    const uint32_t nameBytes = static_cast<uint32_t>(name.size() * 2);
+    const uint32_t need = 0x100 + nameBytes + 2;
+    if (returnLength != nullptr) *returnLength = need;
+    if (buffer == nullptr || length < need) return 0xC0000004u;  // STATUS_INFO_LENGTH_MISMATCH
+    auto* p = static_cast<uint8_t*>(buffer);
+    std::memset(p, 0, need);
+    const uint16_t len = static_cast<uint16_t>(nameBytes), maxLen = static_cast<uint16_t>(nameBytes + 2);
+    const uint64_t nameBuf = reinterpret_cast<uint64_t>(p + 0x100);
+    std::memcpy(p + 0x38, &len, 2);
+    std::memcpy(p + 0x3A, &maxLen, 2);
+    std::memcpy(p + 0x40, &nameBuf, 8);
+    std::memcpy(p + 0x100, name.data(), nameBytes);
+    const int32_t basePriority = 8;
+    std::memcpy(p + 0x48, &basePriority, 4);
+    const uint64_t pid = static_cast<uint64_t>(getpid());
+    std::memcpy(p + 0x50, &pid, 8);
+    // Memoria: VmRSS de /proc/self/statm (páginas residentes) como conjunto de trabajo.
+    uint64_t sizePages = 0, residentPages = 0;
+    if (FILE* f = std::fopen("/proc/self/statm", "r")) {
+        unsigned long long a = 0, b = 0;
+        if (std::fscanf(f, "%llu %llu", &a, &b) == 2) {
+            sizePages = a;
+            residentPages = b;
+        }
+        std::fclose(f);
+    }
+    const uint64_t page = static_cast<uint64_t>(getpagesize());
+    const uint64_t vsize = sizePages * page, ws = residentPages * page;
+    std::memcpy(p + 0x70, &vsize, 8);  // PeakVirtualSize
+    std::memcpy(p + 0x78, &vsize, 8);  // VirtualSize
+    std::memcpy(p + 0x88, &ws, 8);     // PeakWorkingSetSize
+    std::memcpy(p + 0x90, &ws, 8);     // WorkingSetSize
+    std::memcpy(p + 0xB8, &ws, 8);     // PagefileUsage
+    std::memcpy(p + 0xC0, &ws, 8);     // PeakPagefileUsage
+    std::memcpy(p + 0xC8, &ws, 8);     // PrivatePageCount
+    return 0;
+}
+
 // NUMA: un solo nodo (0). El GC de CoreCLR lo consulta al iniciar y falla si devuelve FALSE.
 int32_t win_GetNumaHighestNodeNumber(uint32_t* highest) {
     if (highest != nullptr) *highest = 0;
@@ -1361,6 +1411,7 @@ void* resolveSystemExtraExport(const std::string& funcName) {
         {"RtlUnwind", reinterpret_cast<void*>(&win_RtlUnwind)},
         {"RtlRaiseException", reinterpret_cast<void*>(&win_RtlRaiseException)},
         {"GetNumaHighestNodeNumber", reinterpret_cast<void*>(&win_GetNumaHighestNodeNumber)},
+        {"NtQuerySystemInformation", reinterpret_cast<void*>(&win_NtQuerySystemInformation)},
         {"GetProcessAffinityMask", reinterpret_cast<void*>(&win_GetProcessAffinityMask)},
         {"GetCurrentProcessorNumber", reinterpret_cast<void*>(&win_GetCurrentProcessorNumber)},
         {"WerRegisterRuntimeExceptionModule", reinterpret_cast<void*>(&win_WerRegisterRuntimeExceptionModule)},
@@ -2827,6 +2878,7 @@ static void* msvcrtOnlyExport(const std::string& fn) {
 }
 
 static void* resolvePeExport(void* base, const PeInfo& pe, const char* lpProcName, int depth);
+static void ensureGuestGl();
 
 void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, const std::string& funcName) {
     const std::string dll = toLower(dllName);
@@ -3328,7 +3380,9 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     // 4b. GDI32
     if (!result && dll == "gdi32.dll") {
         s_otherCalls.fetch_add(1);
-        if (funcName == "ChoosePixelFormat") result = reinterpret_cast<void*>(&win_ChoosePixelFormat);
+        ensureGuestGl();
+        if (void* p = guestgl::gdiProcAddr(funcName.c_str())) result = p;  // formatos de píxel, DC, mapas de bits
+        else if (funcName == "ChoosePixelFormat") result = reinterpret_cast<void*>(&win_ChoosePixelFormat);
         else if (funcName == "SetPixelFormat") result = reinterpret_cast<void*>(&win_SetPixelFormat);
         else if (funcName == "GetDeviceCaps") result = reinterpret_cast<void*>(&win_GetDeviceCaps);
         else if (funcName == "SwapBuffers") result = reinterpret_cast<void*>(&win_SwapBuffers);
@@ -3442,6 +3496,14 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     if (!result && dll == "d3d9.dll") {
         s_d3dCalls.fetch_add(1);
         if (funcName == "Direct3DCreate9") result = reinterpret_cast<void*>(&win_Direct3DCreate9);
+    }
+    if (!result && dll == "opengl32.dll") {
+        ensureGuestGl();
+        result = guestgl::glProcAddr(funcName.c_str());
+    }
+    if (!result && dll == "user32.dll") {
+        ensureGuestGl();
+        result = guestgl::user32ProcAddr(funcName.c_str());
     }
     if (!result && (dll == "vulkan-1.dll" || dll == "vulkan")) {
         s_vulkanCalls.fetch_add(1);
@@ -4944,6 +5006,31 @@ int32_t NativeDllInterceptor::dispatchGuestException(OryonEmitterBackend& backen
             for (int i = 0; i < 32; ++i) std::snprintf(hex + i * 3, 4, "%02x ", b[i]);
             LOGI("[GuestException] bytes@RIP-32: %s", hex);
         }
+        // Lecturas de diagnóstico que no pueden fallar (process_vm_readv sobre el propio proceso).
+        auto peek = [](uint64_t addr, void* out, size_t n) {
+            struct iovec l{out, n}, r{reinterpret_cast<void*>(addr), n};
+            return addr > 0x10000 && process_vm_readv(getpid(), &l, 1, &r, 1, 0) == static_cast<ssize_t>(n);
+        };
+        // Llamador: dirección de retorno en [RSP] y el código anterior a ella.
+        uint64_t ret = 0;
+        uint8_t callerCode[48] = {};
+        if (peek(g[4], &ret, 8) && peek(ret - 48, callerCode, 48)) {
+            char hex[48 * 3 + 1] = {};
+            for (int i = 0; i < 48; ++i) std::snprintf(hex + i * 3, 4, "%02x ", callerCode[i]);
+            LOGI("[GuestException] [RSP]=0x%llx código antes: %s", (unsigned long long)ret, hex);
+        } else {
+            LOGI("[GuestException] [RSP]=0x%llx (código ilegible)", (unsigned long long)ret);
+        }
+        // Memoria apuntada por RCX y RDX (objetos/estructuras del llamador).
+        for (int r : {1, 2}) {
+            uint64_t q[8] = {};
+            if (peek(g[r] - 16, q, sizeof(q))) {
+                LOGI("[GuestException] [%s-16..+48]: %llx %llx | %llx %llx %llx %llx %llx %llx", r == 1 ? "RCX" : "RDX",
+                     (unsigned long long)q[0], (unsigned long long)q[1], (unsigned long long)q[2],
+                     (unsigned long long)q[3], (unsigned long long)q[4], (unsigned long long)q[5],
+                     (unsigned long long)q[6], (unsigned long long)q[7]);
+            }
+        }
     }
     (void)handlers;
     auto* recBytes = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(ptrs[0]));
@@ -5083,6 +5170,20 @@ static void* const kHModCryptbase = reinterpret_cast<void*>(0x7FFF000E);
 static void* const kHModShlwapi  = reinterpret_cast<void*>(0x7FFF000F);
 static void* const kHModSteamApi = reinterpret_cast<void*>(0x7FFF0010);
 static void* const kHModMfplat   = reinterpret_cast<void*>(0x7FFF0011);  // mfplat/mfreadwrite/mf
+static void* const kHModOpenGl   = reinterpret_cast<void*>(0x7FFF0012);  // opengl32 (EGL/GLES)
+static void* const kHModGdi32    = reinterpret_cast<void*>(0x7FFF0013);
+
+// opengl32.dll de HyperPlay (gfx/GuestOpenGl.h): registro de trampolines y lectura de XMM.
+static void ensureGuestGl() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        guestgl::init([](void* fn, const char* name) { registerTrampolineAddress(fn, name); },
+                      [](int i) -> const uint8_t* {
+                          if (t_dispatchBackend == nullptr || i < 0 || i > 15) return nullptr;
+                          return t_dispatchBackend->context().simd[i];
+                      });
+    });
+}
 
 // Media Foundation sobre NDK Media: los métodos COM del juego (IMFByteStream,
 // IMFSourceReaderCallback) se invocan con el backend del hilo invitado que llama.
@@ -5154,6 +5255,8 @@ static void* resolveModuleHandle(std::string name) {
         lowerBase == "psapi" || lowerBase == "psapi.dll") return kHModKernel32;
     if (lowerBase == "user32" || lowerBase == "user32.dll") return kHModUser32;
     if (lowerBase == "vulkan-1" || lowerBase == "vulkan-1.dll" || lowerBase == "vulkan") return kHModVulkan;
+    if (lowerBase == "opengl32" || lowerBase == "opengl32.dll") return kHModOpenGl;
+    if (lowerBase == "gdi32" || lowerBase == "gdi32.dll") return kHModGdi32;
     if (lowerBase == "ntdll" || lowerBase == "ntdll.dll") return kHModNtdll;
     if (lowerBase == "advapi32" || lowerBase == "advapi32.dll") return kHModAdvapi32;
     if (lowerBase == "shell32" || lowerBase == "shell32.dll" || lowerBase == "shfolder" || lowerBase == "shfolder.dll") return kHModShell32;
@@ -5373,6 +5476,14 @@ void* NativeDllInterceptor::win_GetProcAddress(void* hModule, const char* lpProc
         return nullptr;
     }
 
+    if (hModule == kHModOpenGl) {
+        ensureGuestGl();
+        return guestgl::glProcAddr(lpProcName);  // NULL si no existe, como Windows
+    }
+    if (hModule == kHModGdi32) {
+        if (void* p = resolveNativeSymbol("gdi32.dll", lpProcName)) return p;
+        return nullptr;
+    }
     if (hModule == kHModMfplat) {
         ensureMediaFoundation();
         if (void* p = hyperplay::mf::resolveExport(lpProcName)) return p;
@@ -6875,9 +6986,23 @@ const void* NativeDllInterceptor::win_GetCommandLineW() {
 
 const void* NativeDllInterceptor::win_GetEnvironmentStringsW() {
     s_kernel32Calls.fetch_add(1);
-    alignas(16) static const char16_t s_envW[512] =
-        u"=::=::\\\0PATH=D:\\\0SYSTEMROOT=C:\\Windows\0TEMP=D:\\Temp\0\0";
-    return s_envW;
+    // CoreCLR lee su configuración (DOTNET_*) de este bloque, no con GetEnvironmentVariableW:
+    // las variables que HyperPlay fija para .NET tienen que estar aquí también.
+    static std::u16string s_block = [] {
+        std::vector<std::string> vars = {"=::=::\\", "PATH=D:\\", "SYSTEMROOT=C:\\Windows", "TEMP=D:\\Temp",
+                                         "DOTNET_EnableDiagnostics=0", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1",
+                                         "DOTNET_EnableHWIntrinsic=0"};
+        char v[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.r2r", v) > 0 && v[0] == '0') vars.push_back("DOTNET_ReadyToRun=0");
+        std::u16string b;
+        for (const auto& s : vars) {
+            for (char c : s) b.push_back(static_cast<char16_t>(static_cast<uint8_t>(c)));
+            b.push_back(u'\0');
+        }
+        b.push_back(u'\0');
+        return b;
+    }();
+    return s_block.data();
 }
 
 int32_t NativeDllInterceptor::win_FreeEnvironmentStringsW(void*) {
@@ -7126,7 +7251,7 @@ static std::string guestModulePath(void* hModule) {
         static const char* kSystem[] = {"", "kernel32.dll", "user32.dll", "vulkan-1.dll", "ntdll.dll", "advapi32.dll",
                                         "shell32.dll", "ole32.dll", "ws2_32.dll", "d3d11.dll", "dxgi.dll",
                                         "xinput1_3.dll", "winmm.dll", "bcrypt.dll", "cryptbase.dll", "shlwapi.dll",
-                                        "steam_api64.dll"};
+                                        "steam_api64.dll", "mfplat.dll", "opengl32.dll", "gdi32.dll"};
         const size_t idx = h & 0xFF;
         if (idx > 0 && idx < sizeof(kSystem) / sizeof(kSystem[0])) return std::string("C:\\Windows\\System32\\") + kSystem[idx];
     }
@@ -9509,6 +9634,15 @@ static std::unordered_map<std::string, std::string> s_customEnvVars;
 // Variables de un juego .NET (ManagedHost.h): Mono busca FNA y los reenvíos de XNA en fna/ del
 // runtime; SDL GPU (FNA3D) usa Vulkan, que HyperPlay pasa al Vulkan del teléfono.
 static bool managedEnvVar(const std::string& upper, std::string& val) {
+    // SDL2/SDL3 de cualquier juego: mandos solo por XInput (el puente de HyperPlay). DirectInput
+    // no está registrado (SDL2 da su CoCreateInstance fallido por fatal y SDL_Init falla) y
+    // HIDAPI/RawInput buscan dispositivos USB que no existen.
+    if (upper == "SDL_DIRECTINPUT_ENABLED" || upper == "SDL_JOYSTICK_HIDAPI" || upper == "SDL_JOYSTICK_RAWINPUT" ||
+        upper == "SDL_JOYSTICK_WGI" || upper == "SDL_JOYSTICK_GAMEINPUT" || upper == "SDL_JOYSTICK_DIRECTINPUT") {
+        val = "0";
+        return true;
+    }
+    if (upper == "SDL_XINPUT_ENABLED") { val = "1"; return true; }
     if (!managed::active()) return false;
     if (upper == "MONO_PATH") {
         // fna/ (FNA + reenvíos XNA) y las bibliotecas de clases (System.dll...) sin copiar el GAC.
@@ -9555,6 +9689,13 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableW(const wchar_t* lpName
         // Sin ICU ni NLS de Windows: cultura invariante (fechas y números como en inglés; los
         // textos del juego vienen de sus propios archivos de idioma).
         else if (upper == "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") { val = "1"; found = true; }
+        // RyuJIT: solo la base x64 (SSE2), sin AVX/BMI/FMA, que son lo menos probado del traductor.
+        else if (upper == "DOTNET_ENABLEHWINTRINSIC") { val = "0"; found = true; }
+        // Experimento (setprop debug.hyperplay.r2r 0): sin código ReadyToRun, todo por el JIT.
+        else if (upper == "DOTNET_READYTORUN") {
+            char v[PROP_VALUE_MAX] = {};
+            if (__system_property_get("debug.hyperplay.r2r", v) > 0 && v[0] == '0') { val = "0"; found = true; }
+        }
         else if (upper == "PROCESSOR_ARCHITECTURE") { val = (s_activeImage && s_activeImage->is32Bit) ? "x86" : "AMD64"; found = true; }
         else if (upper == "PROCESSOR_IDENTIFIER") { val = "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD"; found = true; }
         else if (upper == "PROCESSOR_LEVEL") { val = "6"; found = true; }
@@ -9614,6 +9755,13 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableA(const char* lpName, c
         // Sin ICU ni NLS de Windows: cultura invariante (fechas y números como en inglés; los
         // textos del juego vienen de sus propios archivos de idioma).
         else if (upper == "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") { val = "1"; found = true; }
+        // RyuJIT: solo la base x64 (SSE2), sin AVX/BMI/FMA, que son lo menos probado del traductor.
+        else if (upper == "DOTNET_ENABLEHWINTRINSIC") { val = "0"; found = true; }
+        // Experimento (setprop debug.hyperplay.r2r 0): sin código ReadyToRun, todo por el JIT.
+        else if (upper == "DOTNET_READYTORUN") {
+            char v[PROP_VALUE_MAX] = {};
+            if (__system_property_get("debug.hyperplay.r2r", v) > 0 && v[0] == '0') { val = "0"; found = true; }
+        }
         else if (upper == "PROCESSOR_ARCHITECTURE") { val = (s_activeImage && s_activeImage->is32Bit) ? "x86" : "AMD64"; found = true; }
         else if (upper == "OS") { val = "Windows_NT"; found = true; }
         else if (upper == "SYSTEMROOT" || upper == "WINDIR") { val = "C:\\Windows"; found = true; }

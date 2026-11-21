@@ -1,6 +1,8 @@
 #include "GuestSeh.h"
 
 #include <android/log.h>
+#include <sys/uio.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cstring>
@@ -27,9 +29,17 @@ uint64_t reg(const uint8_t* ctx, unsigned r) {
     return v;
 }
 void setReg(uint8_t* ctx, unsigned r, uint64_t v) { std::memcpy(ctx + kGpr + 8 * (r & 15), &v, 8); }
+// Lectura que no puede tumbar el proceso: un marco corrupto (pila pisada, PC basura) se lee
+// con process_vm_readv sobre el propio proceso; si falla, el recorrido se corta.
+bool safeRead(uint64_t addr, void* out, size_t n) {
+    if (addr < 0x10000) return false;
+    struct iovec local{out, n};
+    struct iovec remote{reinterpret_cast<void*>(addr), n};
+    return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(n);
+}
 uint64_t rd64(uint64_t addr) {
-    uint64_t v;
-    std::memcpy(&v, reinterpret_cast<const void*>(addr), 8);
+    uint64_t v = 0;
+    if (!safeRead(addr, &v, 8)) return 0;  // RIP 0 termina el recorrido
     return v;
 }
 
@@ -100,10 +110,16 @@ const RuntimeFunction* searchSorted(const RuntimeFunction* table, uint32_t count
 
 const RuntimeFunction* resolveIndirect(const RuntimeFunction* f, uint64_t base) {
     // RUNTIME_FUNCTION_INDIRECT: UnwindData con el bit 0 apunta a otra RUNTIME_FUNCTION.
-    for (int i = 0; f != nullptr && (f->unwindData & 1u) != 0 && i < 4; ++i) {
-        f = reinterpret_cast<const RuntimeFunction*>(base + (f->unwindData & ~1u));
+    for (int i = 0; f != nullptr && i < 4; ++i) {
+        RuntimeFunction copy{};
+        if (!safeRead(reinterpret_cast<uint64_t>(f), &copy, sizeof(copy))) return nullptr;
+        if ((copy.unwindData & 1u) == 0) {
+            uint32_t head = 0;  // UNWIND_INFO legible
+            return safeRead(base + copy.unwindData, &head, 4) ? f : nullptr;
+        }
+        f = reinterpret_cast<const RuntimeFunction*>(base + (copy.unwindData & ~1u));
     }
-    return f;
+    return nullptr;
 }
 
 // --- Epílogos (como Wine: is_inside_epilog / interpret_epilog) -----------------------------------
@@ -370,7 +386,9 @@ uint64_t virtualUnwind(uint32_t handlerType, uint64_t base, uint64_t pc, const R
             return 0;
         }
         const bool inProlog = primary && prologOffset < prologSize;
-        if (primary && !inProlog && insideEpilog(reinterpret_cast<const uint8_t*>(pc), base, fn)) {
+        uint8_t probe[16];
+        const bool pcReadable = safeRead(pc, probe, sizeof(probe));
+        if (primary && !inProlog && pcReadable && insideEpilog(reinterpret_cast<const uint8_t*>(pc), base, fn)) {
             if (establisherFrame != nullptr) *establisherFrame = reg(ctx, 4);
             interpretEpilog(reinterpret_cast<const uint8_t*>(pc), ctx);
             return 0;
@@ -429,10 +447,10 @@ uint64_t virtualUnwind(uint32_t handlerType, uint64_t base, uint64_t pc, const R
                     setReg(ctx, opInfo, rd64(frame + slot32(1)));
                     break;
                 case 8:  // SAVE_XMM128
-                    std::memcpy(ctx + kXmm + 16 * opInfo, reinterpret_cast<const void*>(frame + static_cast<uint64_t>(slot16(1)) * 16), 16);
+                    safeRead(frame + static_cast<uint64_t>(slot16(1)) * 16, ctx + kXmm + 16 * opInfo, 16);
                     break;
                 case 9:  // SAVE_XMM128_FAR
-                    std::memcpy(ctx + kXmm + 16 * opInfo, reinterpret_cast<const void*>(frame + slot32(1)), 16);
+                    safeRead(frame + slot32(1), ctx + kXmm + 16 * opInfo, 16);
                     break;
                 case 10: {  // PUSH_MACHFRAME: RIP, CS, EFLAGS, RSP, SS (más código de error si opInfo=1)
                     const uint64_t rsp = reg(ctx, 4) + static_cast<uint64_t>(opInfo) * 8;
@@ -473,6 +491,10 @@ uint64_t virtualUnwind(uint32_t handlerType, uint64_t base, uint64_t pc, const R
 bool unwindStep(uint32_t handlerType, uint8_t* ctx, FrameInfo& out) {
     out = FrameInfo{};
     out.controlPc = ctxRip(ctx);
+    if (out.controlPc < 0x10000) {  // PC basura: fin del recorrido
+        setCtxRip(ctx, 0);
+        return false;
+    }
     out.function = lookup(out.controlPc, &out.imageBase);
     if (out.function != nullptr) {
         out.handler = virtualUnwind(handlerType, out.imageBase, out.controlPc, out.function, ctx, &out.handlerData,

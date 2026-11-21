@@ -21,6 +21,16 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   instructions (`RDSSP`), Windows version checks, file functions used by saves (`SetEndOfFile`,
   `SetFileInformationByHandle`, real `FlushFileBuffers`). Not yet: the game draws with OpenGL,
   which HyperPlay does not have yet.
+- **OpenGL for Windows games (first version):** HyperPlay now has its own `opengl32.dll`: WGL
+  contexts are EGL contexts and desktop OpenGL calls go to the phone's OpenGL ES 3.2 (float
+  arguments read from XMM registers, desktop-only calls adapted, GLSL `#version` lines removed),
+  plus the GDI that SDL needs (pixel formats, `SwapBuffers`, DCs, cursor bitmaps). Stardew Valley's
+  SDL video now starts. Not verified yet: no OpenGL game draws on screen yet.
+- Engine: `PUSHFQ`/`POPFQ`, `NtQuerySystemInformation` (process list), .NET settings now passed in
+  the environment block that CoreCLR reads, SDL uses only XInput controllers in every game, safer
+  exception dispatch over corrupt stacks.
+- Stardew Valley still stops in its startup code (`Game1` static constructor) on a corrupt .NET
+  object; under investigation.
 - Tested: Celeste (60 FPS) and Hollow Knight (menu) still work.
 
 ### Español
@@ -37,6 +47,17 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   instrucciones CET (`RDSSP`), comprobaciones de versión de Windows y funciones de archivo que usan
   los guardados (`SetEndOfFile`, `SetFileInformationByHandle`, `FlushFileBuffers` real). Falta: el
   juego dibuja con OpenGL, que HyperPlay aún no tiene.
+- **OpenGL para juegos de Windows (primera versión):** HyperPlay tiene su propio `opengl32.dll`:
+  los contextos WGL son contextos EGL y las llamadas de OpenGL de escritorio van al OpenGL ES 3.2
+  del teléfono (argumentos float leídos de los registros XMM, llamadas solo de escritorio
+  adaptadas, líneas `#version` de GLSL quitadas), más el GDI que necesita SDL (formatos de píxel,
+  `SwapBuffers`, DC, mapas de bits de cursor). El vídeo SDL de Stardew Valley ya arranca. Sin
+  verificar aún: ningún juego OpenGL dibuja todavía en pantalla.
+- Motor: `PUSHFQ`/`POPFQ`, `NtQuerySystemInformation` (lista de procesos), los ajustes de .NET van
+  ahora en el bloque de entorno que lee CoreCLR, SDL usa solo mandos XInput en todos los juegos y
+  el despacho de excepciones resiste pilas corruptas.
+- Stardew Valley aún se para en su código de arranque (constructor estático de `Game1`) por un
+  objeto .NET corrupto; en investigación.
 - Probado: Celeste (60 FPS) y Hollow Knight (menú) siguen funcionando.
 
 ## 1.1.0

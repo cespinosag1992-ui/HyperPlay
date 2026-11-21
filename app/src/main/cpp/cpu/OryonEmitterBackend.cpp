@@ -6949,6 +6949,43 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
         }
         return finish();
     }
+    // --- PUSHF / POPF (9C / 9D): RFLAGS en pila. Los flags viven en ctx.rflags (CF ZF SF OF AF DF)
+    // con PF perezoso en pfByte (PF = paridad par del byte). CoreCLR los usa en sus stubs.
+    if (op == 0x9C) {
+        flagEvents_.push_back({FlagEventKind::Read, 0, 0});  // lee todos los flags
+        emitLdrX(16, 19, static_cast<int32_t>(offsetof(CpuContext, rflags)));
+        emitLdrB(17, 19, static_cast<int32_t>(offsetof(CpuContext, pfByte)));
+        // Paridad del byte: W17 ^= W17>>4, >>2, >>1; bit0 = impar.
+        emitWord(0x4A000000u | (1u << 22) | (17u << 16) | (4u << 10) | (17u << 5) | 17u);  // EOR W17,W17,W17,LSR#4
+        emitWord(0x4A000000u | (1u << 22) | (17u << 16) | (2u << 10) | (17u << 5) | 17u);  // EOR W17,W17,W17,LSR#2
+        emitWord(0x4A000000u | (1u << 22) | (17u << 16) | (1u << 10) | (17u << 5) | 17u);  // EOR W17,W17,W17,LSR#1
+        emitMovImm64(20, 1);
+        emitAndReg(17, 17, 20, false, false);
+        emitEorReg(17, 17, 20, false);  // PF = par
+        emitMovImm64(20, ~static_cast<uint64_t>(0x4));
+        emitAndReg(16, 16, 20, false, true);
+        emitBfi(16, 17, 2, 1);  // PF en el bit 2
+        emitMovImm64(20, 0x202);  // bit 1 siempre a 1 + IF
+        emitOrrReg(16, 16, 20, true);
+        emitSubImm(4, 4, stackSize, true, false);
+        if (stackSize == 8) emitStrX(16, 4, 0);
+        else emitStrW(16, 4, 0);
+        return finish();
+    }
+    if (op == 0x9D) {
+        flagEvents_.push_back({FlagEventKind::Read, 0, 0});  // conserva las escrituras anteriores
+        if (stackSize == 8) emitLdrX(16, 4, 0);
+        else emitLdrW(16, 4, 0);
+        emitAddImm(4, 4, stackSize, true, false);
+        emitUbfx(17, 16, 2, 1);
+        emitMovImm64(20, 1);
+        emitEorReg(17, 17, 20, false);  // pfByte = PF ? 0 : 1 (paridad par = PF)
+        emitStrB(17, 19, static_cast<int32_t>(offsetof(CpuContext, pfByte)));
+        emitMovImm64(20, 0x0DD5);  // CF PF AF ZF SF DF OF
+        emitAndReg(16, 16, 20, false, true);
+        emitStrX(16, 19, static_cast<int32_t>(offsetof(CpuContext, rflags)));
+        return finish();
+    }
     if (op >= 0x58 && op <= 0x5F) {
         const uint8_t reg = static_cast<uint8_t>((op - 0x58) + (rexB ? 8 : 0));
         if (stackSize == 8) {

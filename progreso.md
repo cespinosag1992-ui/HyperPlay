@@ -10,8 +10,9 @@
 - Arreglos: forwarders de DLL locales (api-ms-win-crt -> ucrtbase), SEC_IMAGE, VirtualAlloc alineado a 64 KB, VirtualProtect no alineado, GetCPInfo (MaxCharSize 4 con ACP UTF-8: con 0 .NET daba "Stack overflow"), VirtualQuery de la pila invitada, RDSSP/ENDBR como NOP, rangos de código contiguos (JIT por páginas), VerifyVersionInfoW, NUMA/afinidad, ETW (EventRegister...), DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1, DOTNET_EnableDiagnostics=0, archivos (SetEndOfFile, SetFileInformationByHandle rename/delete/size, LockFileEx, FlushFileBuffers con fsync).
 - `debug.hyperplay.dumpstacks` solo actúa ante un valor NUEVO tras arrancar (uno viejo provocaba SIGILL en el arranque).
 - Siguiente: **OpenGL**. SDL WIN_VideoInit falla (CreateDCW/GDI son stubs) y luego no hay opengl32. Plan: opengl32.dll propio en host (wgl* + gl* -> GLES 3 con EGL sobre la ventana del juego; los shaders de MonoGame ya son compatibles con GLSL ES), GDI mínimo (CreateDCW, GetDeviceCaps, CreateDIBSection, ChoosePixelFormat/SetPixelFormat/SwapBuffers), argumentos float de los thunks GL desde XMM. Luego: audio OpenAL Soft (soft_oal.dll, salida WinMM/WASAPI), guardados en %APPDATA%\StardewValley\Saves.
-- Regresión comprobada: Celeste 60 FPS, Hollow Knight menú.
-- Scripts de prueba: scratchpad `sv.ps1` (Stardew) y `game.ps1 -X -Y` (portada).
+- 12:40: capa OpenGL `gfx/GuestOpenGl` (opengl32 + GDI de SDL) -> el vídeo SDL arranca. Hechos también: PUSHF/POPF, NtQuerySystemInformation(5), SDL solo XInput (pistas globales), SEH con lecturas seguras, `GetEnvironmentStringsW` con DOTNET_* (CoreCLR lee la config de ese bloque: antes ningún DOTNET_* se aplicaba).
+- BLOQUEO ACTUAL: objeto .NET corrupto (MethodTable basura, p. ej. 0x4000) en `Game1..cctor` (SerializableDictionary / Regex -> CastHelpers.IsInstanceOfClass). Sin GC ni suspensión antes. Descartado: VirtualFree/decommit (madvise DONTNEED, a cero). Sospecha: instrucción mal traducida en código de RyuJIT/R2R. Diagnóstico: `debug.hyperplay.r2r 0` (sin ReadyToRun), `DOTNET_EnableHWIntrinsic=0` ya fijo, volcado [RSP]/RCX/RDX en [GuestException].
+- Scripts de prueba (OJO: borran el log viejo; antes a veces se leía un sv.txt desactualizado): scratchpad `sv.ps1` (Stardew) y `game.ps1 -X -Y` (portada).
 
 ## Estado y pendientes (2026-11-21 07:20)
 - **Hecho**:
