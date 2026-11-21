@@ -51,6 +51,16 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   threads games create now also get a larger native stack.
 - A thread that runs game code from inside a native call (callbacks, exceptions) is marked as
   "in native code" again when it returns, so pausing it never waits forever.
+- **Celeste saves again.** Changing an option showed "Save Failed": Mono creates the `Saves`
+  folder with a Win32 long path (`\\?\D:\Saves`) and HyperPlay did not understand the `\\?\`
+  prefix. Tested on the phone: an option changed in Celeste is still there after restarting.
+- Loading screen: the technical engine text is gone; it now shows a friendly stage ("Getting the
+  game ready…", "Almost there…") and a light-hearted line that changes every few seconds.
+- .NET detection fixed: mixed C++/CLI executables (DmC: Devil May Cry) were started with Mono.
+  Only IL-only assemblies use Mono now.
+- 32-bit games: their DLLs are always mapped below 4 GB (before, some PhysX DLLs of DmC ended up
+  above it), and the import table of a 32-bit DLL is written with 4-byte slots (DmC crashed while
+  loading its wxWidgets DLLs). DmC still does not start (missing Windows functions).
 - **Error reports reach the server.** With your permission, reports are sent to the HyperPlay
   report server, which opens an issue on GitHub (no token in the app). To use little space on
   the phone: the app log is cleared after reports are sent, at most 20 unsent reports (under 30
@@ -101,6 +111,17 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 - Un hilo que ejecuta código del juego desde dentro de una llamada nativa (callbacks,
   excepciones) vuelve a marcarse "en código nativo" al terminar, así pausarlo nunca espera para
   siempre.
+- **Celeste vuelve a guardar.** Al cambiar una opción salía "Save Failed": Mono crea la carpeta
+  `Saves` con una ruta larga de Win32 (`\\?\D:\Saves`) y HyperPlay no entendía el prefijo `\\?\`.
+  Probado en el teléfono: una opción cambiada en Celeste sigue igual tras reiniciar el juego.
+- Pantalla de carga: fuera el texto técnico del motor; ahora muestra una etapa amable
+  ("Preparando el juego…", "Ya casi está…") y una frase divertida que cambia cada pocos segundos.
+- Arreglada la detección de juegos .NET: los ejecutables mixtos C++/CLI (DmC: Devil May Cry) se
+  arrancaban con Mono. Ahora solo usan Mono los ensamblados solo IL.
+- Juegos de 32 bits: sus DLL se colocan siempre por debajo de 4 GB (antes algunas DLL de PhysX de
+  DmC quedaban por encima) y la tabla de importaciones de una DLL de 32 bits se escribe con
+  ranuras de 4 bytes (DmC se cerraba al cargar sus DLL de wxWidgets). DmC aún no arranca (faltan
+  funciones de Windows).
 - **Los informes de errores llegan al servidor.** Con tu permiso, los informes se envían al
   servidor de informes de HyperPlay, que abre un issue en GitHub (sin token en la app). Para
   ocupar poco en el teléfono: el registro de la app se vacía al enviar los informes, se guardan

@@ -143,26 +143,69 @@ object ManagedRuntime {
         check(base.isDirectory)
     }
 
-    /** ¿El PE tiene cabecera CLR (DataDirectory[14])? Es decir, ¿es un ensamblado .NET? */
+    /**
+     * ¿Es un ensamblado .NET puro (solo IL)? Hace falta cabecera CLR (DataDirectory[14]) y la marca
+     * COMIMAGE_FLAGS_ILONLY: los ejecutables mixtos C++/CLI (DmC, Unreal Engine 3) también tienen
+     * cabecera CLR pero son código nativo y van por el cargador PE normal.
+     */
     fun isManagedExe(file: File): Boolean = runCatching {
         RandomAccessFile(file, "r").use { f ->
-            val b = ByteArray(1024)
-            f.readFully(b, 0, minOf(1024L, f.length()).toInt())
-            isManagedPe(b)
+            val head = ByteArray(minOf(4096L, f.length()).toInt())
+            f.readFully(head)
+            val clrOffset = clrHeaderOffset(head) ?: return@use false
+            if (clrOffset + 20 > f.length()) return@use false
+            val clr = ByteArray(20)
+            f.seek(clrOffset)
+            f.readFully(clr)
+            isIlOnlyClrHeader(clr)
         }
     }.getOrDefault(false)
 
-    /** Versión pura (probada en la JVM) sobre los primeros bytes del archivo. */
-    fun isManagedPe(head: ByteArray): Boolean {
+    /** Versión pura sobre los primeros bytes del archivo: ¿tiene cabecera CLR? */
+    fun isManagedPe(head: ByteArray): Boolean = clrDirectory(head) != null
+
+    /** RVA y tamaño de DataDirectory[14] (cabecera CLR), o null. */
+    private fun clrDirectory(head: ByteArray): Pair<Long, Long>? {
         fun u16(o: Int) = (head[o].toInt() and 0xFF) or ((head[o + 1].toInt() and 0xFF) shl 8)
-        fun u32(o: Int) = u16(o) or (u16(o + 2) shl 16)
-        if (head.size < 0x40 || u16(0) != 0x5A4D) return false
-        val pe = u32(0x3C)
-        if (pe < 0 || pe + 24 + 2 > head.size || u32(pe) != 0x00004550) return false
+        fun u32(o: Int) = (u16(o).toLong()) or (u16(o + 2).toLong() shl 16)
+        if (head.size < 0x40 || u16(0) != 0x5A4D) return null
+        val pe = u32(0x3C).toInt()
+        if (pe < 0 || pe + 24 + 2 > head.size || u32(pe) != 0x00004550L) return null
         val magic = u16(pe + 24)
-        val dataDirs = pe + 24 + if (magic == 0x20B) 112 else 96
-        val clr = dataDirs + 14 * 8
-        if (clr + 8 > head.size) return false
-        return u32(clr) != 0 && u32(clr + 4) != 0
+        val countOff = pe + 24 + if (magic == 0x20B) 108 else 92
+        if (countOff + 4 > head.size || u32(countOff) <= 14) return null
+        val clr = pe + 24 + (if (magic == 0x20B) 112 else 96) + 14 * 8
+        if (clr + 8 > head.size) return null
+        val rva = u32(clr)
+        val size = u32(clr + 4)
+        return if (rva != 0L && size != 0L) rva to size else null
+    }
+
+    /** Desplazamiento en el archivo de la cabecera CLR (RVA -> sección), o null. */
+    fun clrHeaderOffset(head: ByteArray): Long? {
+        val (rva, _) = clrDirectory(head) ?: return null
+        fun u16(o: Int) = (head[o].toInt() and 0xFF) or ((head[o + 1].toInt() and 0xFF) shl 8)
+        fun u32(o: Int) = (u16(o).toLong()) or (u16(o + 2).toLong() shl 16)
+        val pe = u32(0x3C).toInt()
+        val sections = u16(pe + 6)
+        val optSize = u16(pe + 20)
+        var s = pe + 24 + optSize
+        repeat(sections) {
+            if (s + 40 > head.size) return null
+            val vsize = u32(s + 8)
+            val va = u32(s + 12)
+            val rawSize = u32(s + 16)
+            val raw = u32(s + 20)
+            if (rva >= va && rva < va + maxOf(vsize, rawSize)) return raw + (rva - va)
+            s += 40
+        }
+        return null
+    }
+
+    /** Cabecera CLR (IMAGE_COR20_HEADER): Flags en +16; bit 0 = COMIMAGE_FLAGS_ILONLY. */
+    fun isIlOnlyClrHeader(clr: ByteArray): Boolean {
+        if (clr.size < 20) return false
+        val flags = (clr[16].toInt() and 0xFF) or ((clr[17].toInt() and 0xFF) shl 8)
+        return (flags and 0x1) != 0
     }
 }

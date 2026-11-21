@@ -130,8 +130,20 @@
 
     <!-- Sesión de juego -->
     <string name="loading_quick_menu_hint">L3 + R3 abre el menú rápido</string>
-    <string name="stage_pe_load">Cargando PE e IAT…</string>
-    <string name="stage_executing">Ejecutando en Oryon JIT…</string>
+    <string name="stage_pe_load">Preparando el juego…</string>
+    <string name="stage_executing">Ya casi está…</string>
+    <string-array name="loading_quips">
+        <item>Enseñando a un juego de PC a vivir en un móvil…</item>
+        <item>Traduciendo x86 al idioma del teléfono…</item>
+        <item>Calentando los shaders (y tus manos)</item>
+        <item>Convenciendo al juego de que esto es un PC</item>
+        <item>Puliendo píxeles uno a uno</item>
+        <item>Escondiendo los cables que nunca vas a necesitar</item>
+        <item>Pidiéndole a la GPU por favor que corra</item>
+        <item>Cargando la diversión. No agites el teléfono</item>
+        <item>Ningún Windows sufrió daños en este proceso</item>
+        <item>Consejo: L3 + R3 abre el menú rápido</item>
+    </string-array>
     <string name="ended_error">No se pudo iniciar el juego</string>
     <string name="ended_exit">La sesión terminó (código %1$s)</string>
     <string name="back_to_library">Volver a la biblioteca</string>

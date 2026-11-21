@@ -68,6 +68,17 @@ class GameSessionLogicTest {
     }
 
     @Test
+    fun loadingQuipRotates() {
+        val p = GameSessionLogic.QUIP_PERIOD_MS
+        assertEquals(0, GameSessionLogic.quipIndex(0, 10))
+        assertEquals(0, GameSessionLogic.quipIndex(p - 1, 10))
+        assertEquals(1, GameSessionLogic.quipIndex(p, 10))
+        assertEquals(0, GameSessionLogic.quipIndex(10 * p, 10))
+        assertEquals(0, GameSessionLogic.quipIndex(-100, 10))
+        assertEquals(0, GameSessionLogic.quipIndex(5 * p, 0))
+    }
+
+    @Test
     fun formattingHelpers() {
         assertEquals("0:00", GameSessionLogic.formatElapsed(-5))
         assertEquals("1:05", GameSessionLogic.formatElapsed(65_400))

@@ -39,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import com.murdoc820.hyperplay.R
@@ -191,10 +192,12 @@ private fun LoadingScreen(state: SessionUiState) {
             Spacer(Modifier.height(12.dp))
             Text("${stringResource(state.stage.label)}  ·  ${GameSessionLogic.formatElapsed(state.elapsedMillis)}",
                 color = Deck.Sub, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-            state.logTail.lastOrNull()?.let {
-                Spacer(Modifier.height(4.dp))
-                Text(it, color = Deck.Dim, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // Frase amable que cambia cada pocos segundos (el log técnico queda en el archivo).
+            val quips = stringArrayResource(R.array.loading_quips)
+            if (quips.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(quips[GameSessionLogic.quipIndex(state.elapsedMillis, quips.size)], color = Deck.Dim,
+                    fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         Text(stringResource(R.string.loading_quick_menu_hint), color = Deck.Dim, fontSize = 12.sp,

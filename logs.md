@@ -732,3 +732,11 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - adb inalámbrico se cae varias veces durante las pruebas sin red (puertos 44421 → 35691 → 192.168.0.2:33237).
 - Servidor de informes: `wrangler kv namespace create REPORTS_KV` (id 4eba172d…), `wrangler deploy` → `https://hyperplay-reports.cespinosag1992.workers.dev` responde `HyperPlay report worker OK`. Variable `HP_REPORT_URL` en el repo. Etiquetas `auto-report`, `kind:*` creadas. Falta el secreto `GITHUB_TOKEN` (lo pone el usuario).
 - LogStorage: 5/5 tests. `testDebugUnitTest lintDebug assembleRelease` exit=0.
+## 2026-11-20 — Guardado de Celeste, pantalla de carga, DmC
+- Celeste, Opciones → Rumble y salir: `CreateDirectory('\\?\D:\Saves') -> '.../Celeste/?/D:/Saves' errno=2`, `DirectoryNotFoundException`, "Save Failed". Arreglo: `resolveVirtualPath` quita `\\?\`, `\??\`, `\\.\`. Tras el arreglo: `Saves/settings.celeste` (5077 B); Rumble 50 % sigue tras reiniciar.
+- `-Wtrigraphs`: "/??/" en un literal es un trigrafo; escrito "/?\?/".
+- `adb install` (streamed) se corta por wifi: `adb push` + `pm install -r` funciona.
+- DmC (rights 2) arrancaba con Mono: `DMC-DevilMayCry.exe` tiene CLR (RVA 0x22A6E14, 72 B) pero es mixto. `isManagedExe` exige COMIMAGE_FLAGS_ILONLY.
+- DmC después: SIGSEGV en `hijackLocalDllIat` (memcpy de 8 B en la última palabra de la página): `dllModule.is32Bit` nunca se ponía. Además NTPhysX_* en 0x7466xxxxxx (>4 GB). `allocateArena` de 32 bits con MAP_FIXED_NOREPLACE y pasos de 16 MB: NTPhysX en 0x18000000, wx en 0x1a-0x21000000.
+- DmC ahora: "IAT incompleta: 1036/3206 resueltas, 2170 sin resolver" (WSOCK32 y más). No es regresión.
+- Regresión: Celeste por Mono OK; HK título a 120 FPS sin fallos. Pantalla de carga: "Ya casi está… · 0:07 / Calentando los shaders (y tus manos)".

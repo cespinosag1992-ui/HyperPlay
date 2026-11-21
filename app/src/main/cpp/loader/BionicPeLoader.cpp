@@ -133,27 +133,30 @@ void* BionicPeLoader::allocateArena(size_t size, bool is32Bit, uint64_t preferre
 
     if (is32Bit) {
         // Un proceso x86 emulado solo puede direccionar 32 bits: la arena debe quedar por debajo
-        // de 4 GiB. mmap con dirección es una sugerencia y el kernel puede ignorarla.
-        const uintptr_t hint = (preferredBase > 0 && preferredBase < 0x80000000ull)
-                                   ? static_cast<uintptr_t>(preferredBase)
-                                   : static_cast<uintptr_t>(0x20000000);
-        ptr = mmap(reinterpret_cast<void*>(hint), allocSize, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (ptr != MAP_FAILED &&
-            static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ptr)) + allocSize > 0xFFFFFFFFull) {
-            munmap(ptr, allocSize);
-            ptr = MAP_FAILED;
+        // de 4 GiB. Con MAP_FIXED_NOREPLACE el kernel usa exactamente la dirección pedida o falla
+        // (sin pisar nada); antes, con una simple sugerencia ocupada devolvía una dirección alta,
+        // se descartaba y, tras 7 intentos, la DLL acababa por encima de 4 GiB (DmC: PhysX).
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE 0x100000
+#endif
+        auto tryAt = [&](uint64_t addr) -> void* {
+            if (addr == 0 || addr + allocSize > 0x100000000ull) return MAP_FAILED;
+            void* p = mmap(reinterpret_cast<void*>(static_cast<uintptr_t>(addr)), allocSize, prot,
+                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+            if (p != MAP_FAILED && reinterpret_cast<uintptr_t>(p) != addr) {
+                munmap(p, allocSize);  // kernel antiguo que ignora la bandera
+                return MAP_FAILED;
+            }
+            return p;
+        };
+        if (preferredBase > 0) ptr = tryAt(preferredBase);
+        // Huecos libres en pasos de 16 MiB por debajo de 4 GiB (LARGE_ADDRESS_AWARE).
+        for (uint64_t trial = 0x10000000; ptr == MAP_FAILED && trial < 0x100000000ull; trial += 0x1000000) {
+            ptr = tryAt(trial);
         }
         if (ptr == MAP_FAILED) {
-            for (uintptr_t trial = 0x10000000; trial < 0x80000000ull; trial += 0x10000000) {
-                void* candidate = mmap(reinterpret_cast<void*>(trial), allocSize, prot,
-                                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-                if (candidate == MAP_FAILED) continue;
-                if (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(candidate)) + allocSize <= 0xFFFFFFFFull) {
-                    ptr = candidate;
-                    break;
-                }
-                munmap(candidate, allocSize);
-            }
+            LOGE("Sin hueco de %zu bytes por debajo de 4 GiB para el proceso de 32 bits", allocSize);
+            return nullptr;
         }
     } else {
         void* hint = preferredBase != 0 ? reinterpret_cast<void*>(static_cast<uintptr_t>(preferredBase)) : nullptr;
@@ -644,6 +647,7 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
     }
 
     LoadedPeImage dllModule;
+    dllModule.is32Bit = !info.is64Bit;  // la IAT de 32 bits tiene ranuras de 4 bytes
     dllModule.borrowsArena = true;  // La arena la libera `image.localDlls`.
     dllModule.baseAddress = base;
     dllModule.totalMappedSize = static_cast<size_t>(alignedSize);
@@ -733,6 +737,14 @@ std::string BionicPeLoader::resolveVirtualPath(const LoadedPeImage& image, const
     for (char c : winPath) {
         if (c == '\\') norm.push_back('/');
         else if (c != '\0' && c != '\"') norm.push_back(c);
+    }
+    // Rutas largas de Win32 ("\\?\D:\Saves", "\??\D:\..."; Mono las usa al crear carpetas) y de
+    // dispositivo ("\\.\D:\..."): el prefijo no forma parte de la ruta.
+    for (const char* prefix : {"//?/", "/?\?/", "//./"}) {
+        if (norm.rfind(prefix, 0) == 0) {
+            norm.erase(0, 4);
+            break;
+        }
     }
 
     // C:\HyperPlay\Mono\... -> runtime Mono (juegos .NET).

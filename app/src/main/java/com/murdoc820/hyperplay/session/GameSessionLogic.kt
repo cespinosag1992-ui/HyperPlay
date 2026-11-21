@@ -113,6 +113,13 @@ object GameSessionLogic {
     fun contentStarted(telemetry: LongArray?, draws: Long, elapsedMs: Long): Boolean =
         graphicsStarted(telemetry) && (draws >= CONTENT_DRAWS || elapsedMs >= CONTENT_TIMEOUT_MS)
 
+    /** Cada cuánto cambia la frase de la pantalla de carga. */
+    const val QUIP_PERIOD_MS = 3_500L
+
+    /** Frase de carga para [elapsedMs]: cambia cada [QUIP_PERIOD_MS] y vuelve a empezar. */
+    fun quipIndex(elapsedMs: Long, count: Int): Int =
+        if (count <= 0) 0 else ((elapsedMs.coerceAtLeast(0) / QUIP_PERIOD_MS) % count).toInt()
+
     /** "m:ss". */
     fun formatElapsed(millis: Long): String {
         val total = (millis.coerceAtLeast(0) / 1000)

@@ -132,8 +132,20 @@
 
     <!-- Game session -->
     <string name="loading_quick_menu_hint">L3 + R3 opens the quick menu</string>
-    <string name="stage_pe_load">Loading PE and IAT…</string>
-    <string name="stage_executing">Running on Oryon JIT…</string>
+    <string name="stage_pe_load">Getting the game ready…</string>
+    <string name="stage_executing">Almost there…</string>
+    <string-array name="loading_quips">
+        <item>Teaching a PC game to live on a phone…</item>
+        <item>Translating x86 into phone language…</item>
+        <item>Warming up the shaders (and your hands)</item>
+        <item>Convincing the game this is a desktop</item>
+        <item>Polishing pixels one by one</item>
+        <item>Hiding the cables you\'ll never need</item>
+        <item>Asking the GPU nicely to go fast</item>
+        <item>Loading the fun. Please don\'t shake</item>
+        <item>No Windows were harmed in this process</item>
+        <item>Tip: L3 + R3 opens the quick menu</item>
+    </string-array>
     <string name="ended_error">Couldn\'t start the game</string>
     <string name="ended_exit">The session ended (code %1$s)</string>
     <string name="back_to_library">Back to library</string>
