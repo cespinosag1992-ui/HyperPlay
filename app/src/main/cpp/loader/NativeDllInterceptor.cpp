@@ -4752,6 +4752,26 @@ void resumeFromThunk(const uint8_t* ctx) {
     t_ctxOverride = true;
 }
 
+// Llamada a código invitado desde el SEH: si el invitado la abandona saltando a un marco
+// exterior (CoreCLR: ClrRestoreNonvolatileContext tras ejecutar un catch), ese contexto se
+// aplica como un RtlRestoreContext (pendiente para el nivel que corresponda).
+int64_t sehCall(OryonEmitterBackend& b, uint64_t fn, const uint64_t* args, size_t argc) {
+    b.watchNextEscape();
+    const int64_t r = b.callGuestNested(fn, args, argc);
+    CpuContext esc{};
+    if (b.takeEscape(esc)) {
+        alignas(16) Ctx ctx;
+        std::memset(ctx.data(), 0, ctx.size());
+        win64ctx::toContext(esc, ctx.data(), win64ctx::kContextAll);
+        if (sehLog()) {
+            LOGI("[SEH] el invitado salió de la llamada a 0x%llx hacia RIP=0x%llx RSP=0x%llx",
+                 (unsigned long long)fn, (unsigned long long)esc.rip, (unsigned long long)esc.gpr[4]);
+        }
+        resumeFromThunk(ctx.data());
+    }
+    return r;
+}
+
 // Tras una llamada a código invitado: ¿hay un desenrollado pendiente?
 bool pendingFor(int depth, uint8_t* ctxOut, Result& r) {
     if (!t_pending) return false;
@@ -4782,7 +4802,8 @@ void restoreContext(uint8_t* ctx, uint8_t* rec) {
             std::memcpy(parent.data(), ctx, win64ctx::kContextSize);
             t_parents.push_back(parent);
             const uint64_t args[1] = {reinterpret_cast<uint64_t>(rec)};
-            const uint64_t next = callGuest(info0, args, 1);
+            OryonEmitterBackend* cb = backendHere();
+            const uint64_t next = cb != nullptr ? static_cast<uint64_t>(sehCall(*cb, info0, args, 1)) : 0;
             t_parents.pop_back();
             if (t_pending) return;  // el catch lanzó y otro marco lo capturó más arriba
             seh::setCtxRip(ctx, next);
@@ -4828,7 +4849,7 @@ Result dispatchFrames(OryonEmitterBackend& b, int depth, uint8_t* rec, uint8_t* 
             t_parents.push_back(parent);
             const uint64_t args[4] = {reinterpret_cast<uint64_t>(rec), fi.establisherFrame,
                                       reinterpret_cast<uint64_t>(origCtx), reinterpret_cast<uint64_t>(&dc)};
-            const auto disp = static_cast<int32_t>(b.callGuestNested(fi.handler, args, 4));
+            const auto disp = static_cast<int32_t>(sehCall(b, fi.handler, args, 4));
             t_parents.pop_back();
             if (sehLog()) LOGI("[SEH] manejador 0x%llx -> %d", (unsigned long long)fi.handler, disp);
             Result r;
@@ -4858,7 +4879,7 @@ Result raise(OryonEmitterBackend& b, uint8_t* rec, uint8_t* ctx) {
         handlers = s_vehHandlers;
     }
     for (const auto& [id, handler] : handlers) {
-        const auto verdict = static_cast<int32_t>(b.callGuestNested(handler, args, 1));
+        const auto verdict = static_cast<int32_t>(sehCall(b, handler, args, 1));
         Result r;
         if (pendingFor(depth, ctx, r)) return r;
         if (verdict == win64ctx::kExceptionContinueExecution) return Result::kContinue;
@@ -4866,7 +4887,7 @@ Result raise(OryonEmitterBackend& b, uint8_t* rec, uint8_t* ctx) {
     const Result fr = dispatchFrames(b, depth, rec, ctx);
     if (fr != Result::kUnhandled) return fr;
     if (const uintptr_t filter = s_unhandledFilter.load(); filter != 0) {
-        const auto verdict = static_cast<int32_t>(b.callGuestNested(filter, args, 1));
+        const auto verdict = static_cast<int32_t>(sehCall(b, filter, args, 1));
         Result r;
         if (pendingFor(depth, ctx, r)) return r;
         if (verdict == win64ctx::kExceptionContinueExecution) return Result::kContinue;
@@ -4923,7 +4944,7 @@ void unwindEx(uint64_t targetFrame, uint64_t targetIp, uint8_t* recIn, uint64_t 
                                  fi.handlerData, 0, 0, 0};
             const uint64_t args[4] = {reinterpret_cast<uint64_t>(rec), fi.establisherFrame,
                                       reinterpret_cast<uint64_t>(context.data()), reinterpret_cast<uint64_t>(&dc)};
-            const auto disp = static_cast<int32_t>(b->callGuestNested(fi.handler, args, 4));
+            const auto disp = static_cast<int32_t>(sehCall(*b, fi.handler, args, 4));
             if (t_pending) return;  // un manejador de terminación resolvió otra excepción más arriba
             if (disp == seh::kDispContinueSearch) recFlags(rec) &= ~seh::kEhCollidedUnwind;
             else if (disp == seh::kDispCollided) recFlags(rec) |= seh::kEhCollidedUnwind;
@@ -5643,6 +5664,16 @@ void ensureUnityTempAllocatorProvisioned(void* lpTlsValue, uint32_t dwTlsIndex, 
     const uintptr_t val = reinterpret_cast<uintptr_t>(lpTlsValue);
     if (val < 0x10000u) return; // No es un puntero válido (p.ej. código de error o entero)
     if (dwTlsIndex != 1) return; // Solo Unity ThreadTempAllocators en TLS slot 1
+    // Solo en juegos Unity: en cualquier otro (CoreCLR de Stardew Valley) el slot 1 guarda otra
+    // estructura y escribir en +0x100..+0x130 la corrompía (objetos .NET con datos basura).
+    static const bool s_isUnity = [] {
+        if (s_activeImage == nullptr) return false;
+        for (const auto& kv : s_activeImage->localDlls) {
+            if (toLower(kv.first).find("unityplayer.dll") != std::string::npos) return true;
+        }
+        return false;
+    }();
+    if (!s_isUnity) return;
 
     auto* obj = static_cast<uint8_t*>(lpTlsValue);
     void* currentBase = *reinterpret_cast<void**>(obj + 0x108);
@@ -8141,13 +8172,14 @@ void* NativeDllInterceptor::win_RtlLookupFunctionEntry(uint64_t ControlPc, uint6
 
 void* NativeDllInterceptor::win_RtlVirtualUnwind(uint32_t HandlerType, uint64_t ImageBase, uint64_t ControlPc,
                                                  void* FunctionEntry, void* ContextRecord, void** HandlerData,
-                                                 uint64_t* EstablisherFrame, void*) {
+                                                 uint64_t* EstablisherFrame, void* ContextPointers) {
     s_ntdllCalls.fetch_add(1);
     if (FunctionEntry == nullptr || ContextRecord == nullptr) return nullptr;
     uint64_t data = 0, frame = 0;
     const uint64_t h = seh::virtualUnwind(HandlerType, ImageBase, ControlPc,
                                           static_cast<const seh::RuntimeFunction*>(FunctionEntry),
-                                          static_cast<uint8_t*>(ContextRecord), &data, &frame);
+                                          static_cast<uint8_t*>(ContextRecord), &data, &frame,
+                                          static_cast<uint64_t*>(ContextPointers));
     if (HandlerData != nullptr) *HandlerData = reinterpret_cast<void*>(data);
     if (EstablisherFrame != nullptr) *EstablisherFrame = frame;
     return reinterpret_cast<void*>(h);

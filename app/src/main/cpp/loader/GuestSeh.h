@@ -58,7 +58,8 @@ uint64_t moduleBaseOf(uint64_t pc);
 /// RtlVirtualUnwind sobre un CONTEXT AMD64 (`ctx`, 0x4D0 bytes). Devuelve el manejador de
 /// lenguaje (si el marco tiene uno del tipo pedido y el PC no está en el prólogo/epílogo).
 uint64_t virtualUnwind(uint32_t handlerType, uint64_t imageBase, uint64_t pc, const RuntimeFunction* fn,
-                       uint8_t* ctx, uint64_t* handlerData, uint64_t* establisherFrame);
+                       uint8_t* ctx, uint64_t* handlerData, uint64_t* establisherFrame,
+                       uint64_t* contextPointers = nullptr);
 
 /// Un paso de desenrollado completo (como virtual_unwind de Wine): con entrada de función usa
 /// virtualUnwind; sin ella (hoja) saca RIP de [RSP]. Rellena la información del marco.

@@ -166,13 +166,14 @@ bool insideEpilog(const uint8_t* pc, uint64_t base, const RuntimeFunction* fn) {
     }
 }
 
-void interpretEpilog(const uint8_t* pc, uint8_t* ctx) {
+void interpretEpilog(const uint8_t* pc, uint8_t* ctx, uint64_t* ctxPtrs) {
     for (;;) {
         uint8_t rex = 0;
         if ((*pc & 0xF0) == 0x40) rex = *pc++ & 0x0F;
         if (*pc >= 0x58 && *pc <= 0x5F) {
             const uint64_t rsp = reg(ctx, 4);
             setReg(ctx, (*pc - 0x58) + (rex & 1) * 8, rd64(rsp));
+            if (ctxPtrs != nullptr) ctxPtrs[16 + (((*pc - 0x58) + (rex & 1) * 8) & 15)] = rsp;
             setReg(ctx, 4, rsp + 8);
             ++pc;
             continue;
@@ -371,7 +372,16 @@ const RuntimeFunction* lookup(uint64_t pc, uint64_t* imageBase) {
 }
 
 uint64_t virtualUnwind(uint32_t handlerType, uint64_t base, uint64_t pc, const RuntimeFunction* fn, uint8_t* ctx,
-                       uint64_t* handlerData, uint64_t* establisherFrame) {
+                       uint64_t* handlerData, uint64_t* establisherFrame, uint64_t* ctxPtrs) {
+    // KNONVOLATILE_CONTEXT_POINTERS: FloatingContext[16] y después IntegerContext[16] (punteros a
+    // donde quedó guardado cada registro). El GC de CoreCLR los usa para actualizar referencias
+    // guardadas en la pila cuando mueve objetos.
+    auto noteInt = [ctxPtrs](unsigned r, uint64_t addr) {
+        if (ctxPtrs != nullptr) ctxPtrs[16 + (r & 15)] = addr;
+    };
+    auto noteXmm = [ctxPtrs](unsigned r, uint64_t addr) {
+        if (ctxPtrs != nullptr) ctxPtrs[r & 15] = addr;
+    };
     uint64_t handler = 0;
     if (handlerData != nullptr) *handlerData = 0;
     uint32_t prologOffset = static_cast<uint32_t>(pc - base - fn->begin);
@@ -390,7 +400,7 @@ uint64_t virtualUnwind(uint32_t handlerType, uint64_t base, uint64_t pc, const R
         const bool pcReadable = safeRead(pc, probe, sizeof(probe));
         if (primary && !inProlog && pcReadable && insideEpilog(reinterpret_cast<const uint8_t*>(pc), base, fn)) {
             if (establisherFrame != nullptr) *establisherFrame = reg(ctx, 4);
-            interpretEpilog(reinterpret_cast<const uint8_t*>(pc), ctx);
+            interpretEpilog(reinterpret_cast<const uint8_t*>(pc), ctx, ctxPtrs);
             return 0;
         }
         const uint32_t limit = primary ? prologOffset : 0xFFFFFFFFu;
@@ -428,6 +438,7 @@ uint64_t virtualUnwind(uint32_t handlerType, uint64_t base, uint64_t pc, const R
                 case 0: {  // PUSH_NONVOL
                     const uint64_t rsp = reg(ctx, 4);
                     setReg(ctx, opInfo, rd64(rsp));
+                    noteInt(opInfo, rsp);
                     setReg(ctx, 4, rsp + 8);
                     break;
                 }
@@ -440,18 +451,30 @@ uint64_t virtualUnwind(uint32_t handlerType, uint64_t base, uint64_t pc, const R
                 case 3:  // SET_FPREG
                     setReg(ctx, 4, reg(ctx, frameReg) - static_cast<uint64_t>(frameOff) * 16);
                     break;
-                case 4:  // SAVE_NONVOL
-                    setReg(ctx, opInfo, rd64(frame + static_cast<uint64_t>(slot16(1)) * 8));
+                case 4: {  // SAVE_NONVOL
+                    const uint64_t a = frame + static_cast<uint64_t>(slot16(1)) * 8;
+                    setReg(ctx, opInfo, rd64(a));
+                    noteInt(opInfo, a);
                     break;
-                case 5:  // SAVE_NONVOL_FAR
-                    setReg(ctx, opInfo, rd64(frame + slot32(1)));
+                }
+                case 5: {  // SAVE_NONVOL_FAR
+                    const uint64_t a = frame + slot32(1);
+                    setReg(ctx, opInfo, rd64(a));
+                    noteInt(opInfo, a);
                     break;
-                case 8:  // SAVE_XMM128
-                    safeRead(frame + static_cast<uint64_t>(slot16(1)) * 16, ctx + kXmm + 16 * opInfo, 16);
+                }
+                case 8: {  // SAVE_XMM128
+                    const uint64_t a = frame + static_cast<uint64_t>(slot16(1)) * 16;
+                    safeRead(a, ctx + kXmm + 16 * opInfo, 16);
+                    noteXmm(opInfo, a);
                     break;
-                case 9:  // SAVE_XMM128_FAR
-                    safeRead(frame + slot32(1), ctx + kXmm + 16 * opInfo, 16);
+                }
+                case 9: {  // SAVE_XMM128_FAR
+                    const uint64_t a = frame + slot32(1);
+                    safeRead(a, ctx + kXmm + 16 * opInfo, 16);
+                    noteXmm(opInfo, a);
                     break;
+                }
                 case 10: {  // PUSH_MACHFRAME: RIP, CS, EFLAGS, RSP, SS (más código de error si opInfo=1)
                     const uint64_t rsp = reg(ctx, 4) + static_cast<uint64_t>(opInfo) * 8;
                     setCtxRip(ctx, rd64(rsp));
@@ -498,7 +521,7 @@ bool unwindStep(uint32_t handlerType, uint8_t* ctx, FrameInfo& out) {
     out.function = lookup(out.controlPc, &out.imageBase);
     if (out.function != nullptr) {
         out.handler = virtualUnwind(handlerType, out.imageBase, out.controlPc, out.function, ctx, &out.handlerData,
-                                    &out.establisherFrame);
+                                    &out.establisherFrame, nullptr);
         return true;
     }
     // Hoja: sin prólogo; la dirección de retorno está en [RSP].

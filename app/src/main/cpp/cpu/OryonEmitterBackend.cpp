@@ -6789,6 +6789,43 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
                 return finish();
             }
 
+            // 66 0F 38 17: PTEST xmm1, xmm2/m128 (SSE4.1). ZF = (dst AND src) == 0,
+            // CF = (src AND NOT dst) == 0; AF OF PF SF = 0.
+            if (prefix66 && op3 == 0x17) {
+                ModRm m;
+                if (!decodeModRm(reader, rexR, rexX, rexB, m)) return fail("PTEST truncado");
+                const uint32_t d = xmmHost(m.reg) & 0x1Fu;
+                uint32_t s = kXmmScratch;
+                if (m.isMemory) {
+                    emitEffectiveAddress(m, nextRip());
+                    emitLdrQ(kXmmScratch, 16, 0);
+                } else {
+                    s = xmmHost(m.rm) & 0x1Fu;
+                }
+                constexpr uint32_t t1 = kXmmScratch2, t2 = kXmmScratch3;
+                emitWord(0x4E201C00u | (s << 16) | (d << 5) | t1);  // AND t1.16b, d, s
+                emitWord(0x4E601C00u | (d << 16) | (s << 5) | t2);  // BIC t2.16b, s, d
+                emitWord(0x4E083C00u | (t1 << 5) | 16u);            // UMOV X16, t1.D[0]
+                emitWord(0x4E183C00u | (t1 << 5) | 17u);            // UMOV X17, t1.D[1]
+                emitOrrReg(16, 16, 17, true);
+                emitWord(0xF100021Fu);                              // CMP X16, #0
+                emitWord(0x1A9F17F4u);                              // CSET W20, EQ (ZF)
+                emitWord(0x4E083C00u | (t2 << 5) | 16u);            // UMOV X16, t2.D[0]
+                emitWord(0x4E183C00u | (t2 << 5) | 17u);            // UMOV X17, t2.D[1]
+                emitOrrReg(16, 16, 17, true);
+                emitWord(0xF100021Fu);                              // CMP X16, #0
+                emitWord(0x1A9F17F6u);                              // CSET W22, EQ (CF)
+                emitLdrX(21, 19, static_cast<int32_t>(offsetof(CpuContext, rflags)));
+                emitMovImm64(23, ~0x8D5ULL);
+                emitAndReg(21, 21, 23, false, true);
+                emitOrrReg(21, 21, 22, true);
+                emitWord(0xAA000000u | (20u << 16) | (6u << 10) | (21u << 5) | 21u);  // ORR X21, X21, X20, LSL #6
+                emitStrX(21, 19, static_cast<int32_t>(offsetof(CpuContext, rflags)));
+                emitMovImm64(23, 1);  // PF = 0 (byte de paridad impar)
+                emitStrB(23, 19, static_cast<int32_t>(offsetof(CpuContext, pfByte)));
+                return finish();
+            }
+
             char hex0f38[128];
             std::snprintf(hex0f38, sizeof(hex0f38), "opcode 0F 38 %02X no soportado en RIP=0x%llx", op3,
                           static_cast<unsigned long long>(rip));
@@ -10937,6 +10974,9 @@ int64_t OryonEmitterBackend::callGuestNested(uintptr_t fn, const uint64_t* args,
     }
     ctx_.gpr[4] = sp;
     ctx_.rip = fn;
+    const uintptr_t sentinelSp = sp;  // [sentinelSp] = 0: retorno de esta llamada
+    const bool watchEscape = watchEscape_;
+    watchEscape_ = false;
 
     std::jmp_buf faultJb;
     FaultScope faultScope(this, &faultJb);
@@ -10949,6 +10989,13 @@ int64_t OryonEmitterBackend::callGuestNested(uintptr_t fn, const uint64_t* args,
     int64_t retVal = -2;
     for (uint64_t step = 0; step < kMaxDispatchSteps; ++step) {
         if (stopped_ || nestDepth_ > abortAbove_) break;  // SEH: desenrollado hacia un marco exterior
+        if (watchEscape && ctx_.rip != 0 && ctx_.gpr[4] > sentinelSp + 8) {
+            // El invitado saltó a un marco por encima de esta llamada (reanudación tras catch).
+            escaped_ = true;
+            escapedCtx_ = ctx_;
+            retVal = -3;
+            break;
+        }
         if (ctx_.rip == 0) {
             retVal = static_cast<int64_t>(ctx_.gpr[0]);
             break;

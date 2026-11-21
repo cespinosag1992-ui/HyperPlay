@@ -115,6 +115,16 @@ public:
     /// SEH (RtlUnwindEx/RtlRestoreContext): las llamadas anidadas más profundas que `depth`
     /// terminan en cuanto vuelven al despachador; INT_MAX lo desactiva.
     void abortNestedAbove(int depth) noexcept { abortAbove_ = depth; }
+    /// SEH: la próxima callGuestNested vigila si el invitado abandona la llamada saltando a un
+    /// marco exterior (CoreCLR reanuda tras un catch con su propio ClrRestoreNonvolatileContext,
+    /// sin RtlRestoreContext). Si pasa, la llamada termina y takeEscape() da ese contexto.
+    void watchNextEscape() noexcept { watchEscape_ = true; }
+    bool takeEscape(CpuContext& out) noexcept {
+        if (!escaped_) return false;
+        escaped_ = false;
+        out = escapedCtx_;
+        return true;
+    }
     void stop() override;
     [[nodiscard]] size_t translatedBlockCount() const noexcept override;
 
@@ -716,6 +726,9 @@ private:
     bool stopped_ = false;
     int nestDepth_ = 0;
     int abortAbove_ = 0x7FFFFFFF;
+    bool watchEscape_ = false;
+    bool escaped_ = false;
+    CpuContext escapedCtx_{};
     bool emitOk_ = true;
     std::string lastError_;
 };

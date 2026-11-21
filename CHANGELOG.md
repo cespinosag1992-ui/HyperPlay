@@ -29,8 +29,13 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 - Engine: `PUSHFQ`/`POPFQ`, `NtQuerySystemInformation` (process list), .NET settings now passed in
   the environment block that CoreCLR reads, SDL uses only XInput controllers in every game, safer
   exception dispatch over corrupt stacks.
-- Stardew Valley still stops in its startup code (`Game1` static constructor) on a corrupt .NET
-  object; under investigation.
+- Fixed: an old Unity-only workaround wrote into whatever a game stored in TLS slot 1; in
+  Stardew Valley it corrupted .NET objects. It now applies only to Unity games.
+- Exceptions: `RtlVirtualUnwind` now reports where registers were saved (the .NET garbage
+  collector needs it), and resuming after a .NET `catch` (CoreCLR jumps to the target frame by
+  itself) is detected and applied correctly. Translator: `PTEST`.
+- Stardew Valley now gets through `Game1`'s startup and stops later (`LocalMultiplayer`, a type
+  that fails to load); under investigation.
 - Tested: Celeste (60 FPS) and Hollow Knight (menu) still work.
 
 ### Español
@@ -56,8 +61,13 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 - Motor: `PUSHFQ`/`POPFQ`, `NtQuerySystemInformation` (lista de procesos), los ajustes de .NET van
   ahora en el bloque de entorno que lee CoreCLR, SDL usa solo mandos XInput en todos los juegos y
   el despacho de excepciones resiste pilas corruptas.
-- Stardew Valley aún se para en su código de arranque (constructor estático de `Game1`) por un
-  objeto .NET corrupto; en investigación.
+- Arreglado: un apaño antiguo solo para Unity escribía en lo que cualquier juego guardara en el
+  slot TLS 1; en Stardew Valley corrompía objetos .NET. Ahora solo se aplica a juegos Unity.
+- Excepciones: `RtlVirtualUnwind` indica ahora dónde se guardó cada registro (lo necesita el
+  recolector de basura de .NET), y la reanudación tras un `catch` de .NET (CoreCLR salta él mismo
+  al marco destino) se detecta y se aplica bien. Traductor: `PTEST`.
+- Stardew Valley ya pasa el arranque de `Game1` y se para más adelante (`LocalMultiplayer`, un
+  tipo que no carga); en investigación.
 - Probado: Celeste (60 FPS) y Hollow Knight (menú) siguen funcionando.
 
 ## 1.1.0
