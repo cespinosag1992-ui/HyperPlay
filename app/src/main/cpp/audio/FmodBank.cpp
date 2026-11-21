@@ -273,14 +273,23 @@ bool Model::ingest(Bank& bank, int bankIndex) {
             t.items.push_back(it);
             t.length = std::max(t.length, it.start + it.length);
         });
-        // Regiones de bucle: TRNB = id, región, inicio, fin, ... (inicio < fin).
+        // Saltos: TRNB = id, región destino (+16), inicio (+32), fin (+36). Los de 60 bytes con
+        // inicio == fin son el final de una región de bucle: vuelven al inicio de la región, cuya
+        // posición está en la TLNB tras su GUID (u32). Sin encontrarla, al principio.
         for (auto& [p, sz] : transitions[id]) {
-            if (sz < 40) continue;
-            LoopRegion r;
-            r.start = rd<uint32_t>(p + 32);
-            r.end = rd<uint32_t>(p + 36);
-            if (r.end > r.start) t.loops.push_back(r);
-            else if (r.end == r.start && r.start > 0) t.sustains.push_back(r.start);
+            if (sz != 60) continue;
+            const uint32_t s = rd<uint32_t>(p + 32), e = rd<uint32_t>(p + 36);
+            if (s != e || s == 0) continue;
+            TimelineJump j;
+            j.at = s;
+            const Guid region = Guid::at(p + 16);
+            for (size_t o = 32; o + 20 <= raw.second; ++o) {
+                if (std::memcmp(raw.first + o, region.b, 16) == 0) {
+                    j.to = rd<uint32_t>(raw.first + o + 16);
+                    break;
+                }
+            }
+            if (j.to < j.at) t.jumps.push_back(j);
         }
     }
     for (auto& [id, raw] : rawMulti) {

@@ -49,8 +49,11 @@ struct TimelineItem {
     uint32_t length = 0;
 };
 
-struct LoopRegion {
-    uint32_t start = 0, end = 0;
+/// Salto incondicional de la línea de tiempo: al llegar a `at` vuelve a `to` (fin de una región de
+/// bucle -> su inicio). TRNB de 60 bytes con inicio == fin; los de 86 bytes llevan condiciones
+/// (parámetros) y aún no se aplican.
+struct TimelineJump {
+    uint32_t at = 0, to = 0;
 };
 
 struct EventDef {
@@ -62,8 +65,7 @@ struct EventDef {
 
 struct TimelineDef {
     std::vector<TimelineItem> items;
-    std::vector<LoopRegion> loops;
-    std::vector<uint32_t> sustains;  // puntos de sostén (TRNB con inicio == fin)
+    std::vector<TimelineJump> jumps;
     uint32_t length = 0;  // fin del último instrumento
 };
 

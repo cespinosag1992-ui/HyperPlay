@@ -55,8 +55,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   Firelight code): it reads the game's sound banks, decodes their Vorbis sounds with Android and
   mixes them at 48 kHz. Tested on the phone: title ambience (looping), menu music and interface
   sounds. Supported: events and timelines, random variations, nested events, loops and sustain
-  points, bus/VCA volume and pause, long music decoded in blocks, a soft limiter. Still missing:
-  music layers driven by game parameters, 3D position and snapshots.
+  points, bus/VCA volume and pause, long music decoded in blocks, a soft limiter. Tested in the
+  prologue: footsteps, jump, landing, ambience and music. Still missing: music layers driven by
+  game parameters, 3D position and snapshots.
+- Loading screen: games that draw with their own Vulkan (Celeste) now leave it as soon as they
+  show something (before it stayed up to 45 s).
 - Fixed: Mono sometimes aborted (`mono-mmap-windows.c:132`) because `VirtualQuery` reported a
   just-reserved region as free; and a folder listing could come back empty when a handle number
   was reused (Celeste: "Missing Language Files").
@@ -125,8 +128,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   Android y los mezcla a 48 kHz. Probado en el teléfono: ambiente del título (en bucle), música
   del menú y sonidos de la interfaz. Incluye: eventos y líneas de tiempo, variaciones aleatorias,
   eventos anidados, bucles y puntos de sostén, volumen y pausa de buses/VCA, música larga
-  decodificada por bloques y un limitador suave. Falta: capas de la música según los parámetros
-  del juego, posición 3D y snapshots.
+  decodificada por bloques y un limitador suave. Probado en el prólogo: pasos, salto, aterrizaje,
+  ambiente y música. Falta: capas de la música según los parámetros del juego, posición 3D y
+  snapshots.
+- Pantalla de carga: los juegos que dibujan con su propio Vulkan (Celeste) la quitan en cuanto
+  muestran algo (antes podía durar hasta 45 s).
 - Arreglado: Mono a veces abortaba (`mono-mmap-windows.c:132`) porque `VirtualQuery` daba por
   libre una región recién reservada; y el listado de una carpeta podía salir vacío al reutilizarse
   un número de handle (Celeste: "Missing Language Files").

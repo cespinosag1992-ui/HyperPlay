@@ -12,12 +12,17 @@
 //   - vkQueuePresentKHR (cuenta frames para el HUD y la pantalla de carga)
 //   - depuración (VK_EXT_debug_utils/report se ocultan: sus callbacks serían código invitado)
 
+#include <cstdint>
+
 namespace hyperplay::vkpass {
 
 using RegisterFn = void (*)(void* fn, const char* name);
 
 /// `reg` registra un puntero de función nativo como trampolín (NativeDllInterceptor).
 void init(RegisterFn reg);
+
+/// Fotogramas que el juego ha presentado por Vulkan (para quitar la pantalla de carga).
+uint64_t presentCount();
 
 /// GetProcAddress(vulkan-1.dll, name). nullptr si no existe.
 void* guestProcAddr(const char* name);

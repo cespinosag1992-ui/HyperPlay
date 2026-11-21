@@ -1683,6 +1683,10 @@ static ThunkInFlight& myInFlight() {
 
 static void logTopThunks(uint64_t elapsedMs);
 
+namespace hoststack {
+void dump(int tid);
+}
+
 static void startStallWatchdog() {
     static std::once_flag s_once;
     std::call_once(s_once, [] {
@@ -1697,6 +1701,29 @@ static void startStallWatchdog() {
                     std::memcpy(last, now, sizeof(last));
                     const int s = std::atoi(now);
                     if (s > 0 && s <= 120) runWaitProfile(s);
+                }
+                // setprop debug.hyperplay.dumpstacks <n> (cada valor nuevo): estado, RIP, pila
+                // invitada y pila nativa de todos los hilos del juego (cuelgues sin thunk largo).
+                static char s_lastDump[PROP_VALUE_MAX] = {};
+                char dp[PROP_VALUE_MAX] = {};
+                __system_property_get("debug.hyperplay.dumpstacks", dp);
+                if (dp[0] != 0 && std::strcmp(dp, s_lastDump) != 0) {
+                    std::memcpy(s_lastDump, dp, sizeof(s_lastDump));
+                    std::vector<int> tids;
+                    {
+                        std::lock_guard<std::mutex> lock(s_inFlightMutex);
+                        for (const auto& [tid, s] : s_inFlight) tids.push_back(tid);
+                    }
+                    for (int tid : tids) {
+                        OryonEmitterBackend* b = OryonEmitterBackend::forThread(tid);
+                        if (b == nullptr) continue;
+                        LOGW("[Volcado] tid=%d estado=%d RIP=0x%llx", tid, b->runState(),
+                             static_cast<unsigned long long>(b->context().rip));
+                        char tag[40];
+                        std::snprintf(tag, sizeof(tag), "[Volcado] tid=%d", tid);
+                        b->logGuestStackChain(tag);
+                        hoststack::dump(tid);
+                    }
                 }
                 char sp[PROP_VALUE_MAX] = {};
                 __system_property_get("debug.hyperplay.stallprof", sp);

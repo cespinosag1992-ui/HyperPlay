@@ -297,7 +297,14 @@ void decoderLoop() {
                     }
                 }
                 if (bankData == nullptr) continue;
-                st->opened = st->opened ? st->dec.restart() : st->dec.open(bankData, sample, e.setups);
+                std::string err;
+                st->opened = st->opened ? st->dec.restart() : st->dec.open(bankData, sample, e.setups, &err);
+                if (!st->opened) {
+                    LOGW("Stream del sonido %u (banco %d) no se pudo abrir: %s", st->subsound, st->bank, err.c_str());
+                    std::lock_guard<std::mutex> lock(st->mu);
+                    st->eof = true;
+                    continue;
+                }
                 eof = false;
             } else if (eof || have > st->rate * 3 / 2) {
                 continue;
@@ -537,12 +544,12 @@ bool mixInstance(Instance& in, float* out, int frames, float gain) {
     if (tl == nullptr) return false;
     if (in.active.size() != tl->items.size()) in.active.assign(tl->items.size(), false);
 
-    // Región de bucle que contiene el playhead (mientras no se esté parando).
-    const LoopRegion* loop = nullptr;
+    // Salto (fin de una región de bucle) que cae en este bloque, mientras no se esté parando.
+    const TimelineJump* jump = nullptr;
     if (!in.stopping) {
-        for (const auto& r : tl->loops) {
-            if (in.playhead >= r.start && in.playhead < r.end) {
-                loop = &r;
+        for (const auto& j : tl->jumps) {
+            if (in.playhead <= j.at && in.playhead + frames >= j.at) {  // >=: el bloque acaba justo ahí
+                jump = &j;
                 break;
             }
         }
@@ -559,24 +566,10 @@ bool mixInstance(Instance& in, float* out, int frames, float gain) {
         }
     }
 
-    // Punto de sostén en este bloque: la línea de tiempo se queda ahí (los instrumentos en bucle
-    // siguen sonando aunque el sostén caiga al final de su región) hasta que el juego pare el evento.
-    int64_t advance = frames;
-    bool sustaining = false;
-    if (!in.stopping) {
-        for (uint32_t s : tl->sustains) {
-            if (in.playhead <= s && in.playhead + frames > s) {
-                advance = std::min<int64_t>(advance, s - in.playhead);
-                sustaining = true;
-            }
-        }
-    }
-
     const float vol = gain * in.volume;
     for (auto& v : in.voices) {
         if (v.done) continue;
-        int64_t localEnd = static_cast<int64_t>(v.endAt) - in.playhead;  // fotogramas que le quedan
-        if (sustaining && v.loops != 0) localEnd = frames;
+        const int64_t localEnd = static_cast<int64_t>(v.endAt) - in.playhead;  // fotogramas que le quedan
         int n = static_cast<int>(std::min<int64_t>(frames, std::max<int64_t>(0, localEnd)));
         if (n <= 0) {
             v.done = true;
@@ -671,19 +664,18 @@ bool mixInstance(Instance& in, float* out, int frames, float gain) {
         }
     }
 
-    in.playhead += advance;
-    if (sustaining && in.state == kPlaying) in.state = kSustaining;
-    if (!sustaining && in.state == kSustaining) in.state = kPlaying;
-    // Bucle: vuelta al inicio de la región; los instrumentos que la cubren vuelven a sonar.
-    if (loop != nullptr && in.playhead >= loop->end) {
-        in.playhead = loop->start + (in.playhead - loop->end);
+    in.playhead += frames;
+    // Salto: vuelta al inicio de la región; los instrumentos que la cubren vuelven a sonar.
+    if (jump != nullptr && in.playhead >= jump->at) {
+        if (in.desc->category == 1) LOGI("Bucle %s: %u -> %u", in.desc->path.c_str(), jump->at, jump->to);
+        in.playhead = jump->to + (in.playhead - jump->at);
         for (auto& v : in.voices) {
             const TimelineItem& it = tl->items[static_cast<size_t>(v.item)];
-            if (it.start + it.length > loop->start) v.done = true;  // se reinicia
+            if (it.start + it.length > jump->to) v.done = true;  // se reinicia
         }
         for (size_t i = 0; i < tl->items.size(); ++i) {
             const TimelineItem& it = tl->items[i];
-            if (it.start + it.length > loop->start) in.active[i] = false;
+            if (it.start + it.length > jump->to) in.active[i] = false;
         }
         for (auto& c : in.children) c->state = kStopped;
     }
@@ -694,9 +686,14 @@ bool mixInstance(Instance& in, float* out, int frames, float gain) {
                       in.children.end());
 
     // Fin: pasado el último instrumento y sin voces vivas (ni bucle que lo retenga).
-    const bool pending = std::any_of(tl->items.begin(), tl->items.end(),
-                                     [&](const TimelineItem& it) { return in.playhead < it.start; });
-    return !in.voices.empty() || !in.children.empty() || pending || loop != nullptr || sustaining;
+    // Pendiente: algún instrumento aún no ha sonado y la línea de tiempo no ha pasado su final
+    // (con "< inicio" un instrumento que empieza justo en el borde del bloque nunca sonaba).
+    bool pending = false;
+    for (size_t i = 0; i < tl->items.size() && !pending; ++i) {
+        const TimelineItem& it = tl->items[i];
+        pending = !in.active[i] && in.playhead < static_cast<int64_t>(it.start) + it.length;
+    }
+    return !in.voices.empty() || !in.children.empty() || pending || jump != nullptr;
 }
 
 void mixerLoop() {
@@ -733,6 +730,9 @@ void mixerLoop() {
                     if (busPaused) continue;
                     if (in->state == kStarting) in->state = kPlaying;
                     if (!mixInstance(*in, mix.data(), kBlock, g)) {
+                        if (in->desc->category == 1) {
+                            LOGI("Fin %s (playhead %lld)", in->desc->path.c_str(), static_cast<long long>(in->playhead));
+                        }
                         in->state = kStopped;
                         in->voices.clear();
                         in->children.clear();
@@ -773,9 +773,17 @@ void mixerLoop() {
             s_peak = 0.f;
             s_blocks = 0;
         }
-        if (out.writePcm(pcm.data(), kBlock) < 0) {
-            out.stop();
-            started = false;
+        // AAudio acepta por tandas (espera 10 ms como mucho): se escribe el bloque entero; así el
+        // mezclador va al ritmo real de la salida y no se pierde audio.
+        int done = 0;
+        for (int tries = 0; done < kBlock && tries < 50 && !e.quit && !e.outputPaused; ++tries) {
+            const int32_t w = out.writePcm(pcm.data() + done * 2, kBlock - done);
+            if (w < 0) {
+                out.stop();
+                started = false;
+                break;
+            }
+            done += w;
         }
     }
     if (started) out.stop();
@@ -1042,7 +1050,7 @@ u64 Desc_Is3D(void* d, int* b) {
 }
 u64 Desc_IsOneshot(void* d, int* b) {
     std::lock_guard<std::recursive_mutex> lock(g_mu);
-    if (b) *b = validDesc(d) && static_cast<Desc*>(d)->tl && static_cast<Desc*>(d)->tl->loops.empty() ? 1 : 0;
+    if (b) *b = validDesc(d) && static_cast<Desc*>(d)->tl && static_cast<Desc*>(d)->tl->jumps.empty() ? 1 : 0;
     return kOk;
 }
 u64 Desc_False(void*, int* b) {
@@ -1142,6 +1150,7 @@ u64 Inst_Stop(void* p, u64 mode) {
     if (!validInstance(p)) return kErrInvalidHandle;
     auto* in = static_cast<Instance*>(p);
     if (in->state == kStopped) return kOk;
+    if (in->desc->category == 1) LOGI("Stop %s (modo %u)", in->desc->path.c_str(), static_cast<unsigned>(mode));
     in->stopping = true;
     if (mode == 1) {  // IMMEDIATE
         in->state = kStopped;

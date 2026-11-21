@@ -23,6 +23,7 @@ constexpr char kWin32Surface[] = "VK_KHR_win32_surface";
 constexpr char kAndroidSurface[] = "VK_KHR_android_surface";
 
 RegisterFn s_register = nullptr;
+std::atomic<uint64_t> s_presents{0};
 std::atomic<VkInstance> s_instance{VK_NULL_HANDLE};
 PFN_vkQueuePresentKHR s_queuePresent = nullptr;
 
@@ -180,6 +181,7 @@ VKAPI_ATTR VkResult VKAPI_CALL hpQueuePresentKHR(VkQueue queue, const VkPresentI
         }
     }
     DirectVulkanBridge::shared().countGuestPresent();
+    s_presents.fetch_add(1, std::memory_order_relaxed);
     return r;
 }
 
@@ -274,6 +276,8 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL hpGetDeviceProcAddr(VkDevice device, co
 }  // namespace
 
 void init(RegisterFn reg) { s_register = reg; }
+
+uint64_t presentCount() { return s_presents.load(std::memory_order_relaxed); }
 
 void* guestProcAddr(const char* name) {
     if (name == nullptr) return nullptr;

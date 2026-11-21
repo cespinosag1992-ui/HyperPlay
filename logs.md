@@ -749,3 +749,11 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - Una vez "System.Exception: Missing Language Files" (intermitente): NtCreateFile olvida el listado del fd y el listado se rehace si el fd es otra carpeta (dev/ino).
 - UI: con pulsación larga (700 ms) en el título: `title_firstinput`, `whoosh_list_in`, `rollover_down`, `rollover_up`.
 - `setprop debug.hyperplay.fmodnative 0` = shim mudo. Gate: `testDebugUnitTest lintDebug assembleRelease` exit=0.
+## 2026-11-20 — FMOD nativo: ritmo real, saltos de la línea de tiempo, música del prólogo
+- Mezclador iba ~6x más rápido que el tiempo real (registro de 30 s cada ~5 s): `AAudioStream_write` con 10 ms de espera devuelve escrituras parciales y se ignoraban. Ahora se escribe el bloque entero.
+- `music/lvl0/intro` (ola en 96000, 53 s por bloques): "Fin ... (playhead 96000)" -> el instrumento que empieza justo en el borde de un bloque nunca sonaba. "Pendiente" = no activo y playhead < fin.
+- `music/menu/level_select` terminaba a los 94 s (4512000): el TRNB de 60 bytes con inicio == fin es un SALTO al inicio de la región (posición del GUID de la región en la TLNB), no un sostén. Condición `playhead + frames >= at` (4512000 es múltiplo de 480).
+- Prólogo: `savefile_begin`, `env/amb/00_prologue`, `intro_vignette`, `music/lvl0/intro`, `spotlight_intro`, `char/madeline/footstep|jump|landing|idle_scratch`.
+- Pantalla de carga de HyperPlay en Celeste tardaba 45 s (esperaba draws de D3D11): cuenta también los presentes de Vulkan -> "arranque: juego dibujando a 60 FPS tras 11312 ms".
+- Diagnóstico nuevo: `setprop debug.hyperplay.dumpstacks <n>` -> estado, RIP, pila invitada y nativa de cada hilo.
+- El "congelado" del título era la pantalla de carga/pulsaciones perdidas, no un cuelgue (volcado: hilos en esperas normales, título a 60 FPS después).
