@@ -110,6 +110,11 @@ public:
     /// Llama a una función invitada (callback Win32) desde dentro de un thunk nativo con hasta
     /// 4 argumentos; preserva y restaura el contexto del llamador. Devuelve RAX o <0 si falla.
     int64_t callGuestNested(uintptr_t fn, const uint64_t* args, size_t argCount);
+    /// Profundidad de llamadas invitadas anidadas en curso en este hilo (0 = bucle principal).
+    [[nodiscard]] int nestDepth() const noexcept { return nestDepth_; }
+    /// SEH (RtlUnwindEx/RtlRestoreContext): las llamadas anidadas más profundas que `depth`
+    /// terminan en cuanto vuelven al despachador; INT_MAX lo desactiva.
+    void abortNestedAbove(int depth) noexcept { abortAbove_ = depth; }
     void stop() override;
     [[nodiscard]] size_t translatedBlockCount() const noexcept override;
 
@@ -709,6 +714,8 @@ private:
     static inline OryonEmitterBackend* s_activeBackend = nullptr;
     bool mode32_ = false;
     bool stopped_ = false;
+    int nestDepth_ = 0;
+    int abortAbove_ = 0x7FFFFFFF;
     bool emitOk_ = true;
     std::string lastError_;
 };

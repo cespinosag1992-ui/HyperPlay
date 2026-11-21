@@ -6,6 +6,39 @@ section of the tagged version into the GitHub Release notes.
 Cada versión se describe primero en inglés y luego en español. El workflow de release copia la
 sección de la versión etiquetada en las notas de la Release de GitHub.
 
+## Unreleased
+
+### English
+
+- **Engine: real Windows x64 exception handling (SEH).** C++ and .NET exceptions are now
+  dispatched like on Windows: vectored handlers, then each frame's handler from the module's
+  `.pdata` (and the JIT tables of Mono/CoreCLR), then the unhandled filter; `RtlUnwindEx`,
+  `RtlRestoreContext` (C++ catch blocks, `longjmp`), `RtlVirtualUnwind`, `RtlLookupFunctionEntry`
+  and `RtlCaptureContext` are implemented. Before, `RaiseException` did nothing.
+- **Stardew Valley (work in progress):** its .NET 6 runtime (CoreCLR) now starts, loads the game
+  and MonoGame and initializes SDL. Fixed on the way: forwarded exports of local DLLs, `SEC_IMAGE`
+  file mappings, 64 KB-aligned `VirtualAlloc`, unaligned `VirtualProtect`, `GetCPInfo`, CET
+  instructions (`RDSSP`), Windows version checks, file functions used by saves (`SetEndOfFile`,
+  `SetFileInformationByHandle`, real `FlushFileBuffers`). Not yet: the game draws with OpenGL,
+  which HyperPlay does not have yet.
+- Tested: Celeste (60 FPS) and Hollow Knight (menu) still work.
+
+### Español
+
+- **Motor: manejo real de excepciones de Windows x64 (SEH).** Las excepciones de C++ y .NET se
+  despachan como en Windows: manejadores vectoriales, después el manejador de cada marco según el
+  `.pdata` del módulo (y las tablas del JIT de Mono/CoreCLR), y por último el filtro de no
+  manejadas. Implementados `RtlUnwindEx`, `RtlRestoreContext` (bloques catch de C++, `longjmp`),
+  `RtlVirtualUnwind`, `RtlLookupFunctionEntry` y `RtlCaptureContext`. Antes `RaiseException` no
+  hacía nada.
+- **Stardew Valley (en curso):** su runtime .NET 6 (CoreCLR) ya arranca, carga el juego y
+  MonoGame e inicia SDL. Arreglado por el camino: exports reenviados de DLL locales, mapeos
+  `SEC_IMAGE`, `VirtualAlloc` alineado a 64 KB, `VirtualProtect` no alineado, `GetCPInfo`,
+  instrucciones CET (`RDSSP`), comprobaciones de versión de Windows y funciones de archivo que usan
+  los guardados (`SetEndOfFile`, `SetFileInformationByHandle`, `FlushFileBuffers` real). Falta: el
+  juego dibuja con OpenGL, que HyperPlay aún no tiene.
+- Probado: Celeste (60 FPS) y Hollow Knight (menú) siguen funcionando.
+
 ## 1.1.0
 
 ### English

@@ -4715,16 +4715,9 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
         uint8_t op2 = 0;
         if (!reader.u8(op2)) return fail("0F truncado");
 
-        if (prefixF3 && op2 == 0x1E) {
-            uint8_t endbr = 0;
-            if (!reader.u8(endbr)) return fail("ENDBR truncado");
-            if (endbr == 0xFA || endbr == 0xFB) {
-                emitNop();
-                return finish();
-            }
-            return fail("0F 1E no reconocido");
-        }
-
+        // F3 0F 1E: ENDBR64/32 (FA/FB) y RDSSPD/Q (CET). Sin pila sombra (como una CPU sin CET)
+        // son NOP: RDSSP deja el registro sin tocar (CoreCLR lee 0 = "sin CET"). Los decodifica
+        // el caso genérico 0F 19..1F de abajo (ModRM completo, con REX).
         if (op2 == 0x0D || op2 == 0x18 || (op2 >= 0x19 && op2 <= 0x1F)) {
             // 0F 0D: PREFETCH / PREFETCHW
             // 0F 18: PREFETCHh (PREFETCHNTA, PREFETCHT0-T2)
@@ -10078,6 +10071,29 @@ TranslatedBlock* OryonEmitterBackend::translateBlock(uintptr_t guestRip) {
             lastError_ = "RIP fuera del rango de código PE / DLLs";
             return nullptr;
         }
+        // Rangos contiguos (el montón de código de CoreCLR se confirma página a página): una
+        // instrucción que cruza al rango siguiente no debe quedar truncada.
+        for (int extend = 0; extend < 8 && available < kMaxGuestBytesPerBlock; ++extend) {
+            const uintptr_t end = guestRip + available;
+            bool grown = false;
+            for (const auto& r : codeRanges_) {
+                if (r.base <= end && r.base + r.size > end) {
+                    available = std::min<size_t>(kMaxGuestBytesPerBlock, r.base + r.size - guestRip);
+                    grown = true;
+                    break;
+                }
+            }
+            if (!grown) {
+                CodeRange shared{};
+                OryonEmitterBackend* main = s_activeBackend;
+                if (main != nullptr && main != this && main->findCodeRange(end, shared) && shared.base <= end) {
+                    codeRanges_.push_back(shared);
+                    available = std::min<size_t>(kMaxGuestBytesPerBlock, shared.base + shared.size - guestRip);
+                    grown = true;
+                }
+            }
+            if (!grown) break;
+        }
     } else if (codeSize_ != 0) {
         if (guestRip < codeBase_ || guestRip >= codeBase_ + codeSize_) {
             lastError_ = "RIP fuera del rango de código PE";
@@ -10634,6 +10650,9 @@ int64_t OryonEmitterBackend::executeEntry(void* entryPoint) {
     uintptr_t lastBlockRip = 0;  // diagnóstico: de dónde se llegó a una RIP intraducible
     for (uint64_t step = 0; !stopped_; ++step) {
         if (ctx_.rip == 0) {
+            LOGI("executeEntry: fin del hilo (RIP=0) RAX=0x%llx RSP=0x%llx bloque previo=%p",
+                 static_cast<unsigned long long>(ctx_.gpr[0]), static_cast<unsigned long long>(ctx_.gpr[4]),
+                 reinterpret_cast<void*>(lastBlockRip));
             return static_cast<int64_t>(ctx_.gpr[0]);
         }
         // Suspensión y SMC antes de buscar el bloque: una invalidación pendiente nunca ejecuta
@@ -10850,6 +10869,11 @@ int64_t OryonEmitterBackend::callGuestNested(uintptr_t fn, const uint64_t* args,
         return -1;
     }
     const NestedRunState nestedState(runState_, kRunning);
+    struct DepthGuard {
+        int& d;
+        explicit DepthGuard(int& x) : d(x) { ++d; }
+        ~DepthGuard() { --d; }
+    } depthGuard(nestDepth_);
     const CpuContext savedCtx = ctx_;
     uintptr_t sp = ctx_.gpr[4];
     if (sp == 0 || (stackBase_ != nullptr && (sp < reinterpret_cast<uintptr_t>(stackBase_) ||
@@ -10887,7 +10911,7 @@ int64_t OryonEmitterBackend::callGuestNested(uintptr_t fn, const uint64_t* args,
 
     int64_t retVal = -2;
     for (uint64_t step = 0; step < kMaxDispatchSteps; ++step) {
-        if (stopped_) break;
+        if (stopped_ || nestDepth_ > abortAbove_) break;  // SEH: desenrollado hacia un marco exterior
         if (ctx_.rip == 0) {
             retVal = static_cast<int64_t>(ctx_.gpr[0]);
             break;
@@ -10962,9 +10986,14 @@ int64_t OryonEmitterBackend::callDllEntryNested(void* entryPoint, void* dllBase)
         return -4;
     }
 
+    struct DepthGuard {
+        int& d;
+        explicit DepthGuard(int& x) : d(x) { ++d; }
+        ~DepthGuard() { --d; }
+    } depthGuard(nestDepth_);
     int64_t retVal = 0;
     for (uint64_t step = 0; step < kMaxDispatchSteps; ++step) {
-        if (stopped_) break;
+        if (stopped_ || nestDepth_ > abortAbove_) break;
         if (ctx_.rip == 0) {
             retVal = static_cast<int64_t>(ctx_.gpr[0]);
             LOGI("DllMain anidado finalizo con exito: RAX=%ld", static_cast<long>(retVal));

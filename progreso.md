@@ -4,6 +4,15 @@
 > Última actualización: 2026-11-20 20:10 (Silksong arranca sin internet: TryEnterCriticalSection; cierre por pila en CreateFileW; servidor de informes publicado; registros que se borran al enviarse; gate verde)
 > **ADB:** el puerto de depuración inalámbrica cambia al reactivarla; descubrir con `adb mdns services` (último: `192.168.0.2:33237`; si mDNS no lo ve: barrido de ping + `scratchpad/portscan.ps1` 30000-50000). Tras pruebas sin red, SIEMPRE `cmd connectivity set-package-networking-enabled true com.murdoc820.hyperplay`.
 
+## Stardew Valley (2026-11-21 09:30) — elegido sobre DmC (pedido del usuario: uno de los dos)
+- Juego .NET 6 autocontenido (apphost + hostfxr + CoreCLR + clrjit), MonoGame DesktopGL (SDL2 + OpenGL), OpenAL Soft.
+- Hecho: arranque de CoreCLR hasta `SdlGamePlatform` (SDL_Init de vídeo). SEH x64 completo (`loader/GuestSeh.cpp` + `sehimpl` en NativeDllInterceptor): VEH -> marcos .pdata/tablas JIT -> filtro; RtlUnwindEx/RtlRestoreContext (consolidación catch C++, longjmp); centinela RIP=0 de llamadas anidadas cruzado con "contexto padre"; corte de anidadas (`abortNestedAbove`). Diagnóstico: `setprop debug.hyperplay.sehlog 1`.
+- Arreglos: forwarders de DLL locales (api-ms-win-crt -> ucrtbase), SEC_IMAGE, VirtualAlloc alineado a 64 KB, VirtualProtect no alineado, GetCPInfo (MaxCharSize 4 con ACP UTF-8: con 0 .NET daba "Stack overflow"), VirtualQuery de la pila invitada, RDSSP/ENDBR como NOP, rangos de código contiguos (JIT por páginas), VerifyVersionInfoW, NUMA/afinidad, ETW (EventRegister...), DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1, DOTNET_EnableDiagnostics=0, archivos (SetEndOfFile, SetFileInformationByHandle rename/delete/size, LockFileEx, FlushFileBuffers con fsync).
+- `debug.hyperplay.dumpstacks` solo actúa ante un valor NUEVO tras arrancar (uno viejo provocaba SIGILL en el arranque).
+- Siguiente: **OpenGL**. SDL WIN_VideoInit falla (CreateDCW/GDI son stubs) y luego no hay opengl32. Plan: opengl32.dll propio en host (wgl* + gl* -> GLES 3 con EGL sobre la ventana del juego; los shaders de MonoGame ya son compatibles con GLSL ES), GDI mínimo (CreateDCW, GetDeviceCaps, CreateDIBSection, ChoosePixelFormat/SetPixelFormat/SwapBuffers), argumentos float de los thunks GL desde XMM. Luego: audio OpenAL Soft (soft_oal.dll, salida WinMM/WASAPI), guardados en %APPDATA%\StardewValley\Saves.
+- Regresión comprobada: Celeste 60 FPS, Hollow Knight menú.
+- Scripts de prueba: scratchpad `sv.ps1` (Stardew) y `game.ps1 -X -Y` (portada).
+
 ## Estado y pendientes (2026-11-21 07:20)
 - **Hecho**:
   - Sonido de Celeste terminado (buses, snapshots, transiciones con condición). Faltan solo efectos (reverb) y tono.

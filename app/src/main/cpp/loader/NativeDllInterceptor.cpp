@@ -18,6 +18,7 @@
 #include "SoftRaster.h"
 #include "Win64ThunkAbi.h"
 #include "Win64Context.h"
+#include "GuestSeh.h"
 #include "cpu/OryonEmitterBackend.h"
 #include "cpu/OryonSiliconScheduler.h"
 #include "gfx/DirectVulkanBridge.h"
@@ -55,6 +56,7 @@
 #include <cstdio>
 #include <cwchar>
 #include <cwctype>
+#include <sys/statvfs.h>
 #include <filesystem>
 #include <limits>
 #include <map>
@@ -303,6 +305,14 @@ static void* guestThreadTrampoline(void* arg) {
 
 // Backend que despacha el thunk en curso en este hilo (para llamar callbacks invitados).
 thread_local OryonEmitterBackend* t_dispatchBackend = nullptr;
+
+// SEH: durante un thunk, contexto del llamador (RSP ya sin la dirección de retorno) y la propia
+// dirección de retorno; RtlCaptureContext/RaiseException parten de ahí. Un thunk que "no vuelve"
+// (RtlRestoreContext, RtlUnwindEx) deja en t_ctxOverride el contexto con el que seguir.
+thread_local CpuContext* t_thunkCtx = nullptr;
+thread_local uint64_t t_thunkRet = 0;
+thread_local bool t_ctxOverride = false;
+thread_local CpuContext t_ctxOverrideValue{};
 
 // kernel32!ExitThread: termina el hilo invitado actual al volver del thunk (dispatchThunk pone
 // RIP=0). Antes era un stub que volvía y el código seguía tras la llamada "sin retorno": Mono
@@ -1013,29 +1023,280 @@ int32_t win_RegQueryInfoKeyW(uint64_t hKey, void* cls, uint32_t* clsChars, uint3
 // RtlInstallFunctionTableCallback. El desenrollado de pila lo hace el JIT, no Windows: las
 // tablas de funciones solo se aceptan.
 // ---------------------------------------------------------------------------------------------
-uint32_t win_RtlAddGrowableFunctionTable(void** dynamicTable, void*, uint32_t, uint32_t, uint64_t, uint64_t) {
-    static std::atomic<uintptr_t> s_next{0x7AB1E000};
-    if (dynamicTable != nullptr) *dynamicTable = reinterpret_cast<void*>(s_next.fetch_add(0x10));
-    return 0;  // STATUS_SUCCESS
+// Desde el SEH propio (GuestSeh), las tablas se guardan de verdad: RtlLookupFunctionEntry las
+// consulta para el código generado por los JIT (CoreCLR, Mono).
+uint32_t win_RtlAddGrowableFunctionTable(void** dynamicTable, void* table, uint32_t count, uint32_t max,
+                                         uint64_t rangeBase, uint64_t rangeEnd) {
+    return seh::addGrowableTable(dynamicTable, static_cast<const seh::RuntimeFunction*>(table), count, max, rangeBase,
+                                 rangeEnd);
 }
 
-void win_RtlGrowFunctionTable(void*, uint32_t) {}
+void win_RtlGrowFunctionTable(void* table, uint32_t count) { seh::growTable(table, count); }
 
-void win_RtlDeleteGrowableFunctionTable(void*) {}
+void win_RtlDeleteGrowableFunctionTable(void* table) { seh::deleteGrowableTable(table); }
 
-int32_t win_RtlInstallFunctionTableCallback(uint64_t, uint64_t, uint32_t, void*, void*, const void*) {
-    return 1;
+int32_t win_RtlInstallFunctionTableCallback(uint64_t tableId, uint64_t base, uint32_t length, void* callback,
+                                            void* context, const void*) {
+    return seh::installCallback(tableId, base, length, reinterpret_cast<uint64_t>(callback),
+                                reinterpret_cast<uint64_t>(context))
+               ? 1
+               : 0;
 }
 
-int32_t win_RtlAddFunctionTable(void*, uint32_t, uint64_t) {
-    return 1;
+int32_t win_RtlAddFunctionTable(void* table, uint32_t count, uint64_t base) {
+    return seh::addTable(static_cast<const seh::RuntimeFunction*>(table), count, base) ? 1 : 0;
 }
 
-int32_t win_RtlDeleteFunctionTable(void*) {
-    return 1;
-}
+int32_t win_RtlDeleteFunctionTable(void* table) { return seh::deleteTable(table) ? 1 : 0; }
+
+// Definidas tras el SEH (sehimpl).
+void win_RtlRestoreContext(void* context, void* record);
+void win_RtlUnwind(void* targetFrame, void* targetIp, void* record, void* returnValue);
+void win_RtlRaiseException(void* record);
 
 int32_t win_AreFileApisANSI() {
+    return 1;
+}
+
+// --- .NET 6 (CoreCLR, Stardew Valley) -----------------------------------------------------------
+// Afinidad: todos los núcleos (8). El GC de CoreCLR falla al crearse si devuelve FALSE.
+int32_t win_GetProcessAffinityMask(void*, uint64_t* process, uint64_t* system) {
+    if (process != nullptr) *process = 0xFF;
+    if (system != nullptr) *system = 0xFF;
+    return 1;
+}
+
+uint32_t win_GetCurrentProcessorNumber() {
+    const int cpu = sched_getcpu();
+    return cpu >= 0 ? static_cast<uint32_t>(cpu) : 0u;
+}
+
+uint32_t win_WerRegisterRuntimeExceptionModule(const char16_t*, void*) { return 0; }  // S_OK
+
+// ntdll!RtlGetVersion: Windows 10 22H2 (como GetVersionEx).
+uint32_t win_RtlGetVersion(uint32_t* info) {
+    if (info == nullptr) return 0xC000000Du;
+    info[1] = 10;     // dwMajorVersion
+    info[2] = 0;      // dwMinorVersion
+    info[3] = 19045;  // dwBuildNumber
+    info[4] = 2;      // VER_PLATFORM_WIN32_NT
+    return 0;
+}
+
+// VerSetConditionMask / VerifyVersionInfoW: HyperPlay es Windows 10 22H2 (10.0.19045).
+uint64_t win_VerSetConditionMask(uint64_t mask, uint32_t typeMask, uint8_t condition) {
+    for (uint32_t i = 0; i < 8; ++i) {
+        if ((typeMask & (1u << i)) != 0) mask |= static_cast<uint64_t>(condition & 7u) << (i * 3);
+    }
+    return mask;
+}
+
+int32_t win_VerifyVersionInfoW(const uint32_t* info, uint32_t typeMask, uint64_t conditions) {
+    if (info == nullptr) return 0;
+    // OSVERSIONINFOEXW: [1]=major [2]=minor [3]=build; wServicePackMajor en byte 276.
+    const uint64_t have[3] = {10, 0, 19045};
+    const uint32_t bits[3] = {0x2 /*MAJOR*/, 0x1 /*MINOR*/, 0x4 /*BUILD*/};
+    const uint32_t shift[3] = {1, 0, 2};
+    for (int i = 0; i < 3; ++i) {
+        if ((typeMask & bits[i]) == 0) continue;
+        const uint32_t cond = static_cast<uint32_t>((conditions >> (shift[i] * 3)) & 7u);
+        const uint64_t want = info[i + 1];
+        bool ok = true;
+        switch (cond) {
+            case 1: ok = have[i] == want; break;  // VER_EQUAL
+            case 2: ok = have[i] > want; break;   // VER_GREATER
+            case 3: ok = have[i] >= want; break;  // VER_GREATER_EQUAL
+            case 4: ok = have[i] < want; break;   // VER_LESS
+            case 5: ok = have[i] <= want; break;  // VER_LESS_EQUAL
+            default: break;
+        }
+        // Mayor/menor se comparan juntos en Windows: con mayor estrictamente mayor, el menor no cuenta.
+        if (!ok && i == 1 && (cond == 3 || cond == 2) && (typeMask & 0x2) != 0 && have[0] > info[1]) ok = true;
+        if (!ok && i == 2 && (cond == 3 || cond == 2) && (have[0] > info[1] || have[1] > info[2])) ok = true;
+        if (!ok) {
+            NativeDllInterceptor::win_SetLastError(1150);  // ERROR_OLD_WIN_VERSION
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// Ruta real de un handle de archivo (fd).
+std::string pathOfHandle(void* h) {
+    const int fd = fdFromHandle(h);
+    if (fd < 0) return {};
+    char buf[PATH_MAX] = {};
+    const ssize_t n = readlink(("/proc/self/fd/" + std::to_string(fd)).c_str(), buf, sizeof(buf) - 1);
+    return n > 0 ? std::string(buf, static_cast<size_t>(n)) : std::string();
+}
+
+// SetEndOfFile: el archivo termina en la posición actual (FileStream.SetLength, guardados).
+int32_t win_SetEndOfFile(void* h) {
+    const int fd = fdFromHandle(h);
+    if (fd < 0) return 0;
+    const off_t pos = lseek(fd, 0, SEEK_CUR);
+    return pos >= 0 && ftruncate(fd, pos) == 0 ? 1 : 0;
+}
+
+// Bloqueos de rango: un solo proceso usa los archivos del juego; se aceptan.
+int32_t win_LockFileEx(void*, uint32_t, uint32_t, uint32_t, uint32_t, void*) { return 1; }
+int32_t win_UnlockFileEx(void*, uint32_t, uint32_t, uint32_t, void*) { return 1; }
+int32_t win_SetFileTime(void*, const void*, const void*, const void*) { return 1; }
+int32_t win_SetFileAttributesW(const char16_t*, uint32_t) { return 1; }
+
+uint32_t win_GetLogicalDrives() { return (1u << 2) | (1u << 3); }  // C: y D:
+
+int32_t win_GetDiskFreeSpaceW(const char16_t*, uint32_t* sectorsPerCluster, uint32_t* bytesPerSector,
+                              uint32_t* freeClusters, uint32_t* totalClusters) {
+    struct statvfs v{};
+    const std::string dir = s_activeImage != nullptr ? s_activeImage->gameDir : std::string("/sdcard");
+    if (statvfs(dir.c_str(), &v) != 0) return 0;
+    const uint64_t cluster = 4096;
+    const uint64_t freeBytes = static_cast<uint64_t>(v.f_bavail) * v.f_frsize;
+    const uint64_t totalBytes = static_cast<uint64_t>(v.f_blocks) * v.f_frsize;
+    if (sectorsPerCluster != nullptr) *sectorsPerCluster = 8;
+    if (bytesPerSector != nullptr) *bytesPerSector = 512;
+    if (freeClusters != nullptr) *freeClusters = static_cast<uint32_t>(std::min<uint64_t>(freeBytes / cluster, 0xFFFFFFFFu));
+    if (totalClusters != nullptr) *totalClusters = static_cast<uint32_t>(std::min<uint64_t>(totalBytes / cluster, 0xFFFFFFFFu));
+    return 1;
+}
+
+// SetFileInformationByHandle: tamaño (FileEndOfFileInfo), borrar (FileDispositionInfo) y
+// renombrar (FileRenameInfo). El resto se acepta sin cambios.
+int32_t win_SetFileInformationByHandle(void* h, uint32_t infoClass, const void* info, uint32_t size) {
+    const int fd = fdFromHandle(h);
+    if (fd < 0 || info == nullptr) return 0;
+    switch (infoClass) {
+        case 6:  // FileEndOfFileInfo
+        case 5: {  // FileAllocationInfo
+            int64_t len = 0;
+            std::memcpy(&len, info, 8);
+            if (infoClass == 6) return ftruncate(fd, static_cast<off_t>(len)) == 0 ? 1 : 0;
+            return 1;
+        }
+        case 4: {  // FileDispositionInfo: DeleteFile (BOOLEAN)
+            if (*static_cast<const uint8_t*>(info) == 0) return 1;
+            const std::string p = pathOfHandle(h);
+            return !p.empty() && unlink(p.c_str()) == 0 ? 1 : 0;
+        }
+        case 3: {  // FileRenameInfo {BOOLEAN ReplaceIfExists; HANDLE Root; DWORD Len; WCHAR Name[]}
+            if (size < 24 || s_activeImage == nullptr) return 0;
+            const auto* b = static_cast<const uint8_t*>(info);
+            uint32_t nameBytes = 0;
+            std::memcpy(&nameBytes, b + 16, 4);
+            std::string name;
+            for (uint32_t i = 0; i + 1 < nameBytes + 1 && i / 2 < nameBytes / 2; i += 2) {
+                char16_t c = 0;
+                std::memcpy(&c, b + 20 + i, 2);
+                if (c < 0x80) name.push_back(static_cast<char>(c));
+                else if (c < 0x800) { name.push_back(static_cast<char>(0xC0 | (c >> 6))); name.push_back(static_cast<char>(0x80 | (c & 0x3F))); }
+                else { name.push_back(static_cast<char>(0xE0 | (c >> 12))); name.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F))); name.push_back(static_cast<char>(0x80 | (c & 0x3F))); }
+            }
+            const std::string from = pathOfHandle(h);
+            const std::string to = BionicPeLoader::resolveVirtualPath(*s_activeImage, name);
+            struct stat st{};
+            if (from.empty() || to.empty() || (b[0] == 0 && stat(to.c_str(), &st) == 0)) return 0;
+            const bool ok = rename(from.c_str(), to.c_str()) == 0;
+            __android_log_print(ANDROID_LOG_INFO, "HyperPlay.DllInterceptor", "SetFileInformationByHandle(rename) '%s' -> '%s' %s",
+                                from.c_str(), to.c_str(), ok ? "OK" : strerror(errno));
+            return ok ? 1 : 0;
+        }
+        default:
+            return 1;
+    }
+}
+
+// NUMA: un solo nodo (0). El GC de CoreCLR lo consulta al iniciar y falla si devuelve FALSE.
+int32_t win_GetNumaHighestNodeNumber(uint32_t* highest) {
+    if (highest != nullptr) *highest = 0;
+    return 1;
+}
+
+// HeapCompact: el heap de HyperPlay no se compacta; se informa de un bloque libre grande.
+size_t win_HeapCompact(void*, uint32_t) { return 0x100000; }
+
+// HyperPlay ejecuta siempre código x64 nativo (no WOW64).
+int32_t win_IsWow64Process(void*, int32_t* wow64) {
+    if (wow64 != nullptr) *wow64 = 0;
+    return 1;
+}
+
+void win_OutputDebugStringW(const char16_t* s) {
+    if (s == nullptr) return;
+    std::string out;
+    for (size_t i = 0; s[i] != 0 && i < 1024; ++i) out.push_back(s[i] < 0x80 ? static_cast<char>(s[i]) : '?');
+    __android_log_print(ANDROID_LOG_INFO, "HyperPlay.Guest", "%s", out.c_str());
+}
+
+// LCMapStringEx / LCMapStringW: mayúsculas/minúsculas (LCMAP_UPPERCASE/LOWERCASE) y clave de
+// ordenación (LCMAP_SORTKEY) simple. .NET sin ICU (modo NLS) la usa para ToUpper/ToLower y
+// GetSortKey.
+int32_t lcMapString(uint32_t flags, const char16_t* src, int32_t cchSrc, void* dest, int32_t cchDest) {
+    constexpr uint32_t kLower = 0x100, kUpper = 0x200, kSortKey = 0x400, kIgnoreCase = 0x1;
+    if (src == nullptr) return 0;
+    size_t n = 0;
+    if (cchSrc < 0) {
+        while (src[n] != 0) ++n;
+        ++n;  // incluye el NUL
+    } else {
+        n = static_cast<size_t>(cchSrc);
+    }
+    auto mapChar = [&](char16_t c, bool upper) -> char16_t {
+        if (c >= 0xD800 && c <= 0xDFFF) return c;  // sustitutos: sin cambio
+        const wint_t m = upper ? towupper(static_cast<wint_t>(c)) : towlower(static_cast<wint_t>(c));
+        return m <= 0xFFFF ? static_cast<char16_t>(m) : c;
+    };
+    if ((flags & kSortKey) != 0) {
+        // Bytes: cada carácter (sin mayúsculas si se ignoran) en big-endian + 1, y un 0 final.
+        size_t chars = n;
+        if (cchSrc < 0 && chars > 0) --chars;
+        const size_t need = chars * 2 + 1;
+        if (cchDest == 0 || dest == nullptr) return static_cast<int32_t>(need);
+        if (static_cast<size_t>(cchDest) < need) return 0;
+        auto* out = static_cast<uint8_t*>(dest);
+        for (size_t i = 0; i < chars; ++i) {
+            char16_t c = (flags & kIgnoreCase) != 0 ? mapChar(src[i], false) : src[i];
+            const uint32_t v = std::min<uint32_t>(static_cast<uint32_t>(c) + 1, 0xFFFF);
+            out[i * 2] = static_cast<uint8_t>(v >> 8);
+            out[i * 2 + 1] = static_cast<uint8_t>(v & 0xFF);
+        }
+        out[chars * 2] = 0;
+        return static_cast<int32_t>(need);
+    }
+    if (cchDest == 0 || dest == nullptr) return static_cast<int32_t>(n);
+    if (static_cast<size_t>(cchDest) < n) return 0;
+    auto* out = static_cast<char16_t*>(dest);
+    const bool upper = (flags & kUpper) != 0 && (flags & kLower) == 0;
+    const bool lower = (flags & kLower) != 0 && (flags & kUpper) == 0;
+    for (size_t i = 0; i < n; ++i) out[i] = upper ? mapChar(src[i], true) : lower ? mapChar(src[i], false) : src[i];
+    return static_cast<int32_t>(n);
+}
+
+int32_t win_LCMapStringEx(const char16_t*, uint32_t flags, const char16_t* src, int32_t cchSrc, void* dest,
+                          int32_t cchDest, void*, void*, intptr_t) {
+    return lcMapString(flags, src, cchSrc, dest, cchDest);
+}
+
+// ETW (EventSource de .NET): sin sesiones de trazado; registrar da un handle válido y escribir
+// no hace nada (ERROR_SUCCESS).
+uint32_t win_EventRegister(const void*, void*, void*, uint64_t* handle) {
+    static std::atomic<uint64_t> s_next{1};
+    if (handle != nullptr) *handle = s_next.fetch_add(1);
+    return 0;
+}
+uint32_t win_EventUnregister(uint64_t) { return 0; }
+uint32_t win_EventSetInformation(uint64_t, uint32_t, void*, uint32_t) { return 0; }
+uint32_t win_EventWriteTransfer(uint64_t, const void*, const void*, const void*, uint32_t, void*) { return 0; }
+uint32_t win_EventActivityIdControl(uint32_t, void* guid) {
+    if (guid != nullptr) std::memset(guid, 0, 16);
+    return 0;
+}
+uint8_t win_EventEnabled(uint64_t, const void*) { return 0; }
+
+// Registro de eventos de Windows: no hay visor de eventos; se acepta y no se guarda.
+void* win_RegisterEventSourceW(const char16_t*, const char16_t*) { return reinterpret_cast<void*>(0xE7E70001); }
+int32_t win_DeregisterEventSource(void*) { return 1; }
+int32_t win_ReportEventW(void*, uint16_t, uint16_t, uint32_t, void*, uint16_t, uint32_t, const char16_t**, void*) {
     return 1;
 }
 
@@ -1094,6 +1355,31 @@ void* resolveSystemExtraExport(const std::string& funcName) {
         {"RtlAddFunctionTable", reinterpret_cast<void*>(&win_RtlAddFunctionTable)},
         {"RtlDeleteFunctionTable", reinterpret_cast<void*>(&win_RtlDeleteFunctionTable)},
         {"AreFileApisANSI", reinterpret_cast<void*>(&win_AreFileApisANSI)},
+        {"IsWow64Process", reinterpret_cast<void*>(&win_IsWow64Process)},
+        {"HeapCompact", reinterpret_cast<void*>(&win_HeapCompact)},
+        {"RtlRestoreContext", reinterpret_cast<void*>(&win_RtlRestoreContext)},
+        {"RtlUnwind", reinterpret_cast<void*>(&win_RtlUnwind)},
+        {"RtlRaiseException", reinterpret_cast<void*>(&win_RtlRaiseException)},
+        {"GetNumaHighestNodeNumber", reinterpret_cast<void*>(&win_GetNumaHighestNodeNumber)},
+        {"GetProcessAffinityMask", reinterpret_cast<void*>(&win_GetProcessAffinityMask)},
+        {"GetCurrentProcessorNumber", reinterpret_cast<void*>(&win_GetCurrentProcessorNumber)},
+        {"WerRegisterRuntimeExceptionModule", reinterpret_cast<void*>(&win_WerRegisterRuntimeExceptionModule)},
+        {"RtlGetVersion", reinterpret_cast<void*>(&win_RtlGetVersion)},
+        {"VerSetConditionMask", reinterpret_cast<void*>(&win_VerSetConditionMask)},
+        {"VerifyVersionInfoW", reinterpret_cast<void*>(&win_VerifyVersionInfoW)},
+        {"SetEndOfFile", reinterpret_cast<void*>(&win_SetEndOfFile)},
+        {"LockFileEx", reinterpret_cast<void*>(&win_LockFileEx)},
+        {"UnlockFileEx", reinterpret_cast<void*>(&win_UnlockFileEx)},
+        {"SetFileTime", reinterpret_cast<void*>(&win_SetFileTime)},
+        {"SetFileAttributesW", reinterpret_cast<void*>(&win_SetFileAttributesW)},
+        {"GetLogicalDrives", reinterpret_cast<void*>(&win_GetLogicalDrives)},
+        {"GetDiskFreeSpaceW", reinterpret_cast<void*>(&win_GetDiskFreeSpaceW)},
+        {"SetFileInformationByHandle", reinterpret_cast<void*>(&win_SetFileInformationByHandle)},
+        {"OutputDebugStringW", reinterpret_cast<void*>(&win_OutputDebugStringW)},
+        {"LCMapStringEx", reinterpret_cast<void*>(&win_LCMapStringEx)},
+        {"RegisterEventSourceW", reinterpret_cast<void*>(&win_RegisterEventSourceW)},
+        {"DeregisterEventSource", reinterpret_cast<void*>(&win_DeregisterEventSource)},
+        {"ReportEventW", reinterpret_cast<void*>(&win_ReportEventW)},
         {"SetThreadErrorMode", reinterpret_cast<void*>(&win_SetThreadErrorMode)},
         {"GetSystemTimePreciseAsFileTime", reinterpret_cast<void*>(&win_GetSystemTimePreciseAsFileTime)},
         {"AppPolicyGetThreadInitializationType", reinterpret_cast<void*>(&win_AppPolicyGetThreadInitializationType)},
@@ -1115,6 +1401,15 @@ void* resolveSystemExtraExport(const std::string& funcName) {
 void* resolveRegistryExport(const std::string& funcName) {
     static const std::unordered_map<std::string, void*> kExports = {
         {"RegOpenKeyExW", reinterpret_cast<void*>(&win_RegOpenKeyExW)},
+        {"RegisterEventSourceW", reinterpret_cast<void*>(&win_RegisterEventSourceW)},
+        {"DeregisterEventSource", reinterpret_cast<void*>(&win_DeregisterEventSource)},
+        {"ReportEventW", reinterpret_cast<void*>(&win_ReportEventW)},
+        {"EventRegister", reinterpret_cast<void*>(&win_EventRegister)},
+        {"EventUnregister", reinterpret_cast<void*>(&win_EventUnregister)},
+        {"EventSetInformation", reinterpret_cast<void*>(&win_EventSetInformation)},
+        {"EventWriteTransfer", reinterpret_cast<void*>(&win_EventWriteTransfer)},
+        {"EventActivityIdControl", reinterpret_cast<void*>(&win_EventActivityIdControl)},
+        {"EventEnabled", reinterpret_cast<void*>(&win_EventEnabled)},
         {"RegOpenKeyExA", reinterpret_cast<void*>(&win_RegOpenKeyExA)},
         {"RegOpenKeyW", reinterpret_cast<void*>(&win_RegOpenKeyW)},
         {"RegCreateKeyExW", reinterpret_cast<void*>(&win_RegCreateKeyExW)},
@@ -1693,6 +1988,10 @@ static void startStallWatchdog() {
         std::thread([] {
             char last[PROP_VALUE_MAX] = {};
             __system_property_get("debug.hyperplay.waitprof", last);
+            // Volcado de pilas: solo ante un valor NUEVO tras arrancar (uno viejo que quedó puesto
+            // no debe interrumpir cada arranque; el desenrollado sobre código JIT es delicado).
+            static char s_lastDump[PROP_VALUE_MAX] = {};
+            __system_property_get("debug.hyperplay.dumpstacks", s_lastDump);
             for (;;) {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 char now[PROP_VALUE_MAX] = {};
@@ -1704,7 +2003,6 @@ static void startStallWatchdog() {
                 }
                 // setprop debug.hyperplay.dumpstacks <n> (cada valor nuevo): estado, RIP, pila
                 // invitada y pila nativa de todos los hilos del juego (cuelgues sin thunk largo).
-                static char s_lastDump[PROP_VALUE_MAX] = {};
                 char dp[PROP_VALUE_MAX] = {};
                 __system_property_get("debug.hyperplay.dumpstacks", dp);
                 if (dp[0] != 0 && std::strcmp(dp, s_lastDump) != 0) {
@@ -2062,8 +2360,20 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
     inFlight.a1.store(args[1], std::memory_order_relaxed);
     inFlight.since.store(monoMs(), std::memory_order_relaxed);
     inFlight.info.store(info, std::memory_order_release);
+    CpuContext* const prevThunkCtx = t_thunkCtx;
+    const uint64_t prevThunkRet = t_thunkRet;
+    t_thunkCtx = &ctx;
+    t_thunkRet = returnAddress;
     const uint64_t ret = win64abi::invokeThunk(target, args);
+    t_thunkCtx = prevThunkCtx;
+    t_thunkRet = prevThunkRet;
     inFlight.info.store(nullptr, std::memory_order_release);
+    if (t_ctxOverride) {
+        // RtlRestoreContext / RtlUnwindEx / RaiseException resuelta: se sigue en otro contexto.
+        t_ctxOverride = false;
+        ctx = t_ctxOverrideValue;
+        return true;
+    }
     inFlight.since.store(monoMs(), std::memory_order_relaxed);  // último thunk terminado
 
     if (logThisCall) {
@@ -2515,6 +2825,8 @@ static void* msvcrtOnlyExport(const std::string& fn) {
     if (fn == "fprintf" || fn == "vfprintf") return reinterpret_cast<void*>(&hp_msvcrt_fprintf);
     return nullptr;
 }
+
+static void* resolvePeExport(void* base, const PeInfo& pe, const char* lpProcName, int depth);
 
 void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, const std::string& funcName) {
     const std::string dll = toLower(dllName);
@@ -3093,7 +3405,9 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "SystemFunction036") result = reinterpret_cast<void*>(&win_SystemFunction036);
         else if (funcName == "RtlGenRandom") result = reinterpret_cast<void*>(&win_SystemFunction036);
         else if (funcName == "OpenProcessToken") result = reinterpret_cast<void*>(&win_OpenProcessToken);
-        else if (funcName.compare(0, 3, "Reg") == 0) result = resolveRegistryExport(funcName);
+        else if (funcName.compare(0, 3, "Reg") == 0 || funcName.compare(0, 5, "Event") == 0 ||
+                 funcName == "DeregisterEventSource" || funcName == "ReportEventW")
+            result = resolveRegistryExport(funcName);
     }
     if (!result && (dll.find("registry-l") != std::string::npos || dll.find("kernelbase") != std::string::npos)) {
         result = resolveRegistryExport(funcName);
@@ -3166,9 +3480,9 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
             if (dllBase != nullptr) {
                 auto it = s_activeImage->localDlls.find(localName);
                 if (it != s_activeImage->localDlls.end()) {
-                    uint32_t expRva = it->second.peInfo.findExportRva(funcName);
-                    if (expRva != 0) {
-                        result = static_cast<uint8_t*>(dllBase) + expRva;
+                    // Sigue los exports reenviados (api-ms-win-crt-* -> ucrtbase.dll del juego).
+                    if (void* exp = resolvePeExport(dllBase, it->second.peInfo, funcName.c_str(), 0)) {
+                        result = exp;
                         isGuestExport = true;
                     }
                 }
@@ -3339,11 +3653,23 @@ void* NativeDllInterceptor::win_VirtualAlloc(void* lpAddress, size_t dwSize, uin
     const size_t allocSize = (dwSize + pageSize - 1) & ~(pageSize - 1);
     if (allocSize < dwSize) return nullptr;
 
-    void* ptr = mmap(nullptr, allocSize, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // Windows devuelve siempre direcciones alineadas a la granularidad de asignación (64 KB) y
+    // hay runtimes que lo dan por hecho (CoreCLR calcula `ptr & ~0xFFFF` para su tabla de bloques
+    // y escribía antes del bloque). Se reserva de más y se recorta hasta la frontera de 64 KB.
+    constexpr size_t kGranularity = 0x10000;
+    void* ptr = mmap(nullptr, allocSize + kGranularity, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ptr == MAP_FAILED && (prot & PROT_EXEC) != 0) {
-        ptr = mmap(nullptr, allocSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        ptr = mmap(nullptr, allocSize + kGranularity, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     }
     if (ptr == MAP_FAILED) return nullptr;
+    {
+        const uintptr_t raw = reinterpret_cast<uintptr_t>(ptr);
+        const uintptr_t aligned = (raw + kGranularity - 1) & ~(kGranularity - 1);
+        if (aligned > raw) munmap(ptr, aligned - raw);
+        const uintptr_t tail = raw + allocSize + kGranularity - (aligned + allocSize);
+        if (tail > 0) munmap(reinterpret_cast<void*>(aligned + allocSize), tail);
+        ptr = reinterpret_cast<void*>(aligned);
+    }
 
     {
         std::lock_guard<std::mutex> lock(s_allocMutex);
@@ -3434,6 +3760,16 @@ int32_t NativeDllInterceptor::win_VirtualProtect(void* lpAddress, size_t dwSize,
     if (lpAddress == nullptr || dwSize == 0) return 0;
     const uint32_t oldProt = queryPageProt(reinterpret_cast<uintptr_t>(lpAddress));
     if (lpflOldProtect != nullptr) *lpflOldProtect = oldProt;
+    {
+        // Windows cambia las páginas completas que tocan [lpAddress, lpAddress+dwSize); mprotect
+        // exige dirección alineada (CoreCLR protege 0xb0 bytes en mitad de una página).
+        const uintptr_t page = static_cast<uintptr_t>(getpagesize());
+        const uintptr_t a = reinterpret_cast<uintptr_t>(lpAddress);
+        const uintptr_t start = a & ~(page - 1);
+        const uintptr_t end = (a + dwSize + page - 1) & ~(page - 1);
+        lpAddress = reinterpret_cast<void*>(start);
+        dwSize = end - start;
+    }
 
     const uint32_t pageProt = flNewProtect & 0xFFu;
     const bool executable = (flNewProtect & 0x70u) != 0 || (flNewProtect & 0x10u) != 0;
@@ -3988,6 +4324,64 @@ void* NativeDllInterceptor::win_MapViewOfFileEx(void* hFileMappingObject, uint32
         return nullptr;
     }
 
+    // SEC_IMAGE (0x1000000): vista con la disposición de imagen PE (cabeceras y secciones en su
+    // RVA), como el cargador de Windows. CoreCLR (.NET 6) abre así los ensamblados IL.
+    if ((mapping->flProtect & 0x1000000u) != 0 && mapping->fd >= 0) {
+        uint8_t hdr[4096] = {};
+        if (pread(mapping->fd, hdr, sizeof(hdr), 0) < 0x200 || hdr[0] != 'M' || hdr[1] != 'Z') {
+            win_SetLastError(193);  // ERROR_BAD_EXE_FORMAT
+            return nullptr;
+        }
+        uint32_t lfanew = 0;
+        std::memcpy(&lfanew, hdr + 0x3C, 4);
+        if (lfanew > sizeof(hdr) - 0x108 || std::memcmp(hdr + lfanew, "PE\0\0", 4) != 0) {
+            win_SetLastError(193);
+            return nullptr;
+        }
+        const uint8_t* fh = hdr + lfanew + 4;
+        uint16_t nSect = 0, optSize = 0;
+        std::memcpy(&nSect, fh + 2, 2);
+        std::memcpy(&optSize, fh + 16, 2);
+        const uint8_t* opt = fh + 20;
+        uint32_t sizeOfImage = 0, sizeOfHeaders = 0;
+        std::memcpy(&sizeOfImage, opt + 56, 4);
+        std::memcpy(&sizeOfHeaders, opt + 60, 4);
+        const size_t page = static_cast<size_t>(getpagesize());
+        const size_t imgSize = (static_cast<size_t>(sizeOfImage) + page - 1) & ~(page - 1);
+        const size_t sectOff = lfanew + 4 + 20 + optSize;
+        if (imgSize == 0 || sectOff + nSect * 40u > sizeof(hdr)) {
+            win_SetLastError(193);
+            return nullptr;
+        }
+        int iflags = MAP_PRIVATE | MAP_ANONYMOUS;
+        if (lpBaseAddress != nullptr) iflags |= MAP_FIXED_NOREPLACE;
+        void* img = ::mmap(lpBaseAddress, imgSize, PROT_READ | PROT_WRITE, iflags, -1, 0);
+        if (img == MAP_FAILED || (lpBaseAddress != nullptr && img != lpBaseAddress)) {
+            if (img != MAP_FAILED) ::munmap(img, imgSize);
+            win_SetLastError(8);
+            return nullptr;
+        }
+        auto* base = static_cast<uint8_t*>(img);
+        pread(mapping->fd, base, std::min<size_t>(sizeOfHeaders, imgSize), 0);
+        for (uint16_t i = 0; i < nSect; ++i) {
+            const uint8_t* sh = hdr + sectOff + i * 40u;
+            uint32_t va = 0, rawSize = 0, rawPtr = 0;
+            std::memcpy(&va, sh + 12, 4);
+            std::memcpy(&rawSize, sh + 16, 4);
+            std::memcpy(&rawPtr, sh + 20, 4);
+            if (va >= imgSize || rawSize == 0) continue;
+            pread(mapping->fd, base + va, std::min<size_t>(rawSize, imgSize - va), rawPtr);
+        }
+        {
+            std::lock_guard<std::mutex> lk(s_viewMutex);
+            s_mapViews[reinterpret_cast<uintptr_t>(img)] = {img, imgSize};
+        }
+        LOGI("win_MapViewOfFileEx(SEC_IMAGE): handle=%p -> addr=%p imagen=0x%zx, %u secciones", hFileMappingObject,
+             img, imgSize, nSect);
+        win_SetLastError(0);
+        return img;
+    }
+
     int prot = PROT_READ;
     // FILE_MAP_WRITE = 2, FILE_MAP_ALL_ACCESS = 0xF001F, FILE_MAP_COPY = 1
     if ((dwDesiredAccess & 2) != 0 || (dwDesiredAccess & 0xF0000) != 0 || dwDesiredAccess == 1) {
@@ -4187,6 +4581,333 @@ static std::atomic<uintptr_t> s_nextVehId{0xCAFE9001};
 static std::atomic<uintptr_t> s_unhandledFilter{0};
 static std::atomic<uint32_t> s_guestExceptionsLogged{0};
 
+// =============================================================================================
+// SEH x64 del huésped: VEH -> manejadores de marco (.pdata, como RtlDispatchException) ->
+// filtro de excepciones no manejadas. RtlUnwindEx llama a los manejadores de terminación y
+// reanuda en el marco destino; RtlRestoreContext consolida los catch de C++ y los longjmp.
+//
+// Los manejadores (código invitado) se ejecutan anidados (callGuestNested), con dirección de
+// retorno 0. Para que un desenrollado desde dentro de un manejador llegue a los marcos de fuera,
+// al encontrar ese centinela se continúa con el "contexto padre" (el del punto donde se lanzó la
+// excepción, o el marco destino de un catch). Al reanudar en un marco exterior, las llamadas
+// anidadas más profundas se cortan (abortNestedAbove) y el nivel del lanzamiento aplica el
+// contexto final.
+// =============================================================================================
+namespace sehimpl {
+using Ctx = std::array<uint8_t, win64ctx::kContextSize>;
+struct Level {
+    int depth;
+    uint64_t rsp;
+};
+thread_local std::vector<Level> t_levels;
+thread_local std::vector<Ctx> t_parents;
+thread_local bool t_pending = false;
+thread_local int t_pendingDepth = 0;
+alignas(16) thread_local Ctx t_pendingCtx{};
+
+struct DispatcherContext {
+    uint64_t controlPc, imageBase, functionEntry, establisherFrame, targetIp, contextRecord, languageHandler,
+        handlerData, historyTable;
+    uint32_t scopeIndex, fill0;
+};
+
+enum class Result { kContinue, kUnwound, kAborted, kUnhandled };
+
+// `setprop debug.hyperplay.sehlog 1`: cada marco recorrido por el despacho y el desenrollado.
+bool sehLog() {
+    static const bool on = [] {
+        char v[PROP_VALUE_MAX] = {};
+        return __system_property_get("debug.hyperplay.sehlog", v) > 0 && v[0] == '1';
+    }();
+    return on;
+}
+
+OryonEmitterBackend* backendHere() {
+    if (t_dispatchBackend != nullptr) return t_dispatchBackend;
+    return OryonEmitterBackend::forThread(static_cast<int>(gettid()));
+}
+
+uint64_t callGuest(uint64_t fn, const uint64_t* args, size_t argc) {
+    OryonEmitterBackend* b = backendHere();
+    return b != nullptr ? static_cast<uint64_t>(b->callGuestNested(fn, args, argc)) : 0;
+}
+
+bool findModule(uint64_t pc, uint64_t* base, uint64_t* size) {
+    if (s_activeImage == nullptr) return false;
+    const auto mainBase = reinterpret_cast<uint64_t>(s_activeImage->baseAddress);
+    if (pc >= mainBase && pc < mainBase + s_activeImage->totalMappedSize) {
+        *base = mainBase;
+        *size = s_activeImage->totalMappedSize;
+        return true;
+    }
+    for (const auto& [name, dll] : s_activeImage->localDlls) {
+        const auto b = reinterpret_cast<uint64_t>(dll.base);
+        if (b != 0 && pc >= b && pc < b + dll.size) {
+            *base = b;
+            *size = dll.size;
+            return true;
+        }
+    }
+    return false;
+}
+
+void initOnce() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        seh::setModuleFinder(&findModule);
+        seh::setGuestCaller(&callGuest);
+    });
+}
+
+// Contexto del llamador del thunk en curso (RIP = dirección de retorno, RSP tras el RET).
+void callerContext(uint8_t* out) {
+    std::memset(out, 0, win64ctx::kContextSize);
+    CpuContext c = t_thunkCtx != nullptr ? *t_thunkCtx : CpuContext{};
+    if (t_thunkCtx == nullptr) {
+        if (OryonEmitterBackend* b = backendHere(); b != nullptr) c = b->context();
+    } else {
+        c.rip = t_thunkRet;
+    }
+    win64ctx::toContext(c, out, win64ctx::kContextAll);
+}
+
+// Reanudar en `ctx` desde un thunk: si el destino está por encima de un lanzamiento en curso,
+// se corta hasta ese nivel; si no, el thunk sigue directamente ahí.
+void resumeFromThunk(const uint8_t* ctx) {
+    const uint64_t target = seh::ctxRsp(ctx);
+    for (const Level& l : t_levels) {
+        if (target >= l.rsp) {
+            std::memcpy(t_pendingCtx.data(), ctx, win64ctx::kContextSize);
+            t_pending = true;
+            t_pendingDepth = l.depth;
+            if (OryonEmitterBackend* b = backendHere(); b != nullptr) b->abortNestedAbove(l.depth);
+            return;
+        }
+    }
+    CpuContext c = t_thunkCtx != nullptr ? *t_thunkCtx : CpuContext{};
+    win64ctx::fromContext(c, ctx, true);
+    t_ctxOverrideValue = c;
+    t_ctxOverride = true;
+}
+
+// Tras una llamada a código invitado: ¿hay un desenrollado pendiente?
+bool pendingFor(int depth, uint8_t* ctxOut, Result& r) {
+    if (!t_pending) return false;
+    if (t_pendingDepth == depth) {
+        std::memcpy(ctxOut, t_pendingCtx.data(), win64ctx::kContextSize);
+        t_pending = false;
+        if (OryonEmitterBackend* b = backendHere(); b != nullptr) b->abortNestedAbove(0x7FFFFFFF);
+        r = Result::kUnwound;
+    } else {
+        r = Result::kAborted;
+    }
+    return true;
+}
+
+uint32_t& recFlags(uint8_t* rec) { return *reinterpret_cast<uint32_t*>(rec + 4); }
+
+// RtlRestoreContext: consolidación (catch de C++) y longjmp, después reanudar.
+void restoreContext(uint8_t* ctx, uint8_t* rec) {
+    if (rec != nullptr) {
+        uint32_t code = 0, nparams = 0;
+        std::memcpy(&code, rec, 4);
+        std::memcpy(&nparams, rec + 0x18, 4);
+        uint64_t info0 = 0;
+        std::memcpy(&info0, rec + 0x20, 8);
+        if (code == seh::kStatusUnwindConsolidate && nparams >= 1 && info0 != 0) {
+            // El callback (p. ej. __CxxCallCatchBlock) ejecuta el catch y devuelve dónde seguir.
+            Ctx parent;
+            std::memcpy(parent.data(), ctx, win64ctx::kContextSize);
+            t_parents.push_back(parent);
+            const uint64_t args[1] = {reinterpret_cast<uint64_t>(rec)};
+            const uint64_t next = callGuest(info0, args, 1);
+            t_parents.pop_back();
+            if (t_pending) return;  // el catch lanzó y otro marco lo capturó más arriba
+            seh::setCtxRip(ctx, next);
+        } else if (code == seh::kStatusLongjump && nparams >= 1 && info0 != 0) {
+            // _JUMP_BUFFER x64: Frame, Rbx, Rsp, Rbp, Rsi, Rdi, R12-R15, Rip, MxCsr, FpCsr, Spare, Xmm6-15.
+            const auto* jb = reinterpret_cast<const uint8_t*>(info0);
+            const int regs[9] = {3, 4, 5, 6, 7, 12, 13, 14, 15};
+            for (int i = 0; i < 9; ++i) std::memcpy(ctx + 0x78 + regs[i] * 8, jb + 8 + i * 8, 8);
+            std::memcpy(ctx + 0xF8, jb + 80, 8);
+            std::memcpy(ctx + 0x1A0 + 6 * 16, jb + 96, 16 * 10);
+        }
+    }
+    resumeFromThunk(ctx);
+}
+
+// RtlDispatchException sobre los marcos (sin los VEH).
+Result dispatchFrames(OryonEmitterBackend& b, int depth, uint8_t* rec, uint8_t* origCtx) {
+    alignas(16) Ctx cur;
+    std::memcpy(cur.data(), origCtx, win64ctx::kContextSize);
+    size_t parentIdx = t_parents.size();
+    for (int guard = 0; guard < 4096; ++guard) {
+        if (seh::ctxRip(cur.data()) == 0) {
+            if (parentIdx == 0) break;
+            --parentIdx;
+            cur = t_parents[parentIdx];
+            continue;
+        }
+        alignas(16) Ctx frameCtx = cur;  // contexto del marco antes de desenrollarlo
+        seh::FrameInfo fi;
+        seh::unwindStep(seh::kUnwFlagEHandler, cur.data(), fi);
+        if (sehLog()) {
+            LOGI("[SEH] despacho: pc=0x%llx base=0x%llx fn=%p marco=0x%llx manejador=0x%llx -> rip=0x%llx rsp=0x%llx",
+                 (unsigned long long)fi.controlPc, (unsigned long long)fi.imageBase, (const void*)fi.function,
+                 (unsigned long long)fi.establisherFrame, (unsigned long long)fi.handler,
+                 (unsigned long long)seh::ctxRip(cur.data()), (unsigned long long)seh::ctxRsp(cur.data()));
+        }
+        if (fi.handler != 0) {
+            DispatcherContext dc{fi.controlPc, fi.imageBase, reinterpret_cast<uint64_t>(fi.function),
+                                 fi.establisherFrame, 0, reinterpret_cast<uint64_t>(cur.data()), fi.handler,
+                                 fi.handlerData, 0, 0, 0};
+            Ctx parent;
+            std::memcpy(parent.data(), origCtx, win64ctx::kContextSize);
+            t_parents.push_back(parent);
+            const uint64_t args[4] = {reinterpret_cast<uint64_t>(rec), fi.establisherFrame,
+                                      reinterpret_cast<uint64_t>(origCtx), reinterpret_cast<uint64_t>(&dc)};
+            const auto disp = static_cast<int32_t>(b.callGuestNested(fi.handler, args, 4));
+            t_parents.pop_back();
+            if (sehLog()) LOGI("[SEH] manejador 0x%llx -> %d", (unsigned long long)fi.handler, disp);
+            Result r;
+            if (pendingFor(depth, origCtx, r)) return r;
+            if (disp == seh::kDispContinueExecution) return Result::kContinue;
+            if (disp == seh::kDispNested) recFlags(rec) |= seh::kEhNestedCall;
+            (void)frameCtx;
+        }
+        if (seh::ctxRsp(cur.data()) == 0) break;
+    }
+    return Result::kUnhandled;
+}
+
+// Lanzamiento completo: VEH -> marcos -> filtro.
+Result raise(OryonEmitterBackend& b, uint8_t* rec, uint8_t* ctx) {
+    initOnce();
+    const int depth = b.nestDepth();
+    t_levels.push_back({depth, seh::ctxRsp(ctx)});
+    struct Pop {
+        ~Pop() { t_levels.pop_back(); }
+    } pop;
+    uint64_t ptrs[2] = {reinterpret_cast<uint64_t>(rec), reinterpret_cast<uint64_t>(ctx)};
+    const uint64_t args[1] = {reinterpret_cast<uint64_t>(ptrs)};
+    std::vector<std::pair<uintptr_t, uintptr_t>> handlers;
+    {
+        std::lock_guard<std::mutex> lk(s_vehMutex);
+        handlers = s_vehHandlers;
+    }
+    for (const auto& [id, handler] : handlers) {
+        const auto verdict = static_cast<int32_t>(b.callGuestNested(handler, args, 1));
+        Result r;
+        if (pendingFor(depth, ctx, r)) return r;
+        if (verdict == win64ctx::kExceptionContinueExecution) return Result::kContinue;
+    }
+    const Result fr = dispatchFrames(b, depth, rec, ctx);
+    if (fr != Result::kUnhandled) return fr;
+    if (const uintptr_t filter = s_unhandledFilter.load(); filter != 0) {
+        const auto verdict = static_cast<int32_t>(b.callGuestNested(filter, args, 1));
+        Result r;
+        if (pendingFor(depth, ctx, r)) return r;
+        if (verdict == win64ctx::kExceptionContinueExecution) return Result::kContinue;
+    }
+    return Result::kUnhandled;
+}
+
+// RtlUnwindEx (desde un thunk).
+void unwindEx(uint64_t targetFrame, uint64_t targetIp, uint8_t* recIn, uint64_t retVal, uint8_t* ctxOut) {
+    initOnce();
+    alignas(16) uint8_t localRec[win64ctx::kExceptionRecordSize] = {};
+    uint8_t* rec = recIn;
+    if (rec == nullptr) {
+        rec = localRec;
+        const uint32_t code = seh::kStatusUnwind;
+        std::memcpy(rec, &code, 4);
+        const uint64_t addr = t_thunkRet;
+        std::memcpy(rec + 0x10, &addr, 8);
+    }
+    recFlags(rec) |= seh::kEhUnwinding | (targetFrame != 0 ? 0u : seh::kEhExitUnwind);
+    alignas(16) Ctx context;
+    callerContext(context.data());
+    alignas(16) Ctx next = context;
+    size_t parentIdx = t_parents.size();
+    OryonEmitterBackend* b = backendHere();
+    bool reached = false;
+    for (int guard = 0; guard < 4096 && b != nullptr; ++guard) {
+        if (seh::ctxRip(next.data()) == 0) {
+            if (parentIdx == 0) break;
+            --parentIdx;
+            next = t_parents[parentIdx];
+            context = next;
+            continue;
+        }
+        seh::FrameInfo fi;
+        seh::unwindStep(seh::kUnwFlagUHandler, next.data(), fi);
+        if (sehLog()) {
+            LOGI("[SEH] desenrollado: pc=0x%llx marco=0x%llx manejador=0x%llx destino=0x%llx",
+                 (unsigned long long)fi.controlPc, (unsigned long long)fi.establisherFrame,
+                 (unsigned long long)fi.handler, (unsigned long long)targetFrame);
+        }
+        if (targetFrame != 0 && fi.establisherFrame > targetFrame) {
+            __android_log_print(ANDROID_LOG_WARN, "HyperPlay.Seh",
+                                "RtlUnwindEx: marco 0x%llx pasado del destino 0x%llx (PC 0x%llx)",
+                                static_cast<unsigned long long>(fi.establisherFrame),
+                                static_cast<unsigned long long>(targetFrame),
+                                static_cast<unsigned long long>(fi.controlPc));
+            break;
+        }
+        if (fi.handler != 0) {
+            if (fi.establisherFrame == targetFrame) recFlags(rec) |= seh::kEhTargetUnwind;
+            DispatcherContext dc{fi.controlPc, fi.imageBase, reinterpret_cast<uint64_t>(fi.function),
+                                 fi.establisherFrame, targetIp, reinterpret_cast<uint64_t>(context.data()), fi.handler,
+                                 fi.handlerData, 0, 0, 0};
+            const uint64_t args[4] = {reinterpret_cast<uint64_t>(rec), fi.establisherFrame,
+                                      reinterpret_cast<uint64_t>(context.data()), reinterpret_cast<uint64_t>(&dc)};
+            const auto disp = static_cast<int32_t>(b->callGuestNested(fi.handler, args, 4));
+            if (t_pending) return;  // un manejador de terminación resolvió otra excepción más arriba
+            if (disp == seh::kDispContinueSearch) recFlags(rec) &= ~seh::kEhCollidedUnwind;
+            else if (disp == seh::kDispCollided) recFlags(rec) |= seh::kEhCollidedUnwind;
+        }
+        if (fi.establisherFrame == targetFrame) {
+            reached = true;
+            break;
+        }
+        context = next;
+    }
+    if (!reached && targetFrame != 0) {
+        __android_log_print(ANDROID_LOG_ERROR, "HyperPlay.Seh", "RtlUnwindEx: no se encontró el marco destino 0x%llx",
+                            static_cast<unsigned long long>(targetFrame));
+        return;
+    }
+    seh::setCtxRax(context.data(), retVal);
+    seh::setCtxRip(context.data(), targetIp);
+    if (ctxOut != nullptr) std::memcpy(ctxOut, context.data(), win64ctx::kContextSize);
+    restoreContext(context.data(), rec);
+}
+}  // namespace sehimpl
+
+namespace {  // declaradas en el bloque anónimo de las exportaciones extra
+void win_RtlRestoreContext(void* context, void* record) {
+    if (context == nullptr) return;
+    alignas(16) sehimpl::Ctx ctx;
+    std::memcpy(ctx.data(), context, win64ctx::kContextSize);
+    sehimpl::restoreContext(ctx.data(), static_cast<uint8_t*>(record));
+}
+
+void win_RtlUnwind(void* targetFrame, void* targetIp, void* record, void* returnValue) {
+    sehimpl::unwindEx(reinterpret_cast<uint64_t>(targetFrame), reinterpret_cast<uint64_t>(targetIp),
+                      static_cast<uint8_t*>(record), reinterpret_cast<uint64_t>(returnValue), nullptr);
+}
+
+void win_RtlRaiseException(void* record) {
+    if (record == nullptr) return;
+    const auto* rec = static_cast<const uint8_t*>(record);
+    uint32_t code = 0, flags = 0, n = 0;
+    std::memcpy(&code, rec, 4);
+    std::memcpy(&flags, rec + 4, 4);
+    std::memcpy(&n, rec + 0x18, 4);
+    NativeDllInterceptor::win_RaiseException(code, flags, std::min<uint32_t>(n, 15), rec + 0x20);
+}
+}  // namespace
+
 int32_t NativeDllInterceptor::dispatchGuestException(OryonEmitterBackend& backend, uint64_t exceptionPointers) {
     std::vector<std::pair<uintptr_t, uintptr_t>> handlers;
     {
@@ -4224,20 +4945,17 @@ int32_t NativeDllInterceptor::dispatchGuestException(OryonEmitterBackend& backen
             LOGI("[GuestException] bytes@RIP-32: %s", hex);
         }
     }
-    const uint64_t args[1] = {exceptionPointers};
-    for (const auto& [id, handler] : handlers) {
-        const auto verdict = static_cast<int32_t>(backend.callGuestNested(handler, args, 1));
+    (void)handlers;
+    auto* recBytes = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(ptrs[0]));
+    auto* ctxBytes = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(ptrs[1]));
+    const sehimpl::Result r = sehimpl::raise(backend, recBytes, ctxBytes);
+    if (r != sehimpl::Result::kUnhandled) {
         if (logIt) {
-            LOGI("[GuestException] 0x%08x en RIP=0x%llx (addr=0x%llx) -> VEH %p devuelve %d", code,
-                 static_cast<unsigned long long>(address), static_cast<unsigned long long>(info1),
-                 reinterpret_cast<void*>(handler), verdict);
+            LOGI("[GuestException] 0x%08x en RIP=0x%llx (addr=0x%llx) -> %s", code, static_cast<unsigned long long>(address),
+                 static_cast<unsigned long long>(info1),
+                 r == sehimpl::Result::kContinue ? "continúa" : (r == sehimpl::Result::kUnwound ? "desenrollada" : "cortada"));
         }
-        if (verdict == win64ctx::kExceptionContinueExecution) return verdict;
-    }
-    if (const uintptr_t filter = s_unhandledFilter.load(); filter != 0) {
-        const auto verdict = static_cast<int32_t>(backend.callGuestNested(filter, args, 1));
-        if (logIt) LOGI("[GuestException] filtro de nivel superior %p devuelve %d", reinterpret_cast<void*>(filter), verdict);
-        if (verdict == win64ctx::kExceptionContinueExecution) return verdict;
+        return win64ctx::kExceptionContinueExecution;  // deliverPendingFault aplica el CONTEXT
     }
     LOGE("[GuestException] 0x%08x en RIP=0x%llx (addr=0x%llx) sin manejar", code,
          static_cast<unsigned long long>(address), static_cast<unsigned long long>(info1));
@@ -4521,7 +5239,14 @@ static void* resolvePeExport(void* base, const PeInfo& pe, const char* lpProcNam
     auto* addr = static_cast<uint8_t*>(base) + rva;
     if (rva < pe.exportRva || rva >= pe.exportRva + pe.exportSize) return addr;
     // Forwarder: cadena "MODULO.Funcion" dentro del directorio de exports.
-    if (depth >= 4) return nullptr;
+    // Tope por hilo: GetProcAddress del destino puede volver a buscar en las DLL locales y dar con
+    // el mismo forwarder (kernel32.X sin implementar reenviado desde api-ms-win-core-*).
+    static thread_local int t_forwardDepth = 0;
+    if (depth >= 4 || t_forwardDepth >= 4) return nullptr;
+    struct DepthGuard {
+        DepthGuard() { ++t_forwardDepth; }
+        ~DepthGuard() { --t_forwardDepth; }
+    } guard;
     const std::string fwd(reinterpret_cast<const char*>(addr));
     const size_t dot = fwd.find('.');
     if (dot == std::string::npos) return nullptr;
@@ -4693,8 +5418,9 @@ void* NativeDllInterceptor::win_GetProcAddress(void* hModule, const char* lpProc
     }
     if (s_activeImage != nullptr) {
         for (const auto& kv : s_activeImage->localDlls) {
-            uint32_t rva = kv.second.peInfo.findExportRva(lpProcName);
-            if (rva > 0) return static_cast<uint8_t*>(kv.second.base) + rva;
+            if (kv.second.peInfo.findExportRva(lpProcName) > 0) {
+                if (void* exp = resolvePeExport(kv.second.base, kv.second.peInfo, lpProcName, 0)) return exp;
+            }
         }
     }
 
@@ -7210,8 +7936,51 @@ int32_t NativeDllInterceptor::win_UnhandledExceptionFilter(void*) {
 void NativeDllInterceptor::win_RaiseException(uint32_t dwExceptionCode, uint32_t dwExceptionFlags,
                                              uint32_t nNumberOfArguments, const void* lpArguments) {
     s_kernel32Calls.fetch_add(1);
-    LOGW("RaiseException invocado: código 0x%08x flags=0x%x argc=%u args=%p",
-         dwExceptionCode, dwExceptionFlags, nNumberOfArguments, lpArguments);
+    static std::atomic<int> s_raiseLogs{0};
+    if (s_raiseLogs.fetch_add(1) < 200) {
+        LOGW("RaiseException invocado: código 0x%08x flags=0x%x argc=%u args=%p", dwExceptionCode, dwExceptionFlags,
+             nNumberOfArguments, lpArguments);
+    }
+    // Excepción C++ de MSVC: tipo lanzado (ThrowInfo -> CatchableTypeArray -> TypeDescriptor).
+    if (dwExceptionCode == 0xE06D7363u && nNumberOfArguments >= 4 && lpArguments != nullptr && s_raiseLogs.load() < 200) {
+        const auto* p = static_cast<const uint64_t*>(lpArguments);
+        const uint64_t throwInfo = p[2], imgBase = p[3];
+        if (throwInfo != 0 && imgBase != 0 && isGuestRangeReadable(reinterpret_cast<const void*>(throwInfo), 16)) {
+            int32_t ctaRva = 0;
+            std::memcpy(&ctaRva, reinterpret_cast<const void*>(throwInfo + 12), 4);
+            const uint64_t cta = imgBase + static_cast<uint32_t>(ctaRva);
+            int32_t n = 0, ctRva = 0, tdRva = 0;
+            std::memcpy(&n, reinterpret_cast<const void*>(cta), 4);
+            std::memcpy(&ctRva, reinterpret_cast<const void*>(cta + 4), 4);
+            std::memcpy(&tdRva, reinterpret_cast<const void*>(imgBase + static_cast<uint32_t>(ctRva) + 4), 4);
+            const char* name = reinterpret_cast<const char*>(imgBase + static_cast<uint32_t>(tdRva) + 16);
+            LOGW("RaiseException C++: tipo %.80s (%d tipos capturables)", name, n);
+        }
+    }
+    // EXCEPTION_RECORD + CONTEXT del llamador, y despacho SEH completo (VEH, marcos, filtro).
+    if (OryonEmitterBackend* b = sehimpl::backendHere(); b != nullptr && t_thunkCtx != nullptr) {
+        alignas(16) uint8_t rec[win64ctx::kExceptionRecordSize] = {};
+        alignas(16) sehimpl::Ctx ctx;
+        sehimpl::callerContext(ctx.data());
+        const uint32_t flags = dwExceptionFlags & seh::kEhNonContinuable;
+        const uint32_t n = std::min<uint32_t>(nNumberOfArguments, 15);
+        std::memcpy(rec, &dwExceptionCode, 4);
+        std::memcpy(rec + 4, &flags, 4);
+        const uint64_t addr = t_thunkRet;
+        std::memcpy(rec + 0x10, &addr, 8);
+        std::memcpy(rec + 0x18, &n, 4);
+        if (n > 0 && lpArguments != nullptr) std::memcpy(rec + 0x20, lpArguments, n * 8);
+        const sehimpl::Result r = sehimpl::raise(*b, rec, ctx.data());
+        if (r == sehimpl::Result::kContinue || r == sehimpl::Result::kUnwound) {
+            CpuContext c = *t_thunkCtx;
+            win64ctx::fromContext(c, ctx.data(), true);
+            t_ctxOverrideValue = c;
+            t_ctxOverride = true;
+            return;
+        }
+        if (r == sehimpl::Result::kAborted) return;  // las llamadas anidadas se cortan hasta el destino
+        LOGE("RaiseException 0x%08x sin manejar (ningún VEH ni marco la captura)", dwExceptionCode);
+    }
 
     // Mono/GLib guarda el mensaje ya formateado en un global justo antes de
     // llamar a RaiseException(STATUS_ASSERTION_FAILURE). Volcarlo permite
@@ -7235,42 +8004,44 @@ void NativeDllInterceptor::win_RaiseException(uint32_t dwExceptionCode, uint32_t
 
 void NativeDllInterceptor::win_RtlCaptureContext(void* ContextRecord) {
     s_ntdllCalls.fetch_add(1);
-    if (ContextRecord) std::memset(ContextRecord, 0, 1232);
+    if (ContextRecord != nullptr) sehimpl::callerContext(static_cast<uint8_t*>(ContextRecord));
 }
 
 void* NativeDllInterceptor::win_RtlLookupFunctionEntry(uint64_t ControlPc, uint64_t* ImageBase, void* HistoryTable) {
     s_ntdllCalls.fetch_add(1);
     (void)HistoryTable;
-    uint64_t base = 0x180000000ULL;
-    if (s_activeImage && s_activeImage->baseAddress) {
-        const uintptr_t imgBase = reinterpret_cast<uintptr_t>(s_activeImage->baseAddress);
-        if (ControlPc >= imgBase && ControlPc < imgBase + s_activeImage->totalMappedSize) {
-            base = imgBase;
-        }
-    }
-    if (ImageBase != nullptr) {
-        *ImageBase = base;
-    }
-    alignas(8) static uint32_t s_dummyRuntimeFunction[3] = {0, 0xFFFFFFFFu, 0};
-    return s_dummyRuntimeFunction;
+    sehimpl::initOnce();
+    return const_cast<seh::RuntimeFunction*>(seh::lookup(ControlPc, ImageBase));
 }
 
-void* NativeDllInterceptor::win_RtlVirtualUnwind(uint32_t, uint64_t, uint64_t, void*, void*, void**, uint64_t*, void*) {
+void* NativeDllInterceptor::win_RtlVirtualUnwind(uint32_t HandlerType, uint64_t ImageBase, uint64_t ControlPc,
+                                                 void* FunctionEntry, void* ContextRecord, void** HandlerData,
+                                                 uint64_t* EstablisherFrame, void*) {
     s_ntdllCalls.fetch_add(1);
-    return nullptr;
+    if (FunctionEntry == nullptr || ContextRecord == nullptr) return nullptr;
+    uint64_t data = 0, frame = 0;
+    const uint64_t h = seh::virtualUnwind(HandlerType, ImageBase, ControlPc,
+                                          static_cast<const seh::RuntimeFunction*>(FunctionEntry),
+                                          static_cast<uint8_t*>(ContextRecord), &data, &frame);
+    if (HandlerData != nullptr) *HandlerData = reinterpret_cast<void*>(data);
+    if (EstablisherFrame != nullptr) *EstablisherFrame = frame;
+    return reinterpret_cast<void*>(h);
 }
 
-void NativeDllInterceptor::win_RtlUnwindEx(void*, void*, void*, void*, void*, void*) {
+void NativeDllInterceptor::win_RtlUnwindEx(void* TargetFrame, void* TargetIp, void* ExceptionRecord, void* ReturnValue,
+                                           void* ContextRecord, void*) {
     s_ntdllCalls.fetch_add(1);
+    sehimpl::unwindEx(reinterpret_cast<uint64_t>(TargetFrame), reinterpret_cast<uint64_t>(TargetIp),
+                      static_cast<uint8_t*>(ExceptionRecord), reinterpret_cast<uint64_t>(ReturnValue),
+                      static_cast<uint8_t*>(ContextRecord));
 }
 
-void* NativeDllInterceptor::win_RtlPcToFileHeader(void*, void** BaseOfImage) {
+void* NativeDllInterceptor::win_RtlPcToFileHeader(void* PcValue, void** BaseOfImage) {
     s_ntdllCalls.fetch_add(1);
-    if (BaseOfImage) {
-        *BaseOfImage = s_activeImage ? s_activeImage->baseAddress : nullptr;
-        return *BaseOfImage;
-    }
-    return nullptr;
+    sehimpl::initOnce();
+    void* base = reinterpret_cast<void*>(seh::moduleBaseOf(reinterpret_cast<uint64_t>(PcValue)));
+    if (BaseOfImage != nullptr) *BaseOfImage = base;
+    return base;
 }
 
 void* NativeDllInterceptor::win_EncodePointer(void* Ptr) {
@@ -8608,6 +9379,36 @@ size_t NativeDllInterceptor::win_VirtualQuery(const void* lpAddress, void* lpBuf
     }
     const uint64_t page = addr & ~0xFFFull;
 
+    // Pila invitada del hilo: en Windows es una sola reserva (AllocationBase = su fondo).
+    // CoreCLR calcula el límite de pila así (Thread::GetStackLowerBound) y con un segmento
+    // parcial de /proc/self/maps creía estar sin pila ("Stack overflow.").
+    if (OryonEmitterBackend* b = t_dispatchBackend; b != nullptr && b->virtualStack() != nullptr) {
+        const auto lo = reinterpret_cast<uint64_t>(b->virtualStack());
+        const uint64_t hi = lo + b->virtualStackSize();
+        static thread_local int t_stackLogs = 0;
+        if (t_stackLogs < 3 && t_thunkCtx != nullptr && addr + 0x100000 > t_thunkCtx->gpr[4] &&
+            addr < t_thunkCtx->gpr[4] + 0x100000) {
+            ++t_stackLogs;
+            LOGI("VirtualQuery(pila) addr=0x%llx pila=[0x%llx,0x%llx) RSP=0x%llx %s", (unsigned long long)addr,
+                 (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)t_thunkCtx->gpr[4],
+                 addr >= lo && addr < hi ? "dentro" : "FUERA");
+        }
+        if (addr >= lo && addr < hi) {
+            auto* buf = static_cast<uint8_t*>(lpBuffer);
+            std::memset(buf, 0, kMbiSize);
+            const uint64_t regionSize = hi - page;
+            const uint32_t commit = 0x1000, rw = 0x04, priv = 0x20000;
+            std::memcpy(buf + 0x00, &page, 8);
+            std::memcpy(buf + 0x08, &lo, 8);
+            std::memcpy(buf + 0x10, &rw, 4);
+            std::memcpy(buf + 0x18, &regionSize, 8);
+            std::memcpy(buf + 0x20, &commit, 4);
+            std::memcpy(buf + 0x24, &rw, 4);
+            std::memcpy(buf + 0x28, &priv, 4);
+            return kMbiSize;
+        }
+    }
+
     HostMapping hit{};
     bool mapped = false;
     uint64_t nextStart = kMaxUser + 1;
@@ -8749,6 +9550,11 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableW(const wchar_t* lpName
     if (!found) found = managedEnvVar(upper, val);
     if (!found) {
         if (upper == "NUMBER_OF_PROCESSORS") { val = "8"; found = true; }
+        // .NET (CoreCLR): sin depurador/diagnóstico (canales con named pipes que no hay en Android).
+        else if (upper == "DOTNET_ENABLEDIAGNOSTICS") { val = "0"; found = true; }
+        // Sin ICU ni NLS de Windows: cultura invariante (fechas y números como en inglés; los
+        // textos del juego vienen de sus propios archivos de idioma).
+        else if (upper == "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") { val = "1"; found = true; }
         else if (upper == "PROCESSOR_ARCHITECTURE") { val = (s_activeImage && s_activeImage->is32Bit) ? "x86" : "AMD64"; found = true; }
         else if (upper == "PROCESSOR_IDENTIFIER") { val = "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD"; found = true; }
         else if (upper == "PROCESSOR_LEVEL") { val = "6"; found = true; }
@@ -8803,6 +9609,11 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableA(const char* lpName, c
     if (!found) found = managedEnvVar(upper, val);
     if (!found) {
         if (upper == "NUMBER_OF_PROCESSORS") { val = "8"; found = true; }
+        // .NET (CoreCLR): sin depurador/diagnóstico (canales con named pipes que no hay en Android).
+        else if (upper == "DOTNET_ENABLEDIAGNOSTICS") { val = "0"; found = true; }
+        // Sin ICU ni NLS de Windows: cultura invariante (fechas y números como en inglés; los
+        // textos del juego vienen de sus propios archivos de idioma).
+        else if (upper == "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") { val = "1"; found = true; }
         else if (upper == "PROCESSOR_ARCHITECTURE") { val = (s_activeImage && s_activeImage->is32Bit) ? "x86" : "AMD64"; found = true; }
         else if (upper == "OS") { val = "Windows_NT"; found = true; }
         else if (upper == "SYSTEMROOT" || upper == "WINDIR") { val = "C:\\Windows"; found = true; }
@@ -9231,8 +10042,11 @@ uint32_t win_FormatMessageA(uint32_t dwFlags, const void* lpSource, uint32_t dwM
     return static_cast<uint32_t>(text.size());
 }
 
-int32_t NativeDllInterceptor::win_FlushFileBuffers(void*) {
+int32_t NativeDllInterceptor::win_FlushFileBuffers(void* hFile) {
     s_kernel32Calls.fetch_add(1);
+    // Las partidas guardadas llegan al disco antes de seguir (un cierre o la batería no las corta).
+    const int fd = fdFromHandle(hFile);
+    if (fd > STDERR_FILENO) fsync(fd);
     return 1;
 }
 
@@ -9502,9 +10316,18 @@ uint32_t NativeDllInterceptor::win_GetOEMCP() {
     return 65001;
 }
 
-int32_t NativeDllInterceptor::win_GetCPInfo(uint32_t, void* lpCPInfo) {
+int32_t NativeDllInterceptor::win_GetCPInfo(uint32_t codePage, void* lpCPInfo) {
     s_kernel32Calls.fetch_add(1);
-    if (lpCPInfo) std::memset(lpCPInfo, 0, 16);
+    if (lpCPInfo == nullptr) return 0;
+    // CPINFO {UINT MaxCharSize; BYTE DefaultChar[2]; BYTE LeadByte[12]} = 20 bytes. La ANSI del
+    // sistema (CP_ACP/CP_THREAD_ACP/CP_OEMCP) es UTF-8 (GetACP = 65001): hasta 4 bytes por carácter.
+    // .NET usa MaxCharSize para dimensionar los búferes ANSI; con 0 reservaba mal y fallaba.
+    auto* info = static_cast<uint8_t*>(lpCPInfo);
+    std::memset(info, 0, 20);
+    const bool utf8 = codePage == 0 || codePage == 1 || codePage == 3 || codePage == 65001;
+    const uint32_t maxCharSize = utf8 ? 4u : (codePage == 65000 ? 5u : 1u);
+    std::memcpy(info, &maxCharSize, 4);
+    info[4] = '?';
     return 1;
 }
 
@@ -9554,23 +10377,9 @@ int32_t NativeDllInterceptor::win_GetStringTypeW(uint32_t dwInfoType, const void
     return 1;
 }
 
-int32_t NativeDllInterceptor::win_LCMapStringW(uint32_t, uint32_t, const void* lpSrcStr, int32_t cchSrc, void* lpDestStr, int32_t cchDest) {
+int32_t NativeDllInterceptor::win_LCMapStringW(uint32_t, uint32_t dwMapFlags, const void* lpSrcStr, int32_t cchSrc, void* lpDestStr, int32_t cchDest) {
     s_kernel32Calls.fetch_add(1);
-    if (!lpSrcStr) return 0;
-    auto* in = static_cast<const char16_t*>(lpSrcStr);
-    size_t inLen = 0;
-    if (cchSrc < 0) {
-        while (in[inLen] != 0) ++inLen;
-        ++inLen;
-    } else {
-        inLen = static_cast<size_t>(cchSrc);
-    }
-    if (cchDest == 0 || !lpDestStr) {
-        return static_cast<int32_t>(inLen);
-    }
-    const size_t copyLen = std::min(inLen, static_cast<size_t>(cchDest));
-    std::memcpy(lpDestStr, lpSrcStr, copyLen * sizeof(char16_t));
-    return static_cast<int32_t>(copyLen);
+    return lcMapString(dwMapFlags, static_cast<const char16_t*>(lpSrcStr), cchSrc, lpDestStr, cchDest);
 }
 
 namespace {
