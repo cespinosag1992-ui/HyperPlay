@@ -161,10 +161,6 @@ Requisitos: Android Studio / SDK 35, **NDK 28.2.13676358**, CMake 3.22.1, JDK 17
 ```bash
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
-
-El APK firmado de release necesita `keystore.properties` en la raíz (no se versiona); ver
-[docs/PUBLICAR.md](docs/PUBLICAR.md).
-
 Los textos de la interfaz están en `app/src/main/res/values/strings.xml` (inglés, por defecto) y
 `values-es/strings.xml` (español). Cada texto nuevo va en los dos.
 
@@ -182,7 +178,6 @@ Los textos de la interfaz están en `app/src/main/res/values/strings.xml` (ingl�
 | `docs/` | Documentación y capturas |
 
 Más detalle técnico en [ARCHITECTURE.md](ARCHITECTURE.md); historial de trabajo en
-[progreso.md](progreso.md) y [logs.md](logs.md).
 
 ### Informes de errores
 
