@@ -66,10 +66,6 @@ Requirements: Android Studio / SDK 35, **NDK 28.2.13676358**, CMake 3.22.1, JDK 
 ```bash
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
-
-The signed release APK needs `keystore.properties` in the project root (not versioned); see
-[docs/PUBLICAR.md](docs/PUBLICAR.md).
-
 UI text lives in `app/src/main/res/values/strings.xml` (English, default) and
 `values-es/strings.xml` (Spanish). Add every new string to both.
 
