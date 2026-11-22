@@ -87,7 +87,6 @@ UI text lives in `app/src/main/res/values/strings.xml` (English, default) and
 | `docs/` | Documentation and screenshots |
 
 More technical detail in [ARCHITECTURE.md](ARCHITECTURE.md). The work log (in Spanish) is in
-[progreso.md](progreso.md) and [logs.md](logs.md).
 
 ### Error reports
 
