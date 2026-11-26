@@ -809,11 +809,12 @@ private fun InfoCard(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun InfoLine(label: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun InfoLine(label: String, value: String, maxLines: Int = 1) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = if (maxLines > 1) Alignment.Top else Alignment.CenterVertically) {
         Text(label, color = Deck.Dim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.width(124.dp).padding(end = 8.dp))
-        Text(value, color = Deck.Text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(value, color = Deck.Text, fontSize = 13.sp, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -910,7 +911,8 @@ private fun UpdateCard(system: SystemUi, actions: SystemActions, onFocused: () -
             is UpdateState.AwaitingConfirmation -> stringResource(R.string.update_confirming, u.release.version)
             is UpdateState.Error -> u.message
         }
-        InfoLine(stringResource(R.string.update_status), status)
+        // Los errores llevan el motivo ("La instalación falló: conflicto de firma..."): no cortarlo en una línea.
+        InfoLine(stringResource(R.string.update_status), status, maxLines = if (u is UpdateState.Error) 4 else 1)
         if (u is UpdateState.Downloading) {
             androidx.compose.material3.LinearProgressIndicator(
                 progress = { u.progress },
