@@ -2839,7 +2839,11 @@ void OryonEmitterBackend::setModuleBaseResolver(uint64_t (*fn)(uint64_t)) {
 
 static void probeLog(CpuContext* c, uint64_t rip) {
     static std::atomic<int> s_hits{0};
-    if (s_hits.fetch_add(1) >= 400) return;
+    static const int s_max = [] {
+        char b[PROP_VALUE_MAX] = {};
+        return __system_property_get("debug.hyperplay.probemax", b) > 0 ? std::atoi(b) : 400;
+    }();
+    if (s_hits.fetch_add(1) >= s_max) return;
     uint64_t ret = 0;
     if (probeReadable(c->gpr[4], 8)) ret = *reinterpret_cast<const uint64_t*>(c->gpr[4]);
     LOGI("[Sonda] rip=%llx rax=%llx rcx=%llx%s rdx=%llx%s r8=%llx%s r9=%llx%s ret=%llx",
