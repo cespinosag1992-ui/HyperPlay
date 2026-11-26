@@ -18,6 +18,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #define LOG_TAG "HyperPlay.GL"
@@ -229,9 +230,51 @@ void* w_glMapBuffer(GLenum target, GLenum access) {
     else bits = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT;
     return size > 0 ? glMapBufferRange(target, 0, size, bits) : nullptr;
 }
-void w_glGetTexImage(GLenum, GLint, GLenum, GLenum, void*) {
-    static std::atomic<bool> once{false};
-    if (!once.exchange(true)) LOGW("glGetTexImage no existe en GLES: se ignora");
+// glGetTexImage no existe en GLES: se lee la textura enlazada a través de un framebuffer temporal con
+// glReadPixels. Stardew Valley lo necesita: recolorea en tiempo real la textura del cuerpo del granjero
+// (piel, ojos) con Texture2D.GetData/SetData; sin esto el cuerpo salía transparente (sin cara, brazos
+// ni piernas).
+void w_glGetTexImage(GLenum target, GLint level, GLenum format, GLenum type, void* pixels) {
+    if (target != GL_TEXTURE_2D) {
+        static std::atomic<bool> once{false};
+        if (!once.exchange(true)) LOGW("glGetTexImage: destino 0x%x no admitido", target);
+        return;
+    }
+    GLint tex = 0, w = 0, h = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex);
+    if (tex == 0) return;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_HEIGHT, &h);
+    if (w <= 0 || h <= 0) return;
+
+    GLint prevRead = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+    GLuint fbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, static_cast<GLuint>(tex), level);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    const GLenum status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
+    if (status == GL_FRAMEBUFFER_COMPLETE) {
+        constexpr GLenum kBgra = 0x80E1;  // GL_BGRA (escritorio)
+        const bool bgra = format == kBgra && type == GL_UNSIGNED_BYTE;
+        glReadPixels(0, 0, w, h, bgra ? GL_RGBA : format, type, pixels);
+        GLint packBuffer = 0;
+        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &packBuffer);
+        if (bgra && packBuffer == 0 && pixels != nullptr) {
+            GLint align = 4;
+            glGetIntegerv(GL_PACK_ALIGNMENT, &align);
+            const size_t row = (static_cast<size_t>(w) * 4 + align - 1) / align * align;
+            auto* p = static_cast<uint8_t*>(pixels);
+            for (GLint y = 0; y < h; ++y)
+                for (GLint x = 0; x < w; ++x) std::swap(p[y * row + x * 4], p[y * row + x * 4 + 2]);
+        }
+    } else {
+        static std::atomic<int> warns{0};
+        if (warns.fetch_add(1) < 5) LOGW("glGetTexImage: framebuffer incompleto (0x%x) para textura %d", status, tex);
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prevRead));
+    glDeleteFramebuffers(1, &fbo);
 }
 void w_glGetQueryObjectiv(GLuint id, GLenum pname, GLint* params) {
     GLuint v = 0;
