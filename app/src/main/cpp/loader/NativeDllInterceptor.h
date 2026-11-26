@@ -109,6 +109,7 @@ public:
     static void win_InitializeSRWLock(void* srwLock);
     static void win_GetCurrentProcessorNumberEx(void* procNumber);
     static void win_FlushProcessWriteBuffers();
+    static int32_t win_FlushInstructionCache(void* process, const void* address, size_t size);
     static void* win_AddVectoredExceptionHandler(uint32_t first, void* handler);
     static uint32_t win_RemoveVectoredExceptionHandler(void* handle);
     static int32_t win_SetThreadStackGuarantee(uint32_t* stackSizeInBytes);

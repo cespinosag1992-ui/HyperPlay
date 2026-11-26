@@ -3046,6 +3046,7 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "DisableThreadLibraryCalls") result = reinterpret_cast<void*>(&win_DisableThreadLibraryCalls);
         else if (funcName == "GetCurrentProcessorNumberEx") result = reinterpret_cast<void*>(&win_GetCurrentProcessorNumberEx);
         else if (funcName == "FlushProcessWriteBuffers") result = reinterpret_cast<void*>(&win_FlushProcessWriteBuffers);
+        else if (funcName == "FlushInstructionCache") result = reinterpret_cast<void*>(&win_FlushInstructionCache);
         else if (funcName == "GetProcessTimes") result = reinterpret_cast<void*>(&win_GetProcessTimes);
         else if (funcName == "GetSystemTimes") result = reinterpret_cast<void*>(&win_GetSystemTimes);
         else if (funcName == "FormatMessageW") result = reinterpret_cast<void*>(&win_FormatMessageW);
@@ -7025,6 +7026,16 @@ const void* NativeDllInterceptor::win_GetEnvironmentStringsW() {
                                          "DOTNET_EnableHWIntrinsic=0"};
         char v[PROP_VALUE_MAX] = {};
         if (__system_property_get("debug.hyperplay.r2r", v) > 0 && v[0] == '0') vars.push_back("DOTNET_ReadyToRun=0");
+        // Diagnóstico: EventPipe a archivo con los eventos de excepción del runtime (tipo y
+        // mensaje de cada excepción .NET lanzada) en la carpeta del juego.
+        if (__system_property_get("debug.hyperplay.dotnettrace", v) > 0 && v[0] == '1') {
+            vars.erase(std::remove(vars.begin(), vars.end(), std::string("DOTNET_EnableDiagnostics=0")), vars.end());
+            vars.push_back("DOTNET_EnableEventPipe=1");
+            vars.push_back("DOTNET_EventPipeOutputPath=D:\\hp-dotnet.nettrace");
+            vars.push_back("DOTNET_EventPipeConfig=Microsoft-Windows-DotNETRuntime:0x800C:5");
+            vars.push_back("DOTNET_EventPipeRundown=0");
+            vars.push_back("DOTNET_EventPipeOutputStreaming=1");
+        }
         std::u16string b;
         for (const auto& s : vars) {
             for (char c : s) b.push_back(static_cast<char16_t>(static_cast<uint8_t>(c)));
@@ -8089,6 +8100,62 @@ int32_t NativeDllInterceptor::win_UnhandledExceptionFilter(void*) {
     return 1; // EXCEPTION_EXECUTE_HANDLER
 }
 
+namespace {
+/// Saca de un bloque de memoria las cadenas UTF-16 (>= 4 caracteres) y ASCII (>= 6).
+void collectTexts(uint64_t base, size_t size, std::string& out) {
+    if (base == 0 || !isGuestRangeReadable(reinterpret_cast<const void*>(base), size)) return;
+    const auto* b = reinterpret_cast<const uint8_t*>(base);
+    std::string run;
+    for (size_t i = 0; i + 1 < size; i += 2) {  // UTF-16
+        const uint16_t c = static_cast<uint16_t>(b[i] | (b[i + 1] << 8));
+        if (c >= 0x20 && c < 0x7F) { run.push_back(static_cast<char>(c)); continue; }
+        if (run.size() >= 4) out += " u\"" + run + "\"";
+        run.clear();
+    }
+    if (run.size() >= 4) out += " u\"" + run + "\"";
+    run.clear();
+    for (size_t i = 0; i < size; ++i) {  // ASCII/UTF-8
+        if (b[i] >= 0x20 && b[i] < 0x7F) { run.push_back(static_cast<char>(b[i])); continue; }
+        if (run.size() >= 6) out += " \"" + run + "\"";
+        run.clear();
+    }
+    if (run.size() >= 6) out += " \"" + run + "\"";
+}
+
+/// Textos del objeto y de los bloques a los que apuntan sus primeros campos (diagnóstico).
+void logTextsNear(uint64_t obj) {
+    if (obj == 0 || !isGuestRangeReadable(reinterpret_cast<const void*>(obj), 0x200)) return;
+    std::string out;
+    collectTexts(obj, 0x200, out);
+    for (uint64_t off = 0; off < 0x200; off += 8) {
+        uint64_t f = 0;
+        std::memcpy(&f, reinterpret_cast<const void*>(obj + off), 8);
+        if (f > 0x10000 && (f & 1) == 0 && f != obj) collectTexts(f, 0x100, out);
+        if (out.size() > 900) break;
+    }
+    LOGW("[EE textos] %.1000s", out.c_str());
+    char hex[16 * 20 + 1] = {};
+    for (int i = 0; i < 16; ++i) {
+        uint64_t q = 0;
+        std::memcpy(&q, reinterpret_cast<const void*>(obj + static_cast<uint64_t>(i) * 8), 8);
+        std::snprintf(hex + i * 20, 21, "%016llx    ", static_cast<unsigned long long>(q));
+    }
+    LOGW("[EE campos] %s", hex);
+    // EETypeLoadException: tras InlineSString<1024> (~2 KB) van el ensamblado, el argumento y
+    // m_resIDWhy (motivo). Se vuelcan los enteros de 32 bits pequeños de esa zona.
+    if (isGuestRangeReadable(reinterpret_cast<const void*>(obj), 0xC00)) {
+        std::string tail;
+        for (uint64_t off = 0; off < 0xC00; off += 4) {
+            uint32_t d = 0;
+            std::memcpy(&d, reinterpret_cast<const void*>(obj + off), 4);
+            if (d >= 0x1000 && d < 0x3000) tail += " +0x" + [](uint64_t v) { char b[16]; std::snprintf(b, sizeof b, "%llx", static_cast<unsigned long long>(v)); return std::string(b); }(off) + "=0x" + [](uint32_t v) { char b[16]; std::snprintf(b, sizeof b, "%x", v); return std::string(b); }(d);
+        }
+        LOGW("[EE cola] %s", tail.c_str());
+    }
+}
+
+}  // namespace
+
 void NativeDllInterceptor::win_RaiseException(uint32_t dwExceptionCode, uint32_t dwExceptionFlags,
                                              uint32_t nNumberOfArguments, const void* lpArguments) {
     s_kernel32Calls.fetch_add(1);
@@ -8111,7 +8178,47 @@ void NativeDllInterceptor::win_RaiseException(uint32_t dwExceptionCode, uint32_t
             std::memcpy(&tdRva, reinterpret_cast<const void*>(imgBase + static_cast<uint32_t>(ctRva) + 4), 4);
             const char* name = reinterpret_cast<const char*>(imgBase + static_cast<uint32_t>(tdRva) + 16);
             LOGW("RaiseException C++: tipo %.80s (%d tipos capturables)", name, n);
+            // Excepciones del runtime de .NET (EETypeLoadException, EEFileLoadException...): el
+            // nombre del tipo/ensamblado va en SString dentro del objeto; se registran los textos.
+            if (std::strstr(name, "EE") != nullptr) {
+                logTextsNear(p[1]);
+                // Direcciones de retorno en la pila dentro del módulo que lanza (coreclr.dll):
+                // RVAs para localizar en el binario quién lanzó y con qué motivo.
+                if (OryonEmitterBackend* bk = sehimpl::backendHere(); bk != nullptr && t_thunkCtx != nullptr) {
+                    const uint64_t rsp = t_thunkCtx->gpr[4];
+                    std::string rvas;
+                    int found = 0;
+                    for (uint64_t a = rsp; a < rsp + 0x3000 && found < 24; a += 8) {
+                        if (!isGuestRangeReadable(reinterpret_cast<const void*>(a), 8)) break;
+                        uint64_t q = 0;
+                        std::memcpy(&q, reinterpret_cast<const void*>(a), 8);
+                        if (q > imgBase && q < imgBase + 0x600000) {
+                            // Con el 5.º argumento de esa llamada ([rsp+0x20] del llamador = +0x28).
+                            uint32_t arg5 = 0;
+                            if (isGuestRangeReadable(reinterpret_cast<const void*>(a + 0x28), 4)) {
+                                std::memcpy(&arg5, reinterpret_cast<const void*>(a + 0x28), 4);
+                            }
+                            char b[40];
+                            std::snprintf(b, sizeof b, " %llx(a5=%x)", static_cast<unsigned long long>(q - imgBase), arg5);
+                            rvas += b;
+                            ++found;
+                        }
+                    }
+                    LOGW("[EE pila] RVAs:%s", rvas.c_str());
+                }
+            }
         }
+    }
+    // Excepción .NET (CoreCLR, 'CCR'): args[0] es el objeto. Se registran los textos que lleva
+    // (mensaje; en TypeLoadException el tipo y el ensamblado van en campos propios porque el
+    // mensaje se compone al leerlo) y los de la excepción interna. Diagnóstico de Stardew Valley.
+    if (dwExceptionCode == 0xE0434352u && nNumberOfArguments >= 1 && lpArguments != nullptr && s_raiseLogs.load() < 200) {
+        const auto* a = static_cast<const uint64_t*>(lpArguments);
+        LOGW("[.NET args] %llx %llx %llx %llx %llx", static_cast<unsigned long long>(a[0]),
+             static_cast<unsigned long long>(nNumberOfArguments > 1 ? a[1] : 0),
+             static_cast<unsigned long long>(nNumberOfArguments > 2 ? a[2] : 0),
+             static_cast<unsigned long long>(nNumberOfArguments > 3 ? a[3] : 0),
+             static_cast<unsigned long long>(nNumberOfArguments > 4 ? a[4] : 0));
     }
     // EXCEPTION_RECORD + CONTEXT del llamador, y despacho SEH completo (VEH, marcos, filtro).
     if (OryonEmitterBackend* b = sehimpl::backendHere(); b != nullptr && t_thunkCtx != nullptr) {
@@ -9714,6 +9821,18 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableW(const wchar_t* lpName
     }
 
     if (!found) found = managedEnvVar(upper, val);
+    // Diagnóstico (setprop debug.hyperplay.dotnettrace 1): EventPipe lee aquí su configuración.
+    if (!found && upper.rfind("DOTNET_", 0) == 0) {
+        char v[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.dotnettrace", v) > 0 && v[0] == '1') {
+            if (upper == "DOTNET_ENABLEDIAGNOSTICS") { val = "1"; found = true; }
+            else if (upper == "DOTNET_ENABLEEVENTPIPE") { val = "1"; found = true; }
+            else if (upper == "DOTNET_EVENTPIPEOUTPUTPATH") { val = "D:\\hp-dotnet.nettrace"; found = true; }
+            else if (upper == "DOTNET_EVENTPIPECONFIG") { val = "Microsoft-Windows-DotNETRuntime:0x800C:5"; found = true; }
+            else if (upper == "DOTNET_EVENTPIPERUNDOWN") { val = "0"; found = true; }
+            else if (upper == "DOTNET_EVENTPIPEOUTPUTSTREAMING") { val = "1"; found = true; }
+        }
+    }
     if (!found) {
         if (upper == "NUMBER_OF_PROCESSORS") { val = "8"; found = true; }
         // .NET (CoreCLR): sin depurador/diagnóstico (canales con named pipes que no hay en Android).
@@ -9780,6 +9899,18 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableA(const char* lpName, c
     }
 
     if (!found) found = managedEnvVar(upper, val);
+    // Diagnóstico (setprop debug.hyperplay.dotnettrace 1): EventPipe lee aquí su configuración.
+    if (!found && upper.rfind("DOTNET_", 0) == 0) {
+        char v[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.dotnettrace", v) > 0 && v[0] == '1') {
+            if (upper == "DOTNET_ENABLEDIAGNOSTICS") { val = "1"; found = true; }
+            else if (upper == "DOTNET_ENABLEEVENTPIPE") { val = "1"; found = true; }
+            else if (upper == "DOTNET_EVENTPIPEOUTPUTPATH") { val = "D:\\hp-dotnet.nettrace"; found = true; }
+            else if (upper == "DOTNET_EVENTPIPECONFIG") { val = "Microsoft-Windows-DotNETRuntime:0x800C:5"; found = true; }
+            else if (upper == "DOTNET_EVENTPIPERUNDOWN") { val = "0"; found = true; }
+            else if (upper == "DOTNET_EVENTPIPEOUTPUTSTREAMING") { val = "1"; found = true; }
+        }
+    }
     if (!found) {
         if (upper == "NUMBER_OF_PROCESSORS") { val = "8"; found = true; }
         // .NET (CoreCLR): sin depurador/diagnóstico (canales con named pipes que no hay en Android).
@@ -9921,6 +10052,17 @@ void NativeDllInterceptor::win_GetCurrentProcessorNumberEx(void* procNumber) {
         uint8_t* p = static_cast<uint8_t*>(procNumber);
         p[0] = 0; p[1] = 0; p[2] = 0; p[3] = 0;
     }
+}
+
+// FlushInstructionCache: el huésped avisa de que reescribió código (CoreCLR al parchear sus
+// precode/stubs, otros JIT). Se descartan las traducciones del rango en todos los hilos y se
+// devuelve TRUE (antes era un stub que devolvía FALSE y no invalidaba nada).
+int32_t NativeDllInterceptor::win_FlushInstructionCache(void* /*process*/, const void* address, size_t size) {
+    s_kernel32Calls.fetch_add(1);
+    if (address != nullptr && size != 0) {
+        OryonEmitterBackend::invalidateCodeRangeAll(reinterpret_cast<uintptr_t>(address), size);
+    }
+    return 1;
 }
 
 void NativeDllInterceptor::win_FlushProcessWriteBuffers() {

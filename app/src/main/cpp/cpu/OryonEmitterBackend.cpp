@@ -10489,6 +10489,11 @@ bool OryonEmitterBackend::deliverPendingFault() {
         ~DepthGuard() { --d; }
     } depthGuard(exceptionDepth_);
 
+    static std::atomic<int> s_faultLogs{0};
+    if (s_faultLogs.fetch_add(1) < 60) {
+        LOGI("Fallo del huésped 0x%08x en RIP=0x%llx dir=0x%llx (%s)", f.code, static_cast<unsigned long long>(f.rip),
+             static_cast<unsigned long long>(f.address), f.access == 1 ? "escritura" : f.access == 8 ? "ejecución" : "lectura");
+    }
     // Estado exacto en la instrucción que falló.
     std::memcpy(ctx_.gpr, f.gpr, sizeof(ctx_.gpr));
     std::memcpy(ctx_.simd, f.simd, sizeof(ctx_.simd));

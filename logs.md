@@ -789,3 +789,8 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - Cuphead 2016x912 aplicado al instante (GPU 44 %); restaurado a nativa. Cuphead repite pulsaciones con swipe de 200 ms: usar 80 ms.
 - `log.tag=S` tras reiniciar el teléfono: `setprop log.tag.HyperPlay.* V` (ver progreso).
 - Launcher: TabLabel y "volver" (clickable sin indicación) atrapaban el foco invisible al pulsar arriba; ahora `focusProperties { canFocus = false }`.
+## 2026-11-25 18:50 — Stardew: origen del TypeLoad
+- Excepciones CCR: args[0]=HRESULT, args[4]=base de coreclr (no hay objeto). Secuencia: 80070002 (XmlSerializers.dll no existe, normal), 80004003 (ArgumentNull en TempAssembly.LoadAssemblyByPath, capturada), 80131522 TypeLoad, 80131509 x6 ("There was an error reflecting type 'StardewValley.Item' / Quests..."), 80131534 TypeInitialization -> "Stack overflow".
+- EventPipe (DOTNET_EventPipe* por GetEnvironmentVariableW, no por el bloque de entorno) funciona en .NET 6 con EnableDiagnostics=1.
+- Pila del TypeLoad: 12ca49 <- 214bb3 <- 1f4658 (a5=0x80131522) <- 1ad6c2 (bloque frío 1ad5e0) <- 74c22 <- 74a20: lookup por nombre 0x18006151c devuelve NULL.
+- Sin fallos de hardware (AV) antes del TypeLoad.

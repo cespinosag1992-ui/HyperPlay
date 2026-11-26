@@ -37,6 +37,10 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 - Stardew Valley now gets through `Game1`'s startup and stops later (`LocalMultiplayer`, a type
   that fails to load); under investigation.
 - Tested: Celeste (60 FPS) and Hollow Knight (menu) still work.
+- Engine: `FlushInstructionCache` now discards translated code for that range (it was a stub that
+  did nothing and returned failure). New diagnostics for .NET games: exception codes and runtime
+  exception texts in the log, and an optional EventPipe trace (`debug.hyperplay.dotnettrace 1`).
+  Stardew Valley still stops at startup (a type lookup by name fails inside XmlSerializer).
 - **Display settings now live in each game.** The quick menu no longer has Screen (Stretch / Zoom /
   aspect) or the render-resolution percentage: games always run at the screen's native resolution,
   full screen and undistorted. The game's own video menu now lists real resolutions (720p, 900p,
@@ -86,6 +90,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 - Stardew Valley ya pasa el arranque de `Game1` y se para más adelante (`LocalMultiplayer`, un
   tipo que no carga); en investigación.
 - Probado: Celeste (60 FPS) y Hollow Knight (menú) siguen funcionando.
+- Motor: `FlushInstructionCache` descarta ahora el código traducido de ese rango (era un stub que
+  no hacía nada y devolvía fallo). Diagnósticos nuevos para juegos .NET: códigos y textos de las
+  excepciones del runtime en el registro, y una traza EventPipe opcional
+  (`debug.hyperplay.dotnettrace 1`). Stardew Valley sigue parándose al arrancar (falla la búsqueda de
+  un tipo por nombre dentro de XmlSerializer).
 - **Los ajustes de pantalla están ahora en cada juego.** El menú rápido ya no tiene Pantalla
   (Estirar / Ampliar / aspecto) ni la resolución en porcentaje: los juegos van siempre a la
   resolución nativa de la pantalla, a pantalla completa y sin deformarse. El menú de vídeo del
