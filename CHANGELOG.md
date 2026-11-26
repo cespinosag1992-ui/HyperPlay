@@ -37,6 +37,18 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 - Stardew Valley now gets through `Game1`'s startup and stops later (`LocalMultiplayer`, a type
   that fails to load); under investigation.
 - Tested: Celeste (60 FPS) and Hollow Knight (menu) still work.
+- **Display settings now live in each game.** The quick menu no longer has Screen (Stretch / Zoom /
+  aspect) or the render-resolution percentage: games always run at the screen's native resolution,
+  full screen and undistorted. The game's own video menu now lists real resolutions (720p, 900p,
+  1080p, 1/2, 5/8 and 3/4 of the screen, and native) through `EnumDisplaySettings` and DXGI
+  `GetDisplayModeList`; a lower resolution is scaled to the screen keeping its aspect ratio (black
+  bars when it differs), also for games with their own Vulkan (Celeste). Tested in Hollow Knight:
+  2016x912 fills the screen and the GPU load drops from 75 % to 57 %.
+- **FPS cap: 60, 90 or 120** (72 and Unlimited removed; old choices move to the default).
+- **Controller navigation in the quick menu:** left/right change the focused option and never move
+  to another row; from the action buttons, right jumps to the settings column; LB/RB switch
+  columns; the D-pad no longer counts twice (key + hat) and the stick uses only its main direction.
+  The upscaler's automatic choice is now just called "Automatic".
 
 ### Español
 
@@ -69,6 +81,20 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 - Stardew Valley ya pasa el arranque de `Game1` y se para más adelante (`LocalMultiplayer`, un
   tipo que no carga); en investigación.
 - Probado: Celeste (60 FPS) y Hollow Knight (menú) siguen funcionando.
+- **Los ajustes de pantalla están ahora en cada juego.** El menú rápido ya no tiene Pantalla
+  (Estirar / Ampliar / aspecto) ni la resolución en porcentaje: los juegos van siempre a la
+  resolución nativa de la pantalla, a pantalla completa y sin deformarse. El menú de vídeo del
+  propio juego muestra ahora resoluciones reales (720p, 900p, 1080p, 1/2, 5/8 y 3/4 de la pantalla,
+  y la nativa) mediante `EnumDisplaySettings` y `GetDisplayModeList` de DXGI; una resolución menor
+  se escala a la pantalla conservando la proporción (bandas negras si es distinta), también en los
+  juegos con Vulkan propio (Celeste). Probado en Hollow Knight: 2016x912 llena la pantalla y la
+  carga de la GPU baja del 75 % al 57 %.
+- **Tope de FPS: 60, 90 o 120** (se quitan 72 e Ilimitado; las elecciones antiguas pasan al valor
+  por defecto).
+- **Navegación con mando en el menú rápido:** izquierda/derecha cambian la opción enfocada y nunca
+  saltan a otra fila; desde los botones de acción, derecha salta a la columna de ajustes; LB/RB
+  cambian de columna; la cruceta ya no cuenta doble (tecla + hat) y el stick solo usa su dirección
+  principal. La opción automática del reescalado se llama ahora "Automático".
 
 ## 1.1.0
 

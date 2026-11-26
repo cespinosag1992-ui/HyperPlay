@@ -174,34 +174,18 @@
     <string name="frame_gen_hint" translatable="false">HyperFG 2×</string>
     <string name="set_thermal">Thermal protection</string>
     <string name="thermal_hint">Keeps the battery below 40 °C</string>
-    <string name="set_render_scale">Render resolution</string>
-    <string name="render_scale_hint">Applies when you reopen the game</string>
     <string name="set_upscaler">Upscaling</string>
-    <string name="set_screen_fit">Screen</string>
-    <string name="fit_wide">Widescreen</string>
-    <string name="fit_wide_hint">More of the scene at the sides, no distortion (on game restart)</string>
-    <string name="fit_original">Original</string>
-    <string name="fit_stretch">Stretch</string>
-    <string name="fit_zoom">Zoom</string>
-    <string name="fit_original_hint">The game as it draws itself (16:9 games keep side bars)</string>
-    <string name="fit_stretch_hint">Fills the screen by widening the image</string>
-    <string name="fit_zoom_hint">Fills the screen without distortion; crops top and bottom</string>
     <string name="set_fsr">FSR sharpening (CAS)</string>
     <string name="set_overlay">Performance overlay</string>
     <string name="set_phone_rumble">Vibrate the phone</string>
     <string name="phone_rumble_hint">Only if the controller doesn\'t vibrate</string>
     <string name="notice_fps_locked">FPS cap locked: turn off HyperFG to choose it</string>
-    <string name="notice_render_scale">Render scale applies when the game starts again.</string>
 
     <!-- Session options -->
     <string name="fps_cap_60">60 FPS (Efficient)</string>
-    <string name="fps_cap_72" translatable="false">72 FPS</string>
+    <string name="fps_cap_90" translatable="false">90 FPS</string>
     <string name="fps_cap_120" translatable="false">120 FPS</string>
-    <string name="fps_cap_unlimited">Unlimited</string>
-    <string name="render_native" formatted="false">100 % Native</string>
-    <string name="render_85" translatable="false" formatted="false">85 %</string>
-    <string name="render_75" translatable="false" formatted="false">75 %</string>
-    <string name="upscaler_auto" formatted="false">Auto (SGSR v1 if scale &lt; 100 %)</string>
+    <string name="upscaler_auto" formatted="false">Automatic</string>
     <string name="upscaler_sgsr">SGSR v1 always (sharpness)</string>
     <string name="upscaler_off">Bilinear (OFF)</string>
     <string name="overlay_full">Full</string>

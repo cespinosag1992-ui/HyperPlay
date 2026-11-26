@@ -499,7 +499,15 @@ void testWin32DisplayAndKnownFolders() {
 
     uint8_t devMode[220];
     std::memset(devMode, 0xCC, sizeof(devMode));
-    fillDevMode(devMode, 0);
+    // Lista de modos: de menor a mayor y la última es la nativa; ENUM_CURRENT_SETTINGS = nativa.
+    DisplayModeSize modes[kMaxDisplayModes];
+    const int nModes = displayModes(modes);
+    CHECK(nModes >= 2);
+    CHECK_EQ(modes[nModes - 1].w, screenWidth());
+    CHECK_EQ(modes[nModes - 1].h, screenHeight());
+    for (int i = 1; i < nModes; ++i) CHECK(modes[i - 1].w <= modes[i].w);
+    CHECK(!fillDevMode(devMode, static_cast<uint32_t>(nModes)));  // fin de la lista
+    CHECK(fillDevMode(devMode, 0xFFFFFFFFu));
     CHECK_EQ(*reinterpret_cast<uint16_t*>(devMode + 68), 220);      // dmSize
     CHECK_EQ(*reinterpret_cast<uint32_t*>(devMode + 72), 0x005C0000u);  // dmFields (+DM_DISPLAYFREQUENCY)
     CHECK_EQ(*reinterpret_cast<uint32_t*>(devMode + 168), 32);      // dmBitsPerPel

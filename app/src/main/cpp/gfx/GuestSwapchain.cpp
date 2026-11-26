@@ -2,6 +2,7 @@
 
 #include "DirectVulkanBridge.h"
 #include "HyperFrameGen.h"
+#include "loader/Win32DisplayInfo.h"
 
 #include <android/log.h>
 #include <sys/system_properties.h>
@@ -25,7 +26,7 @@ namespace {
     X(vkAllocateCommandBuffers) X(vkBeginCommandBuffer) X(vkEndCommandBuffer) X(vkResetCommandBuffer)               \
     X(vkCmdPipelineBarrier) X(vkCmdCopyImage) X(vkCmdBlitImage) X(vkCreateSemaphore) X(vkDestroySemaphore)          \
     X(vkCreateFence) X(vkDestroyFence) X(vkWaitForFences) X(vkResetFences) X(vkDeviceWaitIdle)                      \
-    X(vkCreateImageView) X(vkDestroyImageView)
+    X(vkCreateImageView) X(vkDestroyImageView) X(vkCmdClearColorImage)
 
 struct Fns {
 #define GS_DECL(name) PFN_##name name = nullptr;
@@ -65,7 +66,8 @@ struct GuestSwapchain::Impl final : FrameGenHost {
 
     VkSwapchainKHR real = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
-    VkExtent2D extent{};
+    VkExtent2D extent{};      // imágenes del juego (la resolución que eligió)
+    VkExtent2D realExtent{};  // swapchain real: siempre la nativa de la pantalla
     uint64_t generation = 0;
     std::vector<VkImage> realImages;
     std::vector<VkImageView> realViews;
@@ -114,7 +116,7 @@ struct GuestSwapchain::Impl final : FrameGenHost {
         }
         out.image = realImages[r];
         out.view = realViews[r];
-        out.extent = extent;
+        out.extent = realExtent;
         out.format = format;
         out.transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
         out.index = r;
@@ -299,7 +301,27 @@ struct GuestSwapchain::Impl final : FrameGenHost {
                 VK_ACCESS_TRANSFER_READ_BIT);
         barrier(c, realImages[r], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                 VK_ACCESS_TRANSFER_WRITE_BIT);
-        if (blit) {
+        if (extent.width != realExtent.width || extent.height != realExtent.height) {
+            // Resolución elegida en el juego distinta de la nativa: fondo negro y la imagen escalada
+            // con su proporción, centrada (nunca estirada).
+            const VkClearColorValue black{{0.0f, 0.0f, 0.0f, 1.0f}};
+            const VkImageSubresourceRange all{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            f.vkCmdClearColorImage(c, realImages[r], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+            const double sx = static_cast<double>(realExtent.width) / extent.width;
+            const double sy = static_cast<double>(realExtent.height) / extent.height;
+            const double s = sx < sy ? sx : sy;
+            const auto w = static_cast<int32_t>(extent.width * s), h = static_cast<int32_t>(extent.height * s);
+            const int32_t x0 = (static_cast<int32_t>(realExtent.width) - w) / 2;
+            const int32_t y0 = (static_cast<int32_t>(realExtent.height) - h) / 2;
+            VkImageBlit b{};
+            b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            b.dstSubresource = b.srcSubresource;
+            b.srcOffsets[1] = {static_cast<int32_t>(extent.width), static_cast<int32_t>(extent.height), 1};
+            b.dstOffsets[0] = {x0, y0, 0};
+            b.dstOffsets[1] = {x0 + w, y0 + h, 1};
+            f.vkCmdBlitImage(c, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, realImages[r],
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
+        } else if (blit) {
             VkImageBlit b{};
             b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
             b.dstSubresource = b.srcSubresource;
@@ -414,8 +436,12 @@ VkResult GuestSwapchain::createSwapchain(VkDevice device, const VkSwapchainCreat
     VkSwapchainCreateInfoKHR info = *ci;
     info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     info.minImageCount = std::max<uint32_t>(info.minImageCount, 3);
+    // El swapchain real va siempre a la resolución nativa: si el juego eligió otra en sus opciones,
+    // su imagen se presenta centrada con su proporción (bandas negras), sin que Android la estire.
+    info.imageExtent = {static_cast<uint32_t>(win32::screenWidth()), static_cast<uint32_t>(win32::screenHeight())};
     VkResult r = real(device, &info, nullptr, out);
-    if (r != VK_SUCCESS) return real(device, ci, nullptr, out);  // sin el uso extra: como siempre
+    if (r == VK_SUCCESS) m.realExtent = info.imageExtent;
+    if (r != VK_SUCCESS) return real(device, ci, nullptr, out);  // sin el uso extra ni la nativa: como siempre
     uint32_t n = 0;
     m.f.vkGetSwapchainImagesKHR(device, *out, &n, nullptr);
     m.realImages.assign(n, VK_NULL_HANDLE);
@@ -429,7 +455,8 @@ VkResult GuestSwapchain::createSwapchain(VkDevice device, const VkSwapchainCreat
     m.format = ci->imageFormat;
     m.extent = ci->imageExtent;
     ++m.generation;
-    LOGI("Swapchain virtual: %u imágenes %ux%u formato %d", n, m.extent.width, m.extent.height, m.format);
+    LOGI("Swapchain virtual: %u imágenes, juego %ux%u, pantalla %ux%u, formato %d", n, m.extent.width, m.extent.height,
+         m.realExtent.width, m.realExtent.height, m.format);
     return VK_SUCCESS;
 }
 

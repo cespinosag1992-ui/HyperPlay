@@ -776,4 +776,10 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - SNAB +20 lista {u32, bus, u32 tipo, f32 dB}. Snapshots de la línea de tiempo (instrumento-evento) aplicadas mientras el playhead está dentro.
 - Teléfono: "Snapshots activas: 3 buses" en el prólogo; pausa -> 6; unpause -> 3.
 - TRNB 86 bytes: +40 condiciones {parámetro, mín, máx}. music: 88x60 (s==e), 19x86 región, 3x86 marcador; sfx 3529/80/540.
-- `Bucle event:/music/lvl0/intro: 2636089 -> 427056`.
+- `Bucle event:/music/lvl0/intro: 2636089 -> 427056`.## 2026-11-25 — Pantalla dentro del juego y cruceta del menú rápido
+- Quitados del menú rápido Pantalla (Estirar/Ampliar/aspecto) y Resolución %. Fijos: escala 100 % y fit Wide (3). Tope FPS 60/90/120.
+- Lista de modos (`Win32DisplayInfo.h` displayModes): 1280x720, 1600x900, 1920x1080, nativa/2, x5/8, x3/4, nativa; sin modos mayores que la nativa.
+- HK: Opciones > Vídeo muestra "2688 x 1216 @ 144Hz"; izquierda -> "2016 x 912"; Aplicar -> llena la pantalla sin deformar, GPU 75 % -> 57 %. HK no pide GetDisplayModeList ni termina EnumDisplaySettings en el log (Unity usa otra vía o no llega al final de la lista), pero la lista sale.
+- GuestSwapchain: swapchain real a tamaño nativo; si el juego usa otra extensión, limpia a negro + blit LINEAR centrado. Celeste 126 FPS (HyperFG), 16:9 con bandas.
+- Cruceta: DPAD_RIGHT en "Reanudar" -> salta a ajustes (primer habilitado: Generación de fotogramas); DOWN -> Protección térmica (una fila).
+- Las teclas de `adb input keyevent` no llegan al juego (sin dispositivo); usar los botones del mando táctil con `input swipe x y x y 200` (A 2325,998; abajo 750,1024; izquierda 640,915).

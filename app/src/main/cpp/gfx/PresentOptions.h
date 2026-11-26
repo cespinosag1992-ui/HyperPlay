@@ -42,8 +42,31 @@ inline std::atomic<bool> g_widePatched{false};
 /// rotado: se usa su lado largo / corto).
 inline void applyFit(float pc[8], uint32_t srcW, uint32_t srcH, uint32_t dstW, uint32_t dstH) noexcept {
     const int fit = g_fit.load(std::memory_order_relaxed);
-    if (fit == kFitOriginal || fit == kFitWide || g_widePatched.load(std::memory_order_relaxed) ||
-        srcW == 0 || srcH == 0 || dstW == 0 || dstH == 0) return;
+    if (srcW == 0 || srcH == 0 || dstW == 0 || dstH == 0) return;
+    if (fit == kFitOriginal || fit == kFitWide || g_widePatched.load(std::memory_order_relaxed)) {
+        // Sin deformar nunca: si el juego eligió en sus opciones una resolución de otro aspecto
+        // (p. ej. 1920x1080 en un panel 20:9), la imagen se centra con su proporción y el resto
+        // queda negro (el sampler de presentación tiene borde negro). Mismo aspecto: tal cual.
+        const float longSide = static_cast<float>(dstW > dstH ? dstW : dstH);
+        const float shortSide = static_cast<float>(dstW > dstH ? dstH : dstW);
+        const float screen = longSide / shortSide;
+        const float image = static_cast<float>(srcW) / static_cast<float>(srcH);
+        if (image > screen * 0.99f && image < screen * 1.01f) return;
+        float sx = 1.0f, sy = 1.0f, cx = 0.0f, cy = 0.0f;
+        if (image < screen) {  // más estrecha: bandas a los lados
+            const float w = image / screen;
+            sx = 1.0f / w;
+            cx = -(1.0f - w) * 0.5f / w;
+        } else {  // más ancha: bandas arriba y abajo
+            const float h = screen / image;
+            sy = 1.0f / h;
+            cy = -(1.0f - h) * 0.5f / h;
+        }
+        pc[0] *= sx; pc[1] *= sx; pc[2] *= sy; pc[3] *= sy;
+        pc[4] = cx + sx * pc[4];
+        pc[5] = cy + sy * pc[5];
+        return;
+    }
     constexpr float kContent = 16.0f / 9.0f;
     const float srcAspect = static_cast<float>(srcW) / static_cast<float>(srcH);
     if (srcAspect <= kContent * 1.01f) return;  // ya es 16:9 o más estrecho: nada que llenar

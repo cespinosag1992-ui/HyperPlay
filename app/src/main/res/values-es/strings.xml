@@ -171,30 +171,16 @@
     <string name="frame_gen_throttled">Limitada a %1$d FPS hasta que se enfríe</string>
     <string name="set_thermal">Protección térmica</string>
     <string name="thermal_hint">Mantiene la batería por debajo de 40 °C</string>
-    <string name="set_render_scale">Resolución de render</string>
-    <string name="render_scale_hint">Se aplica al volver a abrir el juego</string>
     <string name="set_upscaler">Reescalado</string>
-    <string name="set_screen_fit">Pantalla</string>
-    <string name="fit_wide">Panorámica</string>
-    <string name="fit_wide_hint">Más escenario a los lados, sin deformar (al reiniciar el juego)</string>
-    <string name="fit_original">Original</string>
-    <string name="fit_stretch">Estirar</string>
-    <string name="fit_zoom">Ampliar</string>
-    <string name="fit_original_hint">El juego tal como se dibuja (los de 16:9 dejan barras a los lados)</string>
-    <string name="fit_stretch_hint">Llena la pantalla ensanchando la imagen</string>
-    <string name="fit_zoom_hint">Llena la pantalla sin deformar; recorta arriba y abajo</string>
     <string name="set_fsr">Nitidez FSR (CAS)</string>
     <string name="set_overlay">Indicador de rendimiento</string>
     <string name="set_phone_rumble">Vibrar el teléfono</string>
     <string name="phone_rumble_hint">Solo si el mando no vibra</string>
     <string name="notice_fps_locked">Tope de FPS bloqueado: desactiva HyperFG para elegirlo</string>
-    <string name="notice_render_scale">La escala de render se aplica al iniciar el juego de nuevo.</string>
 
     <!-- Opciones de la sesión -->
     <string name="fps_cap_60">60 FPS (Eficiente)</string>
-    <string name="fps_cap_unlimited">Sin límite</string>
-    <string name="render_native" formatted="false">100 % Nativa</string>
-    <string name="upscaler_auto" formatted="false">Auto (SGSR v1 si escala &lt; 100 %)</string>
+    <string name="upscaler_auto" formatted="false">Automático</string>
     <string name="upscaler_sgsr">SGSR v1 siempre (nitidez)</string>
     <string name="upscaler_off">Bilineal (OFF)</string>
     <string name="overlay_full">Completo</string>

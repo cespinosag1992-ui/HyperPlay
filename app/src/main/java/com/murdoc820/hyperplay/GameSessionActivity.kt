@@ -46,11 +46,10 @@ import com.murdoc820.hyperplay.session.FpsCapOption
 import com.murdoc820.hyperplay.session.FrameGenLogic
 import com.murdoc820.hyperplay.session.GameSessionLogic
 import com.murdoc820.hyperplay.session.PerfMonitor
-import com.murdoc820.hyperplay.session.RenderScaleOption
+import com.murdoc820.hyperplay.session.DisplayPolicy
 import com.murdoc820.hyperplay.session.ThermalDecision
 import com.murdoc820.hyperplay.session.ThermalGovernor
 import com.murdoc820.hyperplay.session.UpscalerMode
-import com.murdoc820.hyperplay.session.ScreenFitOption
 import com.murdoc820.hyperplay.session.readBatteryTempC
 import com.murdoc820.hyperplay.session.PerfOverlayMode
 import com.murdoc820.hyperplay.session.QuickMenuItem
@@ -113,6 +112,7 @@ class GameSessionActivity : ComponentActivity() {
 
     // Navegación del menú con hat / stick (flancos).
     private var lastMenuAxisX = 0
+    private var lastMenuDpadKeyAt = 0L
     private var lastMenuAxisY = 0
 
     private val controllerListener = object : ControllerManager.Listener {
@@ -166,8 +166,6 @@ class GameSessionActivity : ComponentActivity() {
         // Modo eficiente: tope de FPS (60 por defecto), protección térmica y escala de render.
         state.fpsCap = FpsCapOption.fromKey(prefs.getString(FpsCapOption.PREFS_KEY, null))
         state.thermalProtection = prefs.getBoolean(ThermalGovernor.PREFS_KEY, ThermalGovernor.DEFAULT_ENABLED)
-        state.renderScale = RenderScaleOption.fromKey(prefs.getString(RenderScaleOption.PREFS_KEY, null))
-        state.sessionScale = state.renderScale
         state.upscaler = UpscalerMode.fromKey(prefs.getString(UpscalerMode.PREFS_KEY, null))
         HyperPlayNative.nativeSetUpscaler(state.upscaler.nativeId)
         HyperPlayNative.nativeSetSgsrSharpness(SGSR_SHARPNESS)
@@ -179,9 +177,9 @@ class GameSessionActivity : ComponentActivity() {
 
         applyDisplayModeForTarget(FrameGenLogic.panelHz(state.thermal, state.frameGen))
         displayHz = display?.refreshRate ?: 60f
-        // Sin límites de resolución: el juego ve la resolución nativa de este teléfono (o la escala
-        // elegida en el Quick Menu; 100 % por defecto).
-        HyperPlayNative.nativeSetRenderScale(state.renderScale.percent)
+        // Resolución nativa de este teléfono, siempre: la resolución y el aspecto los elige el juego
+        // en sus propias opciones (HyperPlay ya no tiene escala en % en el Quick Menu).
+        HyperPlayNative.nativeSetRenderScale(DisplayPolicy.RENDER_SCALE_PERCENT)
         windowManager.maximumWindowMetrics.bounds.let { b ->
             HyperPlayNative.nativeSetDisplayMode(b.width(), b.height(), Math.round(displayHz))
         }
@@ -196,8 +194,8 @@ class GameSessionActivity : ComponentActivity() {
 
         exePath = intent.getStringExtra(EXTRA_EXE_PATH).orEmpty()
         state.title = File(exePath).parentFile?.name ?: exePath
-        state.screenFit = ScreenFitOption.fromKey(prefs.getString(ScreenFitOption.prefsKey(exePath), null))
-        HyperPlayNative.nativeSetScreenFit(state.screenFit.nativeId)
+        // Sin deformar nunca: panorámica real si el juego se puede parchear, si no su aspecto.
+        HyperPlayNative.nativeSetScreenFit(DisplayPolicy.SCREEN_FIT_NATIVE_ID)
         state.art = runCatching { com.murdoc820.hyperplay.art.GameArtRepository.cached(this, exePath) }.getOrNull()
         state.perfMode = PerfOverlayMode.fromKey(prefs.getString(PerfOverlayMode.PREFS_KEY, null))
         startPerfMonitor()
@@ -492,9 +490,7 @@ class GameSessionActivity : ComponentActivity() {
             QuickMenuItem.FPS_CAP -> changeFpsCap(1)
             QuickMenuItem.FRAME_GEN -> toggleFrameGen()
             QuickMenuItem.THERMAL -> toggleThermalProtection()
-            QuickMenuItem.RENDER_SCALE -> changeRenderScale(1)
             QuickMenuItem.UPSCALER -> changeUpscaler(1)
-            QuickMenuItem.SCREEN_FIT -> changeScreenFit(1)
             QuickMenuItem.FSR_UPSCALE -> toggleFsrUpscale()
             QuickMenuItem.OVERLAY -> changePerfMode(1)
             QuickMenuItem.PHONE_RUMBLE -> togglePhoneRumble()
@@ -646,27 +642,11 @@ class GameSessionActivity : ComponentActivity() {
         sounds.navigate()
     }
 
-    private fun changeRenderScale(step: Int) {
-        val next = RenderScaleOption.cycle(state.renderScale, step)
-        state.renderScale = next
-        prefs.edit { putString(RenderScaleOption.PREFS_KEY, next.key) }
-        if (next != state.sessionScale) state.notice = getString(R.string.notice_render_scale)
-        sounds.navigate()
-    }
-
     private fun changeUpscaler(step: Int) {
         val next = UpscalerMode.cycle(state.upscaler, step)
         state.upscaler = next
         prefs.edit { putString(UpscalerMode.PREFS_KEY, next.key) }
         HyperPlayNative.nativeSetUpscaler(next.nativeId)  // en caliente: el pase elige por frame
-        sounds.navigate()
-    }
-
-    private fun changeScreenFit(step: Int) {
-        val next = ScreenFitOption.cycle(state.screenFit, step)
-        state.screenFit = next
-        prefs.edit { putString(ScreenFitOption.prefsKey(exePath), next.key) }
-        HyperPlayNative.nativeSetScreenFit(next.nativeId)  // en caliente, por frame
         sounds.navigate()
     }
 
@@ -703,9 +683,7 @@ class GameSessionActivity : ComponentActivity() {
             QuickMenuItem.FPS_CAP -> changeFpsCap(step)
             QuickMenuItem.FRAME_GEN -> toggleFrameGen()
             QuickMenuItem.THERMAL -> toggleThermalProtection()
-            QuickMenuItem.RENDER_SCALE -> changeRenderScale(step)
             QuickMenuItem.UPSCALER -> changeUpscaler(step)
-            QuickMenuItem.SCREEN_FIT -> changeScreenFit(step)
             QuickMenuItem.FSR_UPSCALE -> toggleFsrUpscale()
             QuickMenuItem.OVERLAY -> changePerfMode(step)
             QuickMenuItem.PHONE_RUMBLE -> togglePhoneRumble()
@@ -756,11 +734,15 @@ class GameSessionActivity : ComponentActivity() {
     private fun handleMenuKey(event: KeyEvent) {
         val code = event.keyCode
         if (event.action == KeyEvent.ACTION_DOWN) {
+            if (code in DPAD_KEYS) lastMenuDpadKeyAt = android.os.SystemClock.uptimeMillis()
             when (code) {
                 KeyEvent.KEYCODE_DPAD_UP -> moveMenuFocus(-1)
                 KeyEvent.KEYCODE_DPAD_DOWN -> moveMenuFocus(1)
-                KeyEvent.KEYCODE_DPAD_LEFT -> changeFocusedValue(-1)
-                KeyEvent.KEYCODE_DPAD_RIGHT -> changeFocusedValue(1)
+                KeyEvent.KEYCODE_DPAD_LEFT -> menuHorizontal(-1)
+                KeyEvent.KEYCODE_DPAD_RIGHT -> menuHorizontal(1)
+                // LB/RB: saltar entre la columna de acciones y la de ajustes.
+                KeyEvent.KEYCODE_BUTTON_L1 -> if (event.repeatCount == 0) jumpMenuColumn(toSettings = false)
+                KeyEvent.KEYCODE_BUTTON_R1 -> if (event.repeatCount == 0) jumpMenuColumn(toSettings = true)
             }
             return
         }
@@ -790,18 +772,72 @@ class GameSessionActivity : ComponentActivity() {
     }
 
     /** Hat o stick izquierdo como cruceta del menú (solo en el flanco de entrada). */
+    /**
+     * Cruceta (como ejes HAT) y stick izquierdo en el Quick Menu. Una sola dirección a la vez:
+     * - La cruceta de muchos mandos llega como teclas Y como ejes HAT: si acaba de llegar una tecla
+     *   de cruceta, el HAT se ignora (antes cada pulsación contaba dos veces).
+     * - Stick: solo el eje dominante y con histéresis (entra a 0,6, sale a 0,35). Antes, al empujar a
+     *   la derecha para cambiar un valor, la desviación vertical bajaba el foco a la fila de abajo.
+     */
     private fun handleMenuAxes(event: MotionEvent) {
-        fun dir(hat: Float, stick: Float): Int = when {
-            hat <= -0.5f || stick <= -MENU_STICK_THRESHOLD -> -1
-            hat >= 0.5f || stick >= MENU_STICK_THRESHOLD -> 1
-            else -> 0
+        val now = android.os.SystemClock.uptimeMillis()
+        val hatFresh = now - lastMenuDpadKeyAt > MENU_DPAD_DEDUP_MS
+        val hx = if (hatFresh) event.getAxisValue(MotionEvent.AXIS_HAT_X) else 0f
+        val hy = if (hatFresh) event.getAxisValue(MotionEvent.AXIS_HAT_Y) else 0f
+        val sx = event.getAxisValue(MotionEvent.AXIS_X)
+        val sy = event.getAxisValue(MotionEvent.AXIS_Y)
+        var x = 0
+        var y = 0
+        when {
+            kotlin.math.abs(hx) >= 0.5f || kotlin.math.abs(hy) >= 0.5f -> {
+                if (kotlin.math.abs(hx) >= kotlin.math.abs(hy)) x = if (hx > 0) 1 else -1 else y = if (hy > 0) 1 else -1
+            }
+            else -> {
+                val ax = kotlin.math.abs(sx)
+                val ay = kotlin.math.abs(sy)
+                val engaged = lastMenuAxisX != 0 || lastMenuAxisY != 0
+                val threshold = if (engaged) MENU_STICK_RELEASE else MENU_STICK_THRESHOLD
+                if (maxOf(ax, ay) >= threshold) {
+                    // Mantener el eje ya activo mientras siga por encima del umbral de salida.
+                    val useX = when {
+                        lastMenuAxisX != 0 && ax >= MENU_STICK_RELEASE -> true
+                        lastMenuAxisY != 0 && ay >= MENU_STICK_RELEASE -> false
+                        else -> ax >= ay
+                    }
+                    if (useX) x = if (sx > 0) 1 else -1 else y = if (sy > 0) 1 else -1
+                }
+            }
         }
-        val y = dir(event.getAxisValue(MotionEvent.AXIS_HAT_Y), event.getAxisValue(MotionEvent.AXIS_Y))
-        val x = dir(event.getAxisValue(MotionEvent.AXIS_HAT_X), event.getAxisValue(MotionEvent.AXIS_X))
         if (y != 0 && y != lastMenuAxisY) moveMenuFocus(y)
-        if (x != 0 && x != lastMenuAxisX) changeFocusedValue(x)
+        if (x != 0 && x != lastMenuAxisX) menuHorizontal(x)
         lastMenuAxisY = y
         lastMenuAxisX = x
+    }
+
+    /**
+     * Izquierda/derecha: en un ajuste cambian su valor; en la columna de acciones, derecha salta a
+     * los ajustes (no hace nada inesperado).
+     */
+    private fun menuHorizontal(step: Int) {
+        if (state.confirmKill) {
+            state.confirmIndex = GameSessionLogic.moveFocus(state.confirmIndex, step, 2)
+            sounds.navigate()
+            return
+        }
+        val item = QuickMenuItem.entries[state.menuIndex]
+        if (item.isAction) {
+            if (step > 0) jumpMenuColumn(toSettings = true)
+            return
+        }
+        changeFocusedValue(step)
+    }
+
+    private fun jumpMenuColumn(toSettings: Boolean) {
+        if (state.confirmKill) return
+        val target = if (toSettings) QuickMenuItem.entries.first { !it.isAction } else QuickMenuItem.RESUME
+        if (state.menuIndex == target.ordinal) return
+        state.menuIndex = target.ordinal
+        sounds.navigate()
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -843,6 +879,14 @@ class GameSessionActivity : ComponentActivity() {
         /** Nitidez de SGSR v1: 0,30 = intensidad original, equilibrada para arte 2D (sin halos). */
         private const val SGSR_SHARPNESS = 0.30f
         private const val MENU_STICK_THRESHOLD = 0.6f
+        /** Histéresis del stick: el eje activo se suelta por debajo de este valor. */
+        private const val MENU_STICK_RELEASE = 0.35f
+        /** Tras una tecla de cruceta, los ejes HAT del mismo mando se ignoran este tiempo. */
+        private const val MENU_DPAD_DEDUP_MS = 400L
+        private val DPAD_KEYS = setOf(
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+        )
 
         private val PASS_THROUGH_KEYS = setOf(
             KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_MUTE,

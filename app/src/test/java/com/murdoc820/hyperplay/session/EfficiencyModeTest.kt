@@ -35,8 +35,7 @@ class EfficiencyModeTest {
         assertTrue(d.throttled)
         assertTrue(d.relaxPrime)
         assertEquals(60, d.effectiveFps)
-        assertEquals(60, g.update(40f, true, FpsCapOption.FPS_72).effectiveFps)
-        assertEquals(60, g.update(40f, true, FpsCapOption.UNLIMITED).effectiveFps)
+        assertEquals(60, g.update(40f, true, FpsCapOption.FPS_90).effectiveFps)
         // Un tope de 60 ya es el de protección: no cambia (pero sí relaja Prime).
         val at60 = g.update(40f, true, FpsCapOption.FPS_60)
         assertEquals(60, at60.effectiveFps)
@@ -46,15 +45,15 @@ class EfficiencyModeTest {
     @Test
     fun hysteresisReturnsToNormalOnlyAt37_5() {
         val g = ThermalGovernor()
-        g.update(40f, true, FpsCapOption.FPS_72)
-        assertTrue(g.update(38.9f, true, FpsCapOption.FPS_72).throttled)  // zona intermedia: sigue
-        assertTrue(g.update(37.6f, true, FpsCapOption.FPS_72).throttled)
-        val back = g.update(37.5f, true, FpsCapOption.FPS_72)
+        g.update(40f, true, FpsCapOption.FPS_90)
+        assertTrue(g.update(38.9f, true, FpsCapOption.FPS_90).throttled)  // zona intermedia: sigue
+        assertTrue(g.update(37.6f, true, FpsCapOption.FPS_90).throttled)
+        val back = g.update(37.5f, true, FpsCapOption.FPS_90)
         assertFalse(back.throttled)
         assertFalse(back.relaxPrime)
-        assertEquals(72, back.effectiveFps)
+        assertEquals(90, back.effectiveFps)
         // Y no vuelve a activarse hasta 39,5.
-        assertFalse(g.update(39.0f, true, FpsCapOption.FPS_72).throttled)
+        assertFalse(g.update(39.0f, true, FpsCapOption.FPS_90).throttled)
     }
 
     @Test
@@ -82,44 +81,40 @@ class EfficiencyModeTest {
     @Test
     fun missingReadingKeepsState() {
         val g = ThermalGovernor()
-        g.update(40f, true, FpsCapOption.FPS_72)
-        assertTrue(g.update(null, true, FpsCapOption.FPS_72).throttled)
-        assertFalse(ThermalGovernor().update(null, true, FpsCapOption.FPS_72).throttled)
+        g.update(40f, true, FpsCapOption.FPS_90)
+        assertTrue(g.update(null, true, FpsCapOption.FPS_90).throttled)
+        assertFalse(ThermalGovernor().update(null, true, FpsCapOption.FPS_90).throttled)
     }
 
     // ---- Selectores ---------------------------------------------------------------------------
 
     @Test
-    fun fpsCapDefaultsTo60AndCycles() {
+    fun fpsCapIs60_90_120AndCycles() {
+        assertEquals(listOf(60, 90, 120), FpsCapOption.entries.map { it.fps })
         assertEquals(FpsCapOption.FPS_60, FpsCapOption.DEFAULT)
         assertEquals(FpsCapOption.FPS_60, FpsCapOption.fromKey(null))
-        assertEquals(FpsCapOption.FPS_72, FpsCapOption.fromKey("72"))
-        assertEquals(FpsCapOption.UNLIMITED, FpsCapOption.fromKey("off"))
+        assertEquals(FpsCapOption.FPS_90, FpsCapOption.fromKey("90"))
+        // Claves antiguas (72 y sin límite) vuelven al valor por defecto.
+        assertEquals(FpsCapOption.FPS_60, FpsCapOption.fromKey("72"))
+        assertEquals(FpsCapOption.FPS_60, FpsCapOption.fromKey("off"))
         assertEquals(FpsCapOption.FPS_60, FpsCapOption.fromKey("basura"))
-        assertEquals(FpsCapOption.FPS_72, FpsCapOption.cycle(FpsCapOption.FPS_60))
-        assertEquals(FpsCapOption.FPS_60, FpsCapOption.cycle(FpsCapOption.UNLIMITED))
-        assertEquals(FpsCapOption.UNLIMITED, FpsCapOption.cycle(FpsCapOption.FPS_60, -1))
-        assertEquals(0, FpsCapOption.UNLIMITED.fps)
+        assertEquals(FpsCapOption.FPS_90, FpsCapOption.cycle(FpsCapOption.FPS_60))
+        assertEquals(FpsCapOption.FPS_60, FpsCapOption.cycle(FpsCapOption.FPS_120))
+        assertEquals(FpsCapOption.FPS_120, FpsCapOption.cycle(FpsCapOption.FPS_60, -1))
     }
 
     @Test
     fun panelRefreshIsAnIntegerMultipleOfTheCap() {
         assertEquals(120, FpsCapOption.FPS_60.panelHz)   // 2 vsyncs exactos
-        assertEquals(144, FpsCapOption.FPS_72.panelHz)   // 2 vsyncs exactos
+        assertEquals(90, FpsCapOption.FPS_90.panelHz)
         assertEquals(120, FpsCapOption.FPS_120.panelHz)
-        for (cap in FpsCapOption.entries.filter { it.fps > 0 }) assertEquals(0, cap.panelHz % cap.fps)
+        for (cap in FpsCapOption.entries) assertEquals(0, cap.panelHz % cap.fps)
     }
 
     @Test
-    fun renderScaleDefaultsToNative() {
-        assertEquals(RenderScaleOption.NATIVE, RenderScaleOption.DEFAULT)
-        assertEquals(RenderScaleOption.NATIVE, RenderScaleOption.fromKey(null))
-        assertEquals(RenderScaleOption.P75, RenderScaleOption.fromKey("75"))
-        assertEquals(RenderScaleOption.P85, RenderScaleOption.cycle(RenderScaleOption.NATIVE))
-        assertEquals(RenderScaleOption.NATIVE, RenderScaleOption.cycle(RenderScaleOption.P75))
-        assertEquals(2284, RenderScaleOption.scaled(2688, 85))
-        assertEquals(912, RenderScaleOption.scaled(1216, 75))
-        assertEquals(2688, RenderScaleOption.scaled(2688, 100))
+    fun displayIsAlwaysNativeAndUndistorted() {
+        assertEquals(100, DisplayPolicy.RENDER_SCALE_PERCENT)
+        assertEquals(3, DisplayPolicy.SCREEN_FIT_NATIVE_ID)  // panorámica real o aspecto original
     }
 
     @Test
@@ -151,20 +146,18 @@ class EfficiencyModeTest {
         assertEquals(60, FrameGenLogic.gameFps(at60, frameGen = false))
         assertEquals(60, FrameGenLogic.gameFps(at60, frameGen = true))        // panel 120 Hz -> 60 -> 120
         assertEquals(120, FrameGenLogic.presentedFps(60, frameGen = true))
-        val at72 = g.update(36f, true, FpsCapOption.FPS_72)
-        assertEquals(60, FrameGenLogic.gameFps(at72, frameGen = true))        // tope bloqueado: 60 -> 120
+        val at90 = g.update(36f, true, FpsCapOption.FPS_90)
+        assertEquals(60, FrameGenLogic.gameFps(at90, frameGen = true))        // tope bloqueado: 60 -> 120
         val at120 = g.update(36f, true, FpsCapOption.FPS_120)
         assertEquals(60, FrameGenLogic.gameFps(at120, frameGen = true))
         assertEquals(120, FrameGenLogic.gameFps(at120, frameGen = false))
-        val unlimited = g.update(36f, true, FpsCapOption.UNLIMITED)
-        assertEquals(60, FrameGenLogic.gameFps(unlimited, frameGen = true))   // siempre con tope
         assertEquals(60, FrameGenLogic.presentedFps(60, frameGen = false))
     }
 
     @Test
     fun frameGenRespectsThermalProtection() {
         val g = ThermalGovernor()
-        val hot = g.update(40f, true, FpsCapOption.FPS_72)
+        val hot = g.update(40f, true, FpsCapOption.FPS_90)
         assertEquals(60, hot.effectiveFps)
         // Con calor HyperFG sigue, limitado a 60 en pantalla: 30 reales + 30 sintéticos.
         assertEquals(30, FrameGenLogic.gameFps(hot, frameGen = true))
@@ -202,7 +195,7 @@ class EfficiencyModeTest {
         val hot = g.update(41.5f, true, FpsCapOption.FPS_60)
         assertEquals(ThermalGovernor.HOT_FPS, hot.effectiveFps)
         assertEquals(30, FrameGenLogic.gameFps(hot, frameGen = true))  // HyperFG: 30 -> 60
-        assertEquals(40, g.update(41.0f, true, FpsCapOption.UNLIMITED).effectiveFps)  // histéresis
+        assertEquals(40, g.update(41.0f, true, FpsCapOption.FPS_120).effectiveFps)  // histéresis
         assertEquals(60, g.update(40.5f, true, FpsCapOption.FPS_60).effectiveFps)     // vuelve a 60
         assertEquals(60, g.update(38f, true, FpsCapOption.FPS_120).effectiveFps)      // sigue protegido
         assertEquals(120, g.update(37.5f, true, FpsCapOption.FPS_120).effectiveFps)   // normal
@@ -268,17 +261,5 @@ class EfficiencyModeTest {
         assertEquals(PerfLevel.GOOD, L.powerLevel(3.5f))
         assertEquals(PerfLevel.WARN, L.powerLevel(6f))
         assertEquals(PerfLevel.BAD, L.powerLevel(8f))
-    }
-
-    @Test
-    fun screenFitDefaultsCycleAndPerGameKey() {
-        assertEquals(ScreenFitOption.WIDE, ScreenFitOption.fromKey(null))
-        assertEquals(ScreenFitOption.ZOOM, ScreenFitOption.fromKey("zoom"))
-        assertEquals(ScreenFitOption.WIDE, ScreenFitOption.fromKey("basura"))
-        assertEquals(ScreenFitOption.STRETCH, ScreenFitOption.cycle(ScreenFitOption.ORIGINAL))
-        assertEquals(ScreenFitOption.WIDE, ScreenFitOption.cycle(ScreenFitOption.ZOOM))
-        assertEquals(ScreenFitOption.WIDE, ScreenFitOption.cycle(ScreenFitOption.ORIGINAL, -1))
-        assertEquals(3, ScreenFitOption.WIDE.nativeId)
-        assertEquals("screen_fit:/sdcard/A/a.exe", ScreenFitOption.prefsKey("/sdcard/A/a.exe"))
     }
 }

@@ -1,4 +1,4 @@
-﻿# HyperPlay
+# HyperPlay
 
 **[English](#english) · [Español](#español)**
 
@@ -18,7 +18,7 @@ own JIT, and wires Direct3D, audio and controllers straight to Vulkan, AAudio an
 | Game | Engine / API | Status |
 |---|---|---|
 | Hollow Knight | Unity (Mono), D3D11, x64 | **Playable**: menus, saves, gameplay, benches and physics (geo, bounces) fixed; 60-120 FPS on the GPU path |
-| Cuphead | Unity (Mono), D3D11, x64 | **Playable, in testing**: title, menus, save slots, world map and a run-and-gun level with shooting at ~120 FPS; bosses not verified yet. Real widescreen (more scene at the sides, no stretching) with Quick menu → Image → Screen = Widescreen, the default |
+| Cuphead | Unity (Mono), D3D11, x64 | **Playable, in testing**: title, menus, save slots, world map and a run-and-gun level with shooting at ~120 FPS; bosses not verified yet. Real widescreen (more scene at the sides, no stretching), always on |
 | DmC: Devil May Cry | Unreal 3, D3D9, **32-bit** | **Not working yet**: needs the 32-bit (WOW64) path and D3D9 → Vulkan |
 | Celeste | XNA → FNA, .NET Framework | **Starts, in testing**: runs on Mono x64 + FNA (Vulkan passed to the phone): title, menus, file select and the prologue at 60 FPS. HyperPlay downloads its .NET runtime (33 MB) the first time. **Audio without FMOD**: HyperPlay plays the game's own sound banks with its native FMOD Studio (effects, interface, ambience and music, with its layers and stereo position; snapshots still in progress, see `tools/managed-runtime`). Options and game progress are saved |
 | Hollow Knight: Silksong | Unity (Mono), D3D12/D3D11, x64 | Starts; first tests only, not verified as playable yet |
@@ -39,7 +39,10 @@ works and is tested on a RedMagic 10S Pro (Android 15).
   language (English and Spanish).
 - **Controllers**: Xbox, PlayStation, GameSir, 8BitDo and generic HID (Bluetooth or USB), with
   automatic mapping, analog triggers and vibration; touch controls appear when you touch the screen.
-- **Thermal protection**, FPS cap and performance overlay.
+- **Thermal protection**, FPS cap (60/90/120) and performance overlay.
+- **Display**: games always fill the screen at its native resolution without distortion. Each
+  game's own video options choose resolution, window mode and frame limit; lower resolutions are
+  scaled to the screen keeping the aspect ratio (black bars when it differs).
 - **In-app updates** from GitHub Releases, installed over the current version without losing data.
 - **Optional error reports** (the log is always kept on the phone).
 
@@ -113,7 +116,7 @@ JIT propio y conecta Direct3D, audio y mandos directamente con Vulkan, AAudio y 
 | Juego | Motor / API | Estado |
 |---|---|---|
 | Hollow Knight | Unity (Mono), D3D11, x64 | **Jugable**: menús, partidas, gameplay, bancos y física (geo, rebotes) corregidos; 60-120 FPS por la ruta GPU |
-| Cuphead | Unity (Mono), D3D11, x64 | **Jugable, en pruebas**: título, menús, ranuras de partida, mapa del mundo y un nivel de disparos a ~120 FPS; jefes sin verificar. Panorámica real (más escenario a los lados, sin estirar) con Menú rápido → Imagen → Pantalla = Panorámica, por defecto |
+| Cuphead | Unity (Mono), D3D11, x64 | **Jugable, en pruebas**: título, menús, ranuras de partida, mapa del mundo y un nivel de disparos a ~120 FPS; jefes sin verificar. Panorámica real (más escenario a los lados, sin estirar), siempre activa |
 | DmC: Devil May Cry | Unreal 3, D3D9, **32 bits** | **Aún no funciona**: falta la ruta de 32 bits (WOW64) y D3D9 → Vulkan |
 | Celeste | XNA → FNA, .NET Framework | **Arranca, en pruebas**: corre en Mono x64 + FNA (Vulkan pasado al teléfono): título, menús, selección de partida y el prólogo a 60 FPS. HyperPlay descarga su runtime .NET (33 MB) la primera vez. **Sonido sin FMOD**: HyperPlay reproduce los bancos de sonido del propio juego con su FMOD Studio nativo (efectos, interfaz, ambientes y música, con sus capas y la posición en estéreo; los snapshots siguen en curso, ver `tools/managed-runtime`). Se guardan las opciones y la partida |
 | Hollow Knight: Silksong | Unity (Mono), D3D12/D3D11, x64 | Arranca; solo primeras pruebas, aún sin verificar que sea jugable |
@@ -134,7 +137,11 @@ informes de errores) funciona y está probada en un RedMagic 10S Pro (Android 15
   usa el idioma del sistema (inglés y español).
 - **Mandos**: Xbox, PlayStation, GameSir, 8BitDo y HID genéricos (Bluetooth o USB), con mapeo
   automático, gatillos analógicos y vibración; mando táctil que aparece al tocar la pantalla.
-- **Protección térmica**, límite de FPS y overlay de rendimiento.
+- **Protección térmica**, límite de FPS (60/90/120) y overlay de rendimiento.
+- **Pantalla**: los juegos llenan siempre la pantalla a su resolución nativa sin deformarse. Las
+  opciones de vídeo de cada juego eligen la resolución, el modo de ventana y el límite de
+  fotogramas; las resoluciones menores se escalan a la pantalla conservando la proporción (bandas
+  negras si es distinta).
 - **Actualizaciones dentro de la app** desde GitHub Releases, instaladas por encima sin perder datos.
 - **Informes de errores** opcionales (registro siempre guardado en el teléfono).
 

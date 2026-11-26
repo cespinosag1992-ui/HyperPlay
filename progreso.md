@@ -1,8 +1,15 @@
 # HyperPlay · Progreso
 
 > Leer ANTES de empezar a trabajar y actualizar AL TERMINAR cada sesión/tarea.
-> Última actualización: 2026-11-20 20:10 (Silksong arranca sin internet: TryEnterCriticalSection; cierre por pila en CreateFileW; servidor de informes publicado; registros que se borran al enviarse; gate verde)
+> Última actualización: 2026-11-25 17:40 (ajustes de pantalla dentro del juego, tope 60/90/120, cruceta del menú rápido)
 > **ADB:** el puerto de depuración inalámbrica cambia al reactivarla; descubrir con `adb mdns services` (último: `192.168.0.2:33237`; si mDNS no lo ve: barrido de ping + `scratchpad/portscan.ps1` 30000-50000). Tras pruebas sin red, SIEMPRE `cmd connectivity set-package-networking-enabled true com.murdoc820.hyperplay`.
+
+## Pendientes del usuario (2026-11-25) — 1 y 2 HECHOS (17:40), sigue Stardew
+- HECHO 1: menú sin Pantalla ni Resolución %; nativa sin deformar; resoluciones en el menú de vídeo del juego (EnumDisplaySettings + DXGI GetDisplayModeList), escaladas con bandas; swapchain real de Vulkan a tamaño nativo; tope 60/90/120. Probado HK (2016x912 aplicado) y Celeste (126 FPS). Falta probar Silksong/Cuphead con resolución menor y el limitador propio de cada juego.
+- HECHO 2 (menú rápido): izquierda/derecha cambian el valor; derecha desde acciones salta a ajustes; LB/RB columnas; sin doble pulsación tecla+hat. Falta revisar el launcher y la pantalla de Ajustes con mando real.
+1. Ajustes de pantalla (todos los juegos estables: Cuphead, HK, Silksong, Celeste): quitar del menú de HyperPlay Estirar/Ampliar/aspecto y la resolución en %; resolución, aspecto y pantalla completa desde el propio juego (aunque haya que reiniciar); nativa a pantalla completa por defecto; tope de FPS 60/90/120 (sin 72); el limitador propio del juego debe funcionar.
+2. Navegación con mando en los menús de HyperPlay (launcher, menú rápido, ajustes): con la cruceta, derecha/izquierda deben cambiar el valor de la opción enfocada (no saltar a otros elementos); arriba/abajo entre filas.
+3. Luego: Stardew (TypeLoad + cascada "Stack overflow"), efectos de audio de Celeste, cinemática de Silksong, DmC.
 
 ## Stardew Valley (2026-11-21 09:30) — elegido sobre DmC (pedido del usuario: uno de los dos)
 - Juego .NET 6 autocontenido (apphost + hostfxr + CoreCLR + clrjit), MonoGame DesktopGL (SDL2 + OpenGL), OpenAL Soft.

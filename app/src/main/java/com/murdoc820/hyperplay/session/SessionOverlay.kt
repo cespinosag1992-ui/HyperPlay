@@ -69,7 +69,7 @@ enum class SessionPhase { LOADING, RUNNING, ENDED }
 enum class QuickMenuItem {
     RESUME, QUICK_EXIT, FORCE_KILL,
     FPS_CAP, FRAME_GEN, THERMAL,
-    SCREEN_FIT, RENDER_SCALE, UPSCALER, FSR_UPSCALE,
+    UPSCALER, FSR_UPSCALE,
     OVERLAY, PHONE_RUMBLE;
 
     val isAction: Boolean get() = this == RESUME || this == QUICK_EXIT || this == FORCE_KILL
@@ -110,12 +110,8 @@ class SessionUiState {
     /** Modo eficiente: tope elegido, protección térmica, escala (al iniciar) y decisión vigente. */
     var fpsCap by mutableStateOf(FpsCapOption.DEFAULT)
     var thermalProtection by mutableStateOf(ThermalGovernor.DEFAULT_ENABLED)
-    var renderScale by mutableStateOf(RenderScaleOption.DEFAULT)
-    /** Escala con la que arrancó esta sesión (para avisar si la elegida difiere). */
-    var sessionScale by mutableStateOf(RenderScaleOption.DEFAULT)
     var thermal by mutableStateOf(ThermalDecision(FpsCapOption.DEFAULT.fps, false, false, false))
     var upscaler by mutableStateOf(UpscalerMode.DEFAULT)
-    var screenFit by mutableStateOf(ScreenFitOption.DEFAULT)
     var frameGen by mutableStateOf(FrameGenLogic.DEFAULT_ENABLED)
 }
 
@@ -432,8 +428,6 @@ private fun SettingsPane(
         Spacer(Modifier.height(Mac.S3))
         MacSectionHeader(stringResource(R.string.section_image))
         MacGroup {
-            row(QuickMenuItem.SCREEN_FIT); MacSeparator()
-            row(QuickMenuItem.RENDER_SCALE); MacSeparator()
             row(QuickMenuItem.UPSCALER); MacSeparator()
             row(QuickMenuItem.FSR_UPSCALE)
         }
@@ -476,19 +470,7 @@ private fun settingFor(state: SessionUiState, item: QuickMenuItem): Setting = wh
         stringResource(if (state.thermalProtection) R.string.state_on_f else R.string.state_off_f),
         hint = stringResource(R.string.thermal_hint),
     )
-    QuickMenuItem.RENDER_SCALE -> Setting(
-        stringResource(R.string.set_render_scale),
-        stringResource(state.renderScale.label),
-        hint = if (state.renderScale != state.sessionScale) stringResource(R.string.render_scale_hint) else null,
-    )
     QuickMenuItem.UPSCALER -> Setting(stringResource(R.string.set_upscaler), stringResource(state.upscaler.label))
-    QuickMenuItem.SCREEN_FIT -> Setting(stringResource(R.string.set_screen_fit), stringResource(state.screenFit.label),
-        hint = stringResource(when (state.screenFit) {
-            ScreenFitOption.WIDE -> R.string.fit_wide_hint
-            ScreenFitOption.ORIGINAL -> R.string.fit_original_hint
-            ScreenFitOption.STRETCH -> R.string.fit_stretch_hint
-            ScreenFitOption.ZOOM -> R.string.fit_zoom_hint
-        }))
     QuickMenuItem.FSR_UPSCALE -> Setting(stringResource(R.string.set_fsr), stringResource(if (state.fsrUpscale) R.string.state_on_f else R.string.state_off_f))
     QuickMenuItem.OVERLAY -> Setting(stringResource(R.string.set_overlay), stringResource(state.perfMode.label))
     QuickMenuItem.PHONE_RUMBLE -> Setting(

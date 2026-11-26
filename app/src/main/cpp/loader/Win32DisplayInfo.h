@@ -122,19 +122,64 @@ inline int32_t systemMetric(int32_t index) noexcept {
     }
 }
 
-// DEVMODEW (Windows x64): sizeof = 220.
-inline void fillDevMode(void* lpDevMode, uint32_t modeNum) noexcept {
-    if (lpDevMode == nullptr) return;
+// Resoluciones que el juego puede elegir en sus opciones (como los modos de un monitor de PC),
+// de menor a mayor como las enumera Windows: la nativa del teléfono y fracciones con su mismo
+// aspecto (llenan la pantalla, reescaladas), más los 16:9 habituales (se ven con bandas negras a
+// los lados, sin deformar). La última es siempre la nativa.
+struct DisplayModeSize {
+    int32_t w, h;
+};
+inline constexpr int kMaxDisplayModes = 8;
+
+inline int displayModes(DisplayModeSize out[kMaxDisplayModes]) noexcept {
+    const int32_t nw = screenWidth(), nh = screenHeight();
+    auto even = [](int32_t v) { return v & ~1; };
+    DisplayModeSize all[kMaxDisplayModes] = {
+        {1280, 720}, {1600, 900}, {1920, 1080},                       // 16:9
+        {even(nw / 2), even(nh / 2)}, {even(nw * 5 / 8), even(nh * 5 / 8)},  // aspecto nativo
+        {even(nw * 3 / 4), even(nh * 3 / 4)},
+        {nw, nh},
+    };
+    int n = 0;
+    for (const auto& m : all) {
+        if (m.w <= 0 || m.h <= 0 || m.w > nw || m.h > nh) continue;
+        bool dup = false;
+        for (int i = 0; i < n; ++i) dup = dup || (out[i].w == m.w && out[i].h == m.h);
+        if (!dup && n < kMaxDisplayModes) out[n++] = m;
+    }
+    // Orden ascendente (ancho, después alto).
+    for (int i = 1; i < n; ++i) {
+        for (int j = i; j > 0 && (out[j].w < out[j - 1].w || (out[j].w == out[j - 1].w && out[j].h < out[j - 1].h)); --j) {
+            const DisplayModeSize t = out[j];
+            out[j] = out[j - 1];
+            out[j - 1] = t;
+        }
+    }
+    return n;
+}
+
+// DEVMODEW (Windows x64): sizeof = 220. modeNum: índice de displayModes(), o ENUM_CURRENT_SETTINGS
+// (-1) / ENUM_REGISTRY_SETTINGS (-2) = la nativa. Devuelve false si no existe ese modo.
+inline bool fillDevMode(void* lpDevMode, uint32_t modeNum) noexcept {
+    if (lpDevMode == nullptr) return false;
+    int32_t w = screenWidth(), h = screenHeight();
+    if (modeNum != 0xFFFFFFFFu && modeNum != 0xFFFFFFFEu) {
+        DisplayModeSize modes[kMaxDisplayModes];
+        const int n = displayModes(modes);
+        if (modeNum >= static_cast<uint32_t>(n)) return false;
+        w = modes[modeNum].w;
+        h = modes[modeNum].h;
+    }
     auto* bytes = static_cast<uint8_t*>(lpDevMode);
     std::memset(bytes, 0, 220);
     *reinterpret_cast<uint16_t*>(bytes + 68) = 220;          // dmSize
     // dmFields: DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY
     *reinterpret_cast<uint32_t*>(bytes + 72) = 0x005C0000u;
     *reinterpret_cast<uint32_t*>(bytes + 168) = 32;          // dmBitsPerPel
-    *reinterpret_cast<uint32_t*>(bytes + 172) = screenWidth();
-    *reinterpret_cast<uint32_t*>(bytes + 176) = screenHeight();
+    *reinterpret_cast<uint32_t*>(bytes + 172) = static_cast<uint32_t>(w);
+    *reinterpret_cast<uint32_t*>(bytes + 176) = static_cast<uint32_t>(h);
     *reinterpret_cast<uint32_t*>(bytes + 184) = refreshHz();  // dmDisplayFrequency
-    (void)modeNum;
+    return true;
 }
 
 // DISPLAY_DEVICEA (Windows x86/x64): sizeof = 424.

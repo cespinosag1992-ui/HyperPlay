@@ -8,68 +8,38 @@ import com.murdoc820.hyperplay.R
  * solo lee sensores y aplica las decisiones al motor (tope de FPS en caliente y anclaje Prime).
  */
 
-/** Tope de FPS del limitador preciso del motor. [fps] = 0 → sin límite. */
+/** Tope de FPS del limitador preciso del motor: 60, 90 o 120 (pedido del usuario: sin 72). */
 enum class FpsCapOption(val key: String, @StringRes val label: Int, val fps: Int) {
     FPS_60("60", R.string.fps_cap_60, 60),
-    FPS_72("72", R.string.fps_cap_72, 72),
-    FPS_120("120", R.string.fps_cap_120, 120),
-    UNLIMITED("off", R.string.fps_cap_unlimited, 0);
+    FPS_90("90", R.string.fps_cap_90, 90),
+    FPS_120("120", R.string.fps_cap_120, 120);
 
     /** Refresco que se pide al panel para que cada frame dure un número entero de vsyncs. */
-    val panelHz: Int get() = if (this == FPS_72) 144 else 120
+    val panelHz: Int get() = if (this == FPS_90) 90 else 120
 
     companion object {
         val DEFAULT = FPS_60
         const val PREFS_KEY = "fps_cap"
 
+        /** Claves antiguas ("72", "off") vuelven al valor por defecto. */
         fun fromKey(key: String?): FpsCapOption = entries.firstOrNull { it.key == key } ?: DEFAULT
 
         fun cycle(current: FpsCapOption, step: Int = 1): FpsCapOption = entries[(current.ordinal + step).mod(entries.size)]
     }
 }
 
-/** Escala de render (se aplica al iniciar la sesión). 100 % = nativa (por defecto). */
-enum class RenderScaleOption(val key: String, @StringRes val label: Int, val percent: Int) {
-    NATIVE("100", R.string.render_native, 100),
-    P85("85", R.string.render_85, 85),
-    P75("75", R.string.render_75, 75);
-
-    companion object {
-        val DEFAULT = NATIVE
-        const val PREFS_KEY = "render_scale"
-
-        fun fromKey(key: String?): RenderScaleOption = entries.firstOrNull { it.key == key } ?: DEFAULT
-
-        fun cycle(current: RenderScaleOption, step: Int = 1): RenderScaleOption =
-            entries[(current.ordinal + step).mod(entries.size)]
-
-        /** Dimensión escalada (como la aplica el motor: entero truncado). */
-        fun scaled(dim: Int, percent: Int): Int = dim * percent / 100
-    }
-}
-
 /**
- * Ajuste a la pantalla (por juego): para juegos que dibujan en 16:9 con barras en un panel más
- * ancho. Original = tal cual; Estirar = el área 16:9 a toda la pantalla; Ampliar = llena el ancho
- * sin deformar, recortando arriba y abajo.
+ * Imagen: siempre resolución nativa del teléfono a pantalla completa y sin deformar. La
+ * resolución, el aspecto y la pantalla completa los decide el propio juego desde sus opciones
+ * (antes había en el Quick Menu "Pantalla" Estirar/Ampliar y "Resolución" en %, retirados a
+ * petición del usuario: deformaban la imagen).
  */
-enum class ScreenFitOption(val key: String, @StringRes val label: Int, val nativeId: Int) {
-    /** El juego dibuja más escenario a los lados (si HyperPlay sabe parchearlo; si no, = Original). */
-    WIDE("wide", R.string.fit_wide, 3),
-    ORIGINAL("original", R.string.fit_original, 0),
-    STRETCH("stretch", R.string.fit_stretch, 1),
-    ZOOM("zoom", R.string.fit_zoom, 2);
+object DisplayPolicy {
+    /** Escala de render del motor (%): nativa. */
+    const val RENDER_SCALE_PERCENT = 100
 
-    companion object {
-        val DEFAULT = WIDE
-
-        /** Clave de preferencias por juego. */
-        fun prefsKey(exePath: String) = "screen_fit:$exePath"
-
-        fun fromKey(key: String?): ScreenFitOption = entries.firstOrNull { it.key == key } ?: DEFAULT
-
-        fun cycle(current: ScreenFitOption, step: Int = 1): ScreenFitOption = entries[(current.ordinal + step).mod(entries.size)]
-    }
+    /** Ajuste del motor: 3 = panorámica real si el juego se puede parchear; si no, aspecto original. */
+    const val SCREEN_FIT_NATIVE_ID = 3
 }
 
 /** Reescalado del pase de presentación. */

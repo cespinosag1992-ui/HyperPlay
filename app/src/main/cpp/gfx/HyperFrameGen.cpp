@@ -91,7 +91,7 @@ struct HyperFrameGen::Impl {
     bool failed = false;  // sin soporte (formatos/compilación): HyperFG queda inactivo
 
     // Pipelines y layouts (una vez por dispositivo).
-    VkSampler linear = VK_NULL_HANDLE;
+    VkSampler linear = VK_NULL_HANDLE, presentLinear = VK_NULL_HANDLE;
     VkDescriptorSetLayout pyrDsl = VK_NULL_HANDLE, flowDsl = VK_NULL_HANDLE, interpDsl = VK_NULL_HANDLE,
                           presDsl = VK_NULL_HANDLE;
     VkPipelineLayout pyrPl = VK_NULL_HANDLE, flowPl = VK_NULL_HANDLE, interpPl = VK_NULL_HANDLE;
@@ -240,6 +240,10 @@ struct HyperFrameGen::Impl {
         si.magFilter = si.minFilter = VK_FILTER_LINEAR;
         si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         if (f.vkCreateSampler(ctx.device, &si, nullptr, &linear) != VK_SUCCESS) return false;
+        // Presentación: fuera de la imagen del juego, negro (bandas sin deformar, ver applyFit).
+        si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        si.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+        if (f.vkCreateSampler(ctx.device, &si, nullptr, &presentLinear) != VK_SUCCESS) return false;
         const auto S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                    B = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         pyrDsl = dsl({S, I, I, I, I, B}, VK_SHADER_STAGE_COMPUTE_BIT);
@@ -431,6 +435,7 @@ struct HyperFrameGen::Impl {
             img(interpSet[c], 3, I, interp.view, G);
             buf(interpSet[c], 4);
             img(presSet[c], 0, S, hist[c].view, RO);
+            infos.back().sampler = presentLinear;  // borde negro: bandas si el aspecto no coincide
         }
         f.vkUpdateDescriptorSets(ctx.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         return true;

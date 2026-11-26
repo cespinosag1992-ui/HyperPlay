@@ -549,7 +549,11 @@ public:
         si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         si.maxLod = VK_LOD_CLAMP_NONE;
         if (f.vkCreateSampler(ctx.device, &si, nullptr, &defaultSampler) != VK_SUCCESS) return false;
-        presentSampler = defaultSampler;
+        // Presentación: fuera de la imagen del juego, negro (bandas sin deformar cuando el juego
+        // elige en sus opciones una resolución de otro aspecto; ver presentopt::applyFit).
+        si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        si.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+        if (f.vkCreateSampler(ctx.device, &si, nullptr, &presentSampler) != VK_SUCCESS) presentSampler = defaultSampler;
         return true;
     }
     // Las imágenes por defecto se limpian a 0 al empezar el primer frame.

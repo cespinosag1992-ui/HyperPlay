@@ -6128,11 +6128,11 @@ int32_t NativeDllInterceptor::win_EnumDisplayMonitors(void* hdc, const void* lpr
 
 int32_t NativeDllInterceptor::win_EnumDisplaySettingsW(const void*, uint32_t iModeNum, void* lpDevMode) {
     s_otherCalls.fetch_add(1);
-    if (iModeNum == 0 || iModeNum == static_cast<uint32_t>(-1)) {
-        win32::fillDevMode(lpDevMode, iModeNum);
-        return 1;
-    }
-    return 0;
+    // Lista de resoluciones del "monitor" (win32::displayModes): las opciones de vídeo del juego
+    // ofrecen la nativa y resoluciones menores.
+    const bool ok = win32::fillDevMode(lpDevMode, iModeNum);
+    if (!ok) LOGI("Win32: EnumDisplaySettings terminó la lista en el modo %u", iModeNum);
+    return ok ? 1 : 0;
 }
 
 int32_t NativeDllInterceptor::win_EnumDisplaySettingsA(const void* dev, uint32_t mode, void* dm) {
@@ -12663,11 +12663,23 @@ uint64_t comDispatch(int iface, int slot, const ComArgs& args) {
                 case 7:  // GetDesc
                     fillOutputDesc(a1);
                     return hr(kHrOk);
-                case 8:  // GetDisplayModeList(format, flags, pNumModes, pModes)
-                    if (a3 != 0) storeU32(a3, 1);
-                    if (a4 != 0) fillModeDesc(a4, win32::screenWidth(), win32::screenHeight(),
-                                              win32::refreshHz(), 28);
-                    return hr(kHrOk);
+                case 8: {  // GetDisplayModeList(format, flags, pNumModes, pModes)
+                    // Las resoluciones del "monitor" (win32::displayModes), de menor a mayor: el
+                    // menú de vídeo del juego puede bajar la resolución (se reescala a la nativa).
+                    win32::DisplayModeSize modes[win32::kMaxDisplayModes];
+                    const int n = win32::displayModes(modes);
+                    uint32_t cap = static_cast<uint32_t>(n);
+                    if (a3 != 0 && a4 != 0) cap = std::min<uint32_t>(cap, *reinterpret_cast<uint32_t*>(static_cast<uintptr_t>(a3)));
+                    if (a4 != 0) {
+                        for (uint32_t i = 0; i < cap; ++i) {
+                            fillModeDesc(a4 + i * 28, static_cast<uint32_t>(modes[i].w), static_cast<uint32_t>(modes[i].h),
+                                         win32::refreshHz(), static_cast<uint32_t>(a1 != 0 ? a1 : 28));
+                        }
+                    }
+                    if (a3 != 0) storeU32(a3, a4 != 0 ? cap : static_cast<uint32_t>(n));
+                    if (a4 != 0) LOGI("DXGI: GetDisplayModeList -> %u modos (máx %dx%d)", cap, modes[n - 1].w, modes[n - 1].h);
+                    return hr(a4 != 0 && cap < static_cast<uint32_t>(n) ? 0x887A0003u /*DXGI_ERROR_MORE_DATA*/ : kHrOk);
+                }
                 case 9:  // FindClosestMatchingMode(mode, closest, device)
                     if (a2 != 0) fillModeDesc(a2, win32::screenWidth(), win32::screenHeight(),
                                               win32::refreshHz(), 28);
