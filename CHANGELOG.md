@@ -10,6 +10,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **Fixed: in-app updates now install.** The update downloaded but the system "Install?" dialog
+  never appeared, so it stayed on "Installing…" forever: it was opened from a broadcast receiver,
+  which Android 15/16 silently blocks. The launcher screen now opens it. Install failures show a
+  clear reason (cancelled, blocked, signature/version conflict, invalid APK, no space), GitHub
+  errors are no longer reported as "up to date", and the release APK is picked by its official name.
 - **Engine: real Windows x64 exception handling (SEH).** C++ and .NET exceptions are now
   dispatched like on Windows: vectored handlers, then each frame's handler from the module's
   `.pdata` (and the JIT tables of Mono/CoreCLR), then the unhandled filter; `RtlUnwindEx`,
@@ -69,6 +74,12 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Arreglado: las actualizaciones desde la app ya se instalan.** La actualización se descargaba,
+  pero el diálogo «¿Instalar?» del sistema no aparecía y se quedaba en «Instalando…» para siempre:
+  se abría desde un receptor de broadcasts, algo que Android 15/16 bloquea sin avisar. Ahora lo
+  abre la pantalla del launcher. Los fallos de instalación muestran un motivo claro (cancelada,
+  bloqueada, conflicto de firma/versión, APK no válido, sin espacio), los errores de GitHub ya no
+  se muestran como «al día» y el APK de la Release se elige por su nombre oficial.
 - **Motor: manejo real de excepciones de Windows x64 (SEH).** Las excepciones de C++ y .NET se
   despachan como en Windows: manejadores vectoriales, después el manejador de cada marco según el
   `.pdata` del módulo (y las tablas del JIT de Mono/CoreCLR), y por último el filtro de no

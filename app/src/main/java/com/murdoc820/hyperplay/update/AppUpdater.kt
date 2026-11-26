@@ -1,5 +1,6 @@
 package com.murdoc820.hyperplay.update
 
+import android.app.Activity
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -41,6 +42,8 @@ sealed interface UpdateState {
     data class Available(val release: ReleaseInfo) : UpdateState
     data class Downloading(val release: ReleaseInfo, val progress: Float) : UpdateState
     data class Installing(val release: ReleaseInfo) : UpdateState
+    /** El sistema pide al usuario confirmar; la pantalla visible (MainActivity) abre el diálogo. */
+    data class AwaitingConfirmation(val release: ReleaseInfo) : UpdateState
     data class Error(val message: String, val release: ReleaseInfo? = null) : UpdateState
 }
 
@@ -74,7 +77,8 @@ object AppUpdater {
     }
 
     fun check(context: Context) {
-        if (_state.value is UpdateState.Checking || _state.value is UpdateState.Downloading) return
+        val s = _state.value
+        if (s is UpdateState.Checking || s is UpdateState.Downloading || s is UpdateState.AwaitingConfirmation) return
         lastCheck = System.currentTimeMillis()
         _state.value = UpdateState.Checking
         scope.launch {
@@ -105,6 +109,7 @@ object AppUpdater {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return
         }
+        pendingConfirm = null
         _state.value = UpdateState.Downloading(release, 0f)
         scope.launch {
             try {
@@ -113,11 +118,12 @@ object AppUpdater {
                 val apk = File(dir, "HyperPlay-${release.version}.apk")
                 download(release.apkUrl, apk, release.apkSize) { p -> _state.value = UpdateState.Downloading(release, p) }
                 release.sha256Url?.let { url ->
-                    val expected = httpText(url)?.trim()?.split(Regex("\\s+"))?.firstOrNull()?.lowercase()
+                    val expected = httpText(url, accept = "application/octet-stream")
+                        ?.trim()?.split(Regex("\\s+"))?.firstOrNull()?.lowercase()
                     val actual = sha256(apk)
                     if (expected != null && expected.length == 64 && expected != actual) {
                         apk.delete()
-                        error("el archivo descargado no coincide (SHA-256)")
+                        error(app.getString(R.string.update_err_checksum))
                     }
                 }
                 _state.value = UpdateState.Installing(release)
@@ -130,42 +136,107 @@ object AppUpdater {
         }
     }
 
-    /** Resultado de PackageInstaller (receptor del manifiesto). */
+    /** Diálogo de confirmación del sistema pendiente de abrir (ver [launchPendingConfirmation]). */
+    @Volatile private var pendingConfirm: Intent? = null
+
+    /**
+     * Resultado de PackageInstaller (receptor del manifiesto).
+     *
+     * STATUS_PENDING_USER_ACTION NO se abre desde aquí: un receptor no es una actividad visible y,
+     * con targetSdk 35 en Android 15/16, el sistema bloquea ese inicio en segundo plano sin avisar
+     * (solo un "Background activity launch blocked" en logcat). Antes eso dejaba la app en
+     * "Instalando…" para siempre sin diálogo. Se guarda el Intent y lo abre MainActivity.
+     */
     class StatusReceiver : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            val rel = when (val s = _state.value) {
+                is UpdateState.Installing -> s.release
+                is UpdateState.AwaitingConfirmation -> s.release
+                else -> null
+            }
             when (val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
                 PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                     @Suppress("DEPRECATION")
                     val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-                    confirm?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)?.let(context::startActivity)
+                    if (confirm == null || rel == null) {
+                        Diagnostics.log("E", "update", "confirmación sin Intent (rel=$rel)")
+                        _state.value = UpdateState.Error(context.getString(R.string.update_err_confirm), rel)
+                        return
+                    }
+                    Diagnostics.log("I", "update", "esperando confirmación del usuario")
+                    pendingConfirm = confirm
+                    _state.value = UpdateState.AwaitingConfirmation(rel)
                 }
                 PackageInstaller.STATUS_SUCCESS -> Diagnostics.log("I", "update", "instalada")
                 else -> {
-                    val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: context.getString(R.string.update_err_code, status)
-                    Diagnostics.log("E", "update", "instalación fallida: $msg")
-                    val rel = (_state.value as? UpdateState.Installing)?.release
+                    pendingConfirm = null
+                    val detail = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+                    Diagnostics.log("E", "update", "instalación fallida: status=$status $detail")
+                    val reason = context.getString(failureReason(status))
+                    val msg = if (detail.isNullOrBlank()) reason else "$reason ($detail)"
                     _state.value = UpdateState.Error(context.getString(R.string.update_err_install, msg), rel)
                 }
             }
         }
     }
 
+    /**
+     * Abre el diálogo de confirmación pendiente desde una actividad visible (MainActivity en
+     * onResume / al cambiar el estado). Llamarlo sin nada pendiente no hace nada.
+     */
+    fun launchPendingConfirmation(activity: Activity) {
+        val confirm = pendingConfirm ?: return
+        val rel = (_state.value as? UpdateState.AwaitingConfirmation)?.release ?: return
+        pendingConfirm = null
+        try {
+            activity.startActivity(confirm)
+            _state.value = UpdateState.Installing(rel)
+        } catch (e: Exception) {
+            Diagnostics.log("E", "update", "no se pudo abrir la confirmación: $e")
+            _state.value = UpdateState.Error(activity.getString(R.string.update_err_confirm), rel)
+        }
+    }
+
+    /** Texto (localizado) para un estado de fallo de PackageInstaller. */
+    internal fun failureReason(status: Int): Int = when (status) {
+        PackageInstaller.STATUS_FAILURE_ABORTED -> R.string.update_err_aborted
+        PackageInstaller.STATUS_FAILURE_BLOCKED -> R.string.update_err_blocked
+        PackageInstaller.STATUS_FAILURE_CONFLICT -> R.string.update_err_conflict
+        PackageInstaller.STATUS_FAILURE_INCOMPATIBLE -> R.string.update_err_incompatible
+        PackageInstaller.STATUS_FAILURE_INVALID -> R.string.update_err_invalid
+        PackageInstaller.STATUS_FAILURE_STORAGE -> R.string.update_err_storage
+        PackageInstaller.STATUS_FAILURE_TIMEOUT -> R.string.update_err_timeout
+        else -> R.string.update_err_unknown
+    }
+
+    /**
+     * Elige el APK de la Release: primero el de nombre oficial
+     * (`HyperPlay-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk`), si no, cualquier `.apk` arm64,
+     * si no, el primer `.apk`. Devuelve el índice o -1.
+     */
+    internal fun pickApkAsset(names: List<String>): Int {
+        val official = Regex("""^HyperPlay-v[0-9][^/]*-arm64-v8a\.apk$""", RegexOption.IGNORE_CASE)
+        names.indexOfFirst { official.matches(it) }.takeIf { it >= 0 }?.let { return it }
+        names.indexOfFirst { it.endsWith(".apk", true) && it.contains("arm64", true) }.takeIf { it >= 0 }?.let { return it }
+        return names.indexOfFirst { it.endsWith(".apk", true) }
+    }
+
     // ---------------------------------------------------------------- internos
 
+    /** null = el repo aún no tiene Releases (404). Otros fallos HTTP lanzan (antes: "al día" en silencio). */
     private fun fetchLatest(): ReleaseInfo? {
-        val text = httpText("https://api.github.com/repos/${BuildConfig.GITHUB_REPO}/releases/latest") ?: return null
+        val text = httpText("https://api.github.com/repos/${BuildConfig.GITHUB_REPO}/releases/latest", notFoundIsNull = true)
+            ?: return null
         val j = JSONObject(text)
         val tag = j.optString("tag_name").removePrefix("v").removePrefix("V")
-        val assets = j.optJSONArray("assets") ?: return null
-        var apk: JSONObject? = null
-        var sha: String? = null
-        for (i in 0 until assets.length()) {
-            val a = assets.getJSONObject(i)
-            val name = a.optString("name")
-            if (name.endsWith(".apk")) apk = a
-            if (name.endsWith(".apk.sha256")) sha = a.optString("browser_download_url")
-        }
-        val a = apk ?: return null
+        val assets = j.optJSONArray("assets")
+        val list = (0 until (assets?.length() ?: 0)).map { assets!!.getJSONObject(it) }
+        val names = list.map { it.optString("name") }
+        val idx = pickApkAsset(names)
+        check(idx >= 0) { "Release $tag sin APK" }
+        val a = list[idx]
+        val sha = list.firstOrNull { it.optString("name").equals(names[idx] + ".sha256", true) }
+            ?.optString("browser_download_url")
         return ReleaseInfo(
             version = tag,
             notes = j.optString("body").take(4000),
@@ -189,25 +260,34 @@ object AppUpdater {
         return false
     }
 
-    private fun open(url: String) = (URL(url).openConnection() as HttpURLConnection).apply {
-        connectTimeout = 10_000
-        readTimeout = 30_000
-        instanceFollowRedirects = true
-        setRequestProperty("Accept", "application/vnd.github+json")
-        setRequestProperty("User-Agent", "HyperPlay/${BuildConfig.VERSION_NAME}")
-    }
+    /**
+     * [accept]: JSON para la API; binario para los adjuntos (`browser_download_url` redirige a
+     * release-assets.githubusercontent.com, https→https, que HttpURLConnection sigue solo).
+     */
+    private fun open(url: String, accept: String = "application/vnd.github+json") =
+        (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
+            setRequestProperty("Accept", accept)
+            setRequestProperty("User-Agent", "HyperPlay/${BuildConfig.VERSION_NAME}")
+        }
 
-    private fun httpText(url: String): String? {
-        val c = open(url)
+    private fun httpText(url: String, notFoundIsNull: Boolean = false, accept: String = "application/vnd.github+json"): String? {
+        val c = open(url, accept)
         return try {
-            if (c.responseCode != 200) null else c.inputStream.bufferedReader().use { it.readText() }
+            when (val code = c.responseCode) {
+                200 -> c.inputStream.bufferedReader().use { it.readText() }
+                404 -> if (notFoundIsNull) null else error("HTTP 404")
+                else -> error("HTTP $code")
+            }
         } finally {
             c.disconnect()
         }
     }
 
     private fun download(url: String, target: File, expectedSize: Long, progress: (Float) -> Unit) {
-        val c = open(url)
+        val c = open(url, "application/octet-stream")
         try {
             check(c.responseCode == 200) { "HTTP ${c.responseCode}" }
             val total = if (c.contentLengthLong > 0) c.contentLengthLong else expectedSize
@@ -229,8 +309,8 @@ object AppUpdater {
                     }
                 }
             }
-            check(expectedSize <= 0 || tmp.length() == expectedSize) { "descarga incompleta" }
-            check(tmp.renameTo(target)) { "no se pudo guardar la descarga" }
+            check(expectedSize <= 0 || tmp.length() == expectedSize) { "incomplete download ${tmp.length()}/$expectedSize B" }
+            check(tmp.renameTo(target)) { "could not save ${target.name}" }
         } finally {
             c.disconnect()
         }

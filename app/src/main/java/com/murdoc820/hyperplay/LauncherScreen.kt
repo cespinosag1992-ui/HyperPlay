@@ -907,6 +907,7 @@ private fun UpdateCard(system: SystemUi, actions: SystemActions, onFocused: () -
             is UpdateState.Available -> stringResource(R.string.update_new, u.release.version)
             is UpdateState.Downloading -> stringResource(R.string.update_downloading, u.release.version, (u.progress * 100).toInt())
             is UpdateState.Installing -> stringResource(R.string.update_installing, u.release.version)
+            is UpdateState.AwaitingConfirmation -> stringResource(R.string.update_confirming, u.release.version)
             is UpdateState.Error -> u.message
         }
         InfoLine(stringResource(R.string.update_status), status)
@@ -918,17 +919,19 @@ private fun UpdateCard(system: SystemUi, actions: SystemActions, onFocused: () -
             )
         }
         val release = (u as? UpdateState.Available)?.release ?: (u as? UpdateState.Error)?.release
+        // Instalando: si el sistema nunca responde (diálogo cerrado, sesión perdida), poder reintentar.
+        val retry = (u as? UpdateState.Installing)?.release
         if (release != null && release.notes.isNotBlank()) {
             Text(release.notes.take(600), color = Deck.Sub, fontSize = 13.sp, lineHeight = 18.sp,
                 modifier = Modifier.padding(vertical = 6.dp), maxLines = 8, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(bottom = 8.dp)) {
-            if (release != null) {
+            (release ?: retry)?.let { rel ->
                 MacButton(stringResource(R.string.update_install), style = MacButtonStyle.PRIMARY, onFocused = onFocused,
-                    onClick = { sounds.confirm(); actions.installUpdate(release) })
+                    onClick = { sounds.confirm(); actions.installUpdate(rel) })
             }
-            if (u !is UpdateState.Downloading && u !is UpdateState.Installing) {
+            if (u !is UpdateState.Downloading && u !is UpdateState.Installing && u !is UpdateState.AwaitingConfirmation) {
                 MacButton(stringResource(R.string.update_check), onFocused = onFocused, onClick = { sounds.confirm(); actions.checkUpdate() })
             }
         }
