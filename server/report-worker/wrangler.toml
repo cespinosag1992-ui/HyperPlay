@@ -3,7 +3,9 @@ main = "src/index.js"
 compatibility_date = "2026-01-01"
 
 [vars]
-GITHUB_REPO = "cespinosag1992-ui/HyperPlay"
+# Repo PRIVADO donde se crean los Issues de los informes (no el repo público del proyecto).
+# Créalo antes de desplegar y da al token acceso a él.
+REPORTS_REPO = "cespinosag1992-ui/HyperPlay-Reports"
 
 # Limita envíos por IP y descarta duplicados (creado con: npx wrangler kv namespace create REPORTS_KV).
 # Si despliegas tu propia copia, crea el tuyo y cambia el id.

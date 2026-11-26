@@ -208,7 +208,8 @@ object Diagnostics {
             val files = reportsDir.listFiles { f -> f.extension == "json" }?.sortedBy { it.name } ?: return@launch
             var sent = 0
             for (f in files.take(10)) {
-                val ok = runCatching { post(f.readText()) }.getOrDefault(false)
+                // Los informes acaban en GitHub: se quitan IPs, rutas de usuario, cuentas, etc.
+                val ok = runCatching { post(ReportRedactor.redactReport(f.readText())) }.getOrDefault(false)
                 if (ok) { f.delete(); sent++ } else break
             }
             // Lo enviado ya está en el servidor: el registro de la app empieza de nuevo.
