@@ -13,6 +13,8 @@
 
 #include <sys/mman.h>
 
+#include "LowMem.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -49,7 +51,7 @@ public:
         size_t usable = 0;
         if (cls == kLargeClass) {
             const size_t total = (kHeaderSize + userSize + 4095) & ~size_t{4095};
-            void* p = ::mmap(nullptr, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            void* p = lowmem::mmapGuest(total);  // < 4 GB con un invitado de 32 bits
             if (p == MAP_FAILED) return nullptr;
             block = static_cast<uint8_t*>(p);
             large_[reinterpret_cast<uintptr_t>(block)] = total;
@@ -156,7 +158,7 @@ private:
 
     uint8_t* bump(size_t blockSize) {
         if (arenas_.empty() || cursor_ + blockSize > arenas_.back().end) {
-            void* p = ::mmap(nullptr, kArenaSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+            void* p = lowmem::mmapGuest(kArenaSize, PROT_READ | PROT_WRITE, MAP_NORESERVE);  // < 4 GB en 32 bits
             if (p == MAP_FAILED) return nullptr;
             const auto begin = reinterpret_cast<uintptr_t>(p);
             arenas_.push_back({begin, begin + kArenaSize});

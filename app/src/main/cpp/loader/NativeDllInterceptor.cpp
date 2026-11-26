@@ -18,6 +18,7 @@
 #include "SoftRaster.h"
 #include "Win64ThunkAbi.h"
 #include "Win32Arity.h"
+#include "LowMem.h"
 #include "Win64Context.h"
 #include "GuestSeh.h"
 #include "gfx/GuestOpenGl.h"
@@ -1584,6 +1585,8 @@ void* resolveRegistryExport(const std::string& funcName) {
 
 void NativeDllInterceptor::init(LoadedPeImage* image) {
     s_activeImage = image;
+    // Invitado de 32 bits: el montón Win32 y demás memoria que se le entrega, por debajo de 4 GB.
+    if (image != nullptr && image->is32Bit) lowmem::g_enabled.store(true);
     gpu::presentopt::g_widePatched.store(false);  // juego nuevo: aún sin parche panorámico
     s_cmdA[0] = '\0';
     s_cmdW[0] = u'\0';
@@ -2382,6 +2385,10 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
                 return true;
             }
         }
+        if (info->calls.load(std::memory_order_relaxed) <= 4) {
+            LOGI("[NativeThunk32] %s -> 0x%llx%s", name.c_str(), static_cast<unsigned long long>(ret),
+                 ret > 0xFFFFFFFFull && !info->isVoid ? " (¡>4GB: truncado!)" : "");
+        }
         if (!info->isVoid) {
             ctx.gpr[0] = ret & 0xFFFFFFFFull;          // EAX
             ctx.gpr[2] = (ret >> 32) & 0xFFFFFFFFull;  // EDX (retornos de 64 bits)
@@ -2655,6 +2662,12 @@ IatHijackStats NativeDllInterceptor::hijackIatChecked(LoadedPeImage& image) {
                 continue;
             }
             void* nativeFunc = resolveNativeSymbol(mod.name, fn.name);
+            if (nativeFunc == nullptr && image.is32Bit) {
+                // 32 bits (en desarrollo): stub de diagnóstico como en las DLL locales. El log dice cuáles
+                // se llegan a llamar ("[32 bits] ... aridad desconocida (stub)") para implementarlas.
+                nativeFunc = DynamicStubManager::getOrCreateStub(mod.name, fn.name);
+                if (nativeFunc != nullptr) LOGW("IAT32 stub: %s!%s", mod.name.c_str(), fn.name.c_str());
+            }
             if (nativeFunc == nullptr) {
                 ++stats.unresolved;
                 if (stats.unresolvedImports.size() < 512) {
@@ -3045,6 +3058,35 @@ static void* removeProp(void* hwnd, const void* name, bool wide) {
     s_windowProps.erase(it);
     return v;
 }
+// Interlocked* de kernel32 (solo existen como exports en 32 bits; en x64 son intrínsecos).
+static int32_t hp_InterlockedIncrement(int32_t* p) { return __atomic_add_fetch(p, 1, __ATOMIC_SEQ_CST); }
+static int32_t hp_InterlockedDecrement(int32_t* p) { return __atomic_sub_fetch(p, 1, __ATOMIC_SEQ_CST); }
+static int32_t hp_InterlockedExchange(int32_t* p, int32_t v) { return __atomic_exchange_n(p, v, __ATOMIC_SEQ_CST); }
+static int32_t hp_InterlockedExchangeAdd(int32_t* p, int32_t v) { return __atomic_fetch_add(p, v, __ATOMIC_SEQ_CST); }
+static int32_t hp_InterlockedCompareExchange(int32_t* p, int32_t exchange, int32_t comparand) {
+    __atomic_compare_exchange_n(p, &comparand, exchange, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return comparand;  // valor inicial de *p
+}
+static int64_t hp_InterlockedCompareExchange64(int64_t* p, int64_t exchange, int64_t comparand) {
+    __atomic_compare_exchange_n(p, &comparand, exchange, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return comparand;
+}
+
+// GetVersionExA: Windows 10 responde 6.2.9200 a los programas sin manifiesto (lo normal en juegos de
+// 32 bits antiguos como DmC). OSVERSIONINFOA (148 bytes) u OSVERSIONINFOEXA (156).
+static int32_t hp_GetVersionExA(uint8_t* info) {
+    if (info == nullptr) return 0;
+    uint32_t size = 0;
+    std::memcpy(&size, info, 4);
+    if (size != 148 && size != 156) return 0;
+    const uint32_t v[4] = {6, 2, 9200, 2};  // major, minor, build, VER_PLATFORM_WIN32_NT
+    std::memcpy(info + 4, v, sizeof(v));
+    std::memset(info + 20, 0, 128);         // szCSDVersion
+    if (size == 156) std::memset(info + 148, 0, 8);
+    if (size == 156) info[154] = 1;         // wProductType = VER_NT_WORKSTATION
+    return 1;
+}
+
 static int32_t hp_GetClipCursor(void* lpRect);                        // definidas más abajo
 static int32_t hp_GetThreadIOPendingFlag(void* hThread, int32_t* lpIOIsPending);
 
@@ -3410,6 +3452,13 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "WaitForThreadpoolWorkCallbacks") result = w32arity::hpFn(&win_WaitForThreadpoolWorkCallbacks);
         else if (funcName == "CloseThreadpoolWork") result = w32arity::hpFn(&win_CloseThreadpoolWork);
         else if (funcName == "GetThreadIOPendingFlag") result = w32arity::hpFn(&hp_GetThreadIOPendingFlag);
+        else if (funcName == "GetVersionExA") result = w32arity::hpFn(&hp_GetVersionExA);
+        else if (funcName == "InterlockedIncrement") result = w32arity::hpFn(&hp_InterlockedIncrement);
+        else if (funcName == "InterlockedDecrement") result = w32arity::hpFn(&hp_InterlockedDecrement);
+        else if (funcName == "InterlockedExchange") result = w32arity::hpFn(&hp_InterlockedExchange);
+        else if (funcName == "InterlockedExchangeAdd") result = w32arity::hpFn(&hp_InterlockedExchangeAdd);
+        else if (funcName == "InterlockedCompareExchange") result = w32arity::hpFn(&hp_InterlockedCompareExchange);
+        else if (funcName == "InterlockedCompareExchange64") result = w32arity::hpFn(&hp_InterlockedCompareExchange64);
         else if (funcName == "CreateIoCompletionPort") result = w32arity::hpFn(&win_CreateIoCompletionPort);
         else if (funcName == "GetQueuedCompletionStatus") result = w32arity::hpFn(&win_GetQueuedCompletionStatus);
         else if (funcName == "GetQueuedCompletionStatusEx") result = w32arity::hpFn(&win_GetQueuedCompletionStatusEx);
@@ -5470,10 +5519,50 @@ uint32_t NativeDllInterceptor::win_SleepEx(uint32_t dwMilliseconds, int32_t /*bA
     return 0;
 }
 
+// CRITICAL_SECTION: en Win64 mide 40 bytes, lo mismo que pthread_mutex_t en arm64, y el mutex vive
+// dentro. En 32 bits mide 24: el mutex desbordaba 16 bytes sobre lo que sigue (msvcr100 tiene una
+// tabla de locks contiguos y justo detrás sus punteros a FlsAlloc...: R6016 en DmC). Con un invitado
+// de 32 bits el mutex va aparte (memoria baja) y el CRITICAL_SECTION solo guarda su dirección de 4 bytes
+// en el primer campo (DebugInfo); el resto de la estructura no se toca.
+namespace {
+pthread_mutex_t* newLowMutex() {
+    static std::mutex s_m;
+    static uint8_t* s_pool = nullptr;
+    static size_t s_left = 0;
+    std::lock_guard<std::mutex> lk(s_m);
+    constexpr size_t kSlot = (sizeof(pthread_mutex_t) + 15) & ~size_t{15};
+    if (s_left < kSlot) {
+        void* p = lowmem::mmapBelow4G(1u << 20);
+        if (p == MAP_FAILED) return nullptr;
+        s_pool = static_cast<uint8_t*>(p);
+        s_left = 1u << 20;
+    }
+    auto* m = reinterpret_cast<pthread_mutex_t*>(s_pool);
+    s_pool += kSlot;
+    s_left -= kSlot;
+    return m;
+}
+
+pthread_mutex_t* csMutex(void* cs) {
+    if (!lowmem::enabled()) return reinterpret_cast<pthread_mutex_t*>(cs);
+    uint32_t addr = 0;
+    std::memcpy(&addr, cs, 4);
+    return reinterpret_cast<pthread_mutex_t*>(static_cast<uintptr_t>(addr));
+}
+}  // namespace
+
 void NativeDllInterceptor::win_InitializeCriticalSection(void* lpCriticalSection) {
     s_kernel32Calls.fetch_add(1);
     if (!lpCriticalSection) return;
     pthread_mutex_t* mtx = reinterpret_cast<pthread_mutex_t*>(lpCriticalSection);
+    if (lowmem::enabled()) {
+        mtx = newLowMutex();
+        if (mtx == nullptr) return;
+        const uint32_t addr = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(mtx));
+        std::memset(lpCriticalSection, 0, 24);
+        std::memcpy(lpCriticalSection, &addr, 4);
+        static_cast<int32_t*>(lpCriticalSection)[1] = -1;  // LockCount: libre
+    }
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
@@ -5483,17 +5572,21 @@ void NativeDllInterceptor::win_InitializeCriticalSection(void* lpCriticalSection
 
 void NativeDllInterceptor::win_EnterCriticalSection(void* lpCriticalSection) {
     s_kernel32Calls.fetch_add(1);
-    if (lpCriticalSection) pthread_mutex_lock(reinterpret_cast<pthread_mutex_t*>(lpCriticalSection));
+    if (!lpCriticalSection) return;
+    if (pthread_mutex_t* m = csMutex(lpCriticalSection)) pthread_mutex_lock(m);
 }
 
 void NativeDllInterceptor::win_LeaveCriticalSection(void* lpCriticalSection) {
     s_kernel32Calls.fetch_add(1);
-    if (lpCriticalSection) pthread_mutex_unlock(reinterpret_cast<pthread_mutex_t*>(lpCriticalSection));
+    if (!lpCriticalSection) return;
+    if (pthread_mutex_t* m = csMutex(lpCriticalSection)) pthread_mutex_unlock(m);
 }
 
 void NativeDllInterceptor::win_DeleteCriticalSection(void* lpCriticalSection) {
     s_kernel32Calls.fetch_add(1);
-    if (lpCriticalSection) pthread_mutex_destroy(reinterpret_cast<pthread_mutex_t*>(lpCriticalSection));
+    if (lpCriticalSection) {
+        if (pthread_mutex_t* m = csMutex(lpCriticalSection)) pthread_mutex_destroy(m);
+    }
 }
 
 uint32_t NativeDllInterceptor::win_GetTickCount() {
@@ -7551,13 +7644,40 @@ static std::string buildCommandLine() {
     return full;
 }
 
+// Copia estable por debajo de 4 GB de datos nativos que se entregan a un invitado de 32 bits (línea
+// de comandos, bloque de entorno...): un puntero de libhyperplay.so no cabe en sus 4 bytes. Sin
+// invitado de 32 bits devuelve el mismo puntero. Se cachea por puntero de origen.
+static const void* lowCopy(const void* src, size_t bytes) {
+    if (!lowmem::enabled() || src == nullptr || reinterpret_cast<uintptr_t>(src) <= 0xFFFFFFFFull) return src;
+    static std::mutex s_m;
+    static std::unordered_map<const void*, void*> s_copies;
+    static uint8_t* s_pool = nullptr;
+    static size_t s_left = 0;
+    std::lock_guard<std::mutex> lk(s_m);
+    if (const auto it = s_copies.find(src); it != s_copies.end()) return it->second;
+    const size_t need = (bytes + 15) & ~size_t{15};
+    if (need > s_left) {
+        const size_t chunk = std::max<size_t>(need, 1u << 20);
+        void* p = lowmem::mmapBelow4G(chunk);
+        if (p == MAP_FAILED) return src;
+        s_pool = static_cast<uint8_t*>(p);
+        s_left = chunk;
+    }
+    void* dst = s_pool;
+    std::memcpy(dst, src, bytes);
+    s_pool += need;
+    s_left -= need;
+    s_copies[src] = dst;
+    return dst;
+}
+
 const char* NativeDllInterceptor::win_GetCommandLineA() {
     s_kernel32Calls.fetch_add(1);
     if (s_cmdA[0] == '\0') {
         std::string full = buildCommandLine();
         std::snprintf(s_cmdA, sizeof(s_cmdA), "%s", full.c_str());
     }
-    return s_cmdA;
+    return static_cast<const char*>(lowCopy(s_cmdA, std::strlen(s_cmdA) + 1));
 }
 
 const void* NativeDllInterceptor::win_GetCommandLineW() {
@@ -7570,7 +7690,9 @@ const void* NativeDllInterceptor::win_GetCommandLineW() {
         }
         s_cmdW[i] = u'\0';
     }
-    return s_cmdW;
+    size_t n = 0;
+    while (s_cmdW[n] != u'\0') ++n;
+    return lowCopy(s_cmdW, (n + 1) * sizeof(char16_t));
 }
 
 const void* NativeDllInterceptor::win_GetEnvironmentStringsW() {
@@ -7601,7 +7723,7 @@ const void* NativeDllInterceptor::win_GetEnvironmentStringsW() {
         b.push_back(u'\0');
         return b;
     }();
-    return s_block.data();
+    return lowCopy(s_block.data(), s_block.size() * sizeof(char16_t));
 }
 
 int32_t NativeDllInterceptor::win_FreeEnvironmentStringsW(void*) {
@@ -10620,7 +10742,8 @@ int32_t NativeDllInterceptor::win_TryEnterCriticalSection(void* lpCriticalSectio
     // y el GC de Mono (que lo usa mientras suspende hilos) se quedaba esperando para siempre
     // (Silksong: pantalla negra al arrancar, 1 de cada ~5 veces).
     if (lpCriticalSection == nullptr) return 0;
-    return pthread_mutex_trylock(reinterpret_cast<pthread_mutex_t*>(lpCriticalSection)) == 0 ? 1 : 0;
+    pthread_mutex_t* m = lpCriticalSection != nullptr ? csMutex(lpCriticalSection) : nullptr;
+    return m != nullptr && pthread_mutex_trylock(m) == 0 ? 1 : 0;
 }
 
 void NativeDllInterceptor::win_InitializeSRWLock(void* srwLock) {

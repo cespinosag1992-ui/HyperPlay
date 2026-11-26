@@ -32,6 +32,7 @@
 #include "loader/BionicPeLoader.h"
 #include "loader/NativeDllInterceptor.h"
 #include "loader/Win64Context.h"
+#include "loader/LowMem.h"
 
 #define LOG_TAG "HyperPlay.OryonEmitter"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -694,9 +695,15 @@ bool OryonEmitterBackend::allocateArena(size_t size) {
     return true;
 }
 
+// Memoria por debajo de 4 GB para invitados de 32 bits (pila, TEB, TLS: sus punteros son de 4 bytes).
+// Android no tiene MAP_32BIT: se buscan huecos libres con MAP_FIXED_NOREPLACE entre 1.5 y 3.75 GB
+// (las imágenes PE y el arena del invitado se cargan más abajo; el alias de funciones está en 2 GB-16 MB).
+static void* mmapBelow4G(size_t size) { return lowmem::mmapBelow4G(size); }
+
 bool OryonEmitterBackend::allocateStack(size_t size) {
     if (size < 4096) size = 4096;
-    void* p = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* p = mode32_ ? mmapBelow4G(size)
+                      : mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) {
         LOGE("mmap stack virtual falló: %s", std::strerror(errno));
         stackBase_ = nullptr;
@@ -711,7 +718,8 @@ bool OryonEmitterBackend::allocateStack(size_t size) {
 bool OryonEmitterBackend::allocateTeb() {
     if (teb_ != nullptr) return true;
     tebSize_ = 65536; // 64 KB para TEB y TLS vector
-    void* p = mmap(nullptr, tebSize_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* p = mode32_ ? mmapBelow4G(tebSize_)
+                      : mmap(nullptr, tebSize_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED) {
         LOGE("mmap TEB virtual falló: %s", std::strerror(errno));
         teb_ = nullptr;
@@ -727,11 +735,21 @@ bool OryonEmitterBackend::allocateTeb() {
 
     // TLS pointer array ubicado en t + 0x800 (soporta hasta 64 módulos)
     void** tlsVector = reinterpret_cast<void**>(t + 0x800);
-    for (size_t i = 0; i < 64; ++i) {
-        void* defBlock = std::calloc(1, 4096);
-        if (defBlock) {
-            allocatedTlsBlocks_.push_back(defBlock);
-            tlsVector[i] = defBlock;
+    if (mode32_) {
+        // 32 bits: vector de punteros de 4 bytes y bloques por debajo de 4 GB (un solo mapeo de 256 KB,
+        // se queda mientras viva el proceso: los hilos de 32 bits son pocos).
+        void* blocks = mmapBelow4G(64 * 4096);
+        auto* vec32 = reinterpret_cast<uint32_t*>(t + 0x800);
+        for (size_t i = 0; i < 64 && blocks != MAP_FAILED; ++i) {
+            vec32[i] = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(blocks) + i * 4096);
+        }
+    } else {
+        for (size_t i = 0; i < 64; ++i) {
+            void* defBlock = std::calloc(1, 4096);
+            if (defBlock) {
+                allocatedTlsBlocks_.push_back(defBlock);
+                tlsVector[i] = defBlock;
+            }
         }
     }
     const uint64_t tlsVectorAddr = reinterpret_cast<uint64_t>(tlsVector);
