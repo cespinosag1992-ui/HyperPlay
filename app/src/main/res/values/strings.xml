@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Default language (English). Spanish lives in values-es/strings.xml. Keep both in sync. -->
 <resources>
-    <string name="app_name" translatable="false">HyperPlay</string>
-    <string name="brand_upper" translatable="false">HYPERPLAY</string>
+    <string name="app_name" translatable="false">Exedra64</string>
+    <string name="brand_upper" translatable="false">EXEDRA64</string>
 
     <!-- Common -->
     <string name="cancel">Cancel</string>
@@ -96,7 +96,7 @@
     <string name="update_err_check">Couldn\'t check: %1$s</string>
     <string name="update_err_offline">no connection</string>
     <string name="update_err_held">Close the paused game before updating.</string>
-    <string name="update_err_permission">Allow HyperPlay to install apps and press Install again.</string>
+    <string name="update_err_permission">Allow Exedra64 to install apps and press Install again.</string>
     <string name="update_err_failed">Couldn\'t update: %1$s</string>
     <string name="update_err_install">Installation failed: %1$s</string>
     <string name="update_err_code">code %1$d</string>
@@ -104,7 +104,7 @@
     <string name="update_err_confirm">Couldn\'t open the system install dialog. Press Install again.</string>
     <string name="update_err_aborted">installation cancelled</string>
     <string name="update_err_blocked">the system blocked the installation</string>
-    <string name="update_err_conflict">conflicts with the installed app (different signature or a newer build is installed). Uninstall HyperPlay and install the APK from GitHub</string>
+    <string name="update_err_conflict">conflicts with the installed app (different signature or a newer build is installed). Uninstall Exedra64 and install the APK from GitHub</string>
     <string name="update_err_incompatible">the update is not compatible with this device</string>
     <string name="update_err_invalid">the downloaded APK is invalid or damaged</string>
     <string name="update_err_storage">not enough free storage</string>
@@ -113,8 +113,8 @@
     <string name="update_err_checksum">the downloaded file doesn\'t match its SHA-256</string>
 
     <!-- Error reports -->
-    <string name="consent_title">Help improve HyperPlay?</string>
-    <string name="consent_body">If a game or the app fails, HyperPlay can send a report with the error log, the phone model, the Android version and the game. It doesn\'t include your saves, accounts or personal files. Reports are always kept on your phone too, and you can change this in Settings.</string>
+    <string name="consent_title">Help improve Exedra64?</string>
+    <string name="consent_body">If a game or the app fails, Exedra64 can send a report with the error log, the phone model, the Android version and the game. It doesn\'t include your saves, accounts or personal files. Reports are always kept on your phone too, and you can change this in Settings.</string>
     <string name="consent_send">Send reports</string>
     <string name="consent_decline">No, thanks</string>
     <string name="reports_saved">Saved on the phone</string>
@@ -138,7 +138,7 @@
 
     <!-- Storage permission -->
     <string name="perm_title">Access to your games</string>
-    <string name="perm_body">HyperPlay opens games straight from their folder (for example /sdcard/PC games) and keeps saves next to the game. For that it needs the \"All files access\" permission. Turn it on in Settings and come back.</string>
+    <string name="perm_body">Exedra64 opens games straight from their folder (for example /sdcard/PC games) and keeps saves next to the game. For that it needs the \"All files access\" permission. Turn it on in Settings and come back.</string>
     <string name="perm_open">Open Settings</string>
 
     <!-- Game session -->

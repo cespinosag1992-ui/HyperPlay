@@ -62,7 +62,7 @@ jobs:
           mkdir -p out
           # The file name says which processor the APK is built for (arm64-v8a only, tuned for
           # Snapdragon 8 Elite). / El nombre indica el procesador para el que está hecho el APK.
-          APK="out/HyperPlay-v${{ steps.ver.outputs.name }}-Snapdragon8Elite-arm64-v8a.apk"
+          APK="out/Exedra64-v${{ steps.ver.outputs.name }}-Snapdragon8Elite-arm64-v8a.apk"
           cp app/build/outputs/apk/release/app-release.apk "$APK"
           (cd out && sha256sum "$(basename "$APK")" > "$(basename "$APK").sha256")
           "$ANDROID_HOME"/build-tools/*/apksigner verify --print-certs "$APK" | head -3
@@ -75,8 +75,8 @@ jobs:
           # Notes = this version's CHANGELOG section (English + Spanish), plus the auto list of PRs.
           VER="${{ steps.ver.outputs.name }}"
           awk -v v="## $VER" '$0==v{f=1;next} /^## /{if(f)exit} f' CHANGELOG.md > notes.md
-          [ -s notes.md ] || echo "HyperPlay $VER" > notes.md
+          [ -s notes.md ] || echo "Exedra64 $VER" > notes.md
           gh release create "$GITHUB_REF_NAME" out/* \
-            --title "HyperPlay $VER" \
+            --title "Exedra64 $VER" \
             --notes-file notes.md \
             --generate-notes

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Logo de Exedra64: mando con "E64" en trazo cromado sobre negro (mismo estilo que el logo anterior). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="512dp"
+    android:height="512dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <path
+        android:fillColor="#121212"
+        android:pathData="M0,0h512v512h-512z" />
+    <group android:name="trazo">
+        <!-- silueta del mando, E y 64 -->
+        <path
+            android:pathData="M150,150 H362 C410,150 438,176 448,222 L470,330 C480,380 448,404 414,392 C394,385 380,368 366,344 L346,312 H166 L146,344 C132,368 118,385 98,392 C64,404 32,380 42,330 L64,222 C74,176 102,150 150,150 Z M150,196 V284 M150,196 H210 M106,240 H194 M150,284 H210 M300,200 C270,204 258,226 258,250 C258,274 270,286 286,286 C304,286 314,274 314,258 C314,242 302,232 286,232 C272,232 262,240 258,250 M384,286 V202 L342,262 H398"
+            android:strokeWidth="22"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="0"
+                    android:startY="140"
+                    android:endX="0"
+                    android:endY="400">
+                    <item android:offset="0" android:color="#FFFFFFFF" />
+                    <item android:offset="0.45" android:color="#FFE6E7EA" />
+                    <item android:offset="0.55" android:color="#FFB9BCC2" />
+                    <item android:offset="1" android:color="#FFF2F3F5" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <!-- Select y Start -->
+        <path
+            android:pathData="M224,175 H244 M268,175 H288"
+            android:strokeColor="#FFE6E7EA"
+            android:strokeWidth="10"
+            android:strokeLineCap="round" />
+        <!-- L1 y R1 -->
+        <path
+            android:pathData="M92,130 C106,112 126,106 160,106 M420,130 C406,112 386,106 352,106"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="14"
+            android:strokeLineCap="round" />
+        <!-- botón de acción -->
+        <path
+            android:pathData="M409,232 a11,11 0 1,0 22,0 a11,11 0 1,0 -22,0">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="0"
+                    android:startY="140"
+                    android:endX="0"
+                    android:endY="400">
+                    <item android:offset="0" android:color="#FFFFFFFF" />
+                    <item android:offset="0.45" android:color="#FFE6E7EA" />
+                    <item android:offset="0.55" android:color="#FFB9BCC2" />
+                    <item android:offset="1" android:color="#FFF2F3F5" />
+                </gradient>
+            </aapt:attr>
+        </path>
+    </group>
+</vector>

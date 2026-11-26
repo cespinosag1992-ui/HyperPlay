@@ -1,10 +1,10 @@
-# FMOD Studio 1.10 banks (Celeste) — what HyperPlay knows / Lo que HyperPlay sabe
+# FMOD Studio 1.10 banks (Celeste) — what Exedra64 knows / Lo que Exedra64 sabe
 
-Working notes for HyperPlay's FMOD-free audio (no Firelight code is used or shipped). Every point
+Working notes for Exedra64's FMOD-free audio (no Firelight code is used or shipped). Every point
 below was checked against the real FMOD on a PC with `fmodstudio.dll` from the game itself
 (the "oracle": a 32-bit helper that loads the banks and dumps `GUID path` per event).
 
-Notas de trabajo del audio sin FMOD de HyperPlay (no se usa ni distribuye código de Firelight).
+Notas de trabajo del audio sin FMOD de Exedra64 (no se usa ni distribuye código de Firelight).
 Cada punto se comprobó con el FMOD real en un PC, usando el `fmodstudio.dll` del propio juego.
 
 ## Container / Contenedor

@@ -109,8 +109,8 @@ fun ArtImage(
 @Composable
 fun HyperLogo(size: Dp) {
     Image(
-        painter = androidx.compose.ui.res.painterResource(com.murdoc820.hyperplay.R.drawable.hyperplay_logo),
-        contentDescription = "HyperPlay",
+        painter = androidx.compose.ui.res.painterResource(com.murdoc820.hyperplay.R.drawable.exedra_logo),
+        contentDescription = "Exedra64",
         contentScale = ContentScale.Crop,
         modifier = Modifier.size(size).clip(RoundedCornerShape(size * 0.22f)),
     )

@@ -1,13 +1,13 @@
-# .NET runtime for HyperPlay (Mono x64 + FNA) / Runtime .NET para HyperPlay (Mono x64 + FNA)
+# .NET runtime for Exedra64 (Mono x64 + FNA) / Runtime .NET para Exedra64 (Mono x64 + FNA)
 
 ## English
 
-.NET Framework games such as Celeste ship only IL code. HyperPlay runs them with **Mono x64 for
+.NET Framework games such as Celeste ship only IL code. Exedra64 runs them with **Mono x64 for
 Windows**, translated by the Oryon JIT like Unity's Mono, and replaces XNA with **FNA**. The game
-draws with FNA3D/SDL GPU over Vulkan, which HyperPlay passes to the phone's Vulkan
+draws with FNA3D/SDL GPU over Vulkan, which Exedra64 passes to the phone's Vulkan
 (`app/src/main/cpp/loader/VulkanPassthrough.cpp`). See `app/src/main/cpp/loader/ManagedHost.h`.
 The game's swapchain is virtual (`app/src/main/cpp/gfx/GuestSwapchain.cpp`): the game draws into
-HyperPlay images and each present is copied to the real swapchain. With HyperFG on, HyperPlay
+Exedra64 images and each present is copied to the real swapchain. With HyperFG on, Exedra64
 presents an interpolated frame between the game's frames (Celeste 60 → 120).
 `setprop debug.hyperplay.vswap 0` turns the virtual swapchain off.
 
@@ -38,7 +38,7 @@ first time a .NET game opens (`ManagedRuntime.kt`, SHA-256 checked) into
 `Android/data/<package>/files/runtime/mono` (case-insensitive storage, like Windows).
 
 Audio: FMOD is proprietary and is not distributed. When the game asks the shim `fmodstudio.dll`
-for a function, HyperPlay answers with its own native FMOD Studio
+for a function, Exedra64 answers with its own native FMOD Studio
 (`app/src/main/cpp/audio/FmodStudioHost.cpp`): it reads the game's banks (`FmodBank.cpp`, format in
 [FMOD_BANK_FORMAT.md](FMOD_BANK_FORMAT.md)), decodes their Vorbis sounds with Android and mixes them
 at 48 kHz into AAudio. No Firelight code is used. Done: events, timelines, multi/random
@@ -51,12 +51,12 @@ conditional transitions, long music streamed. Not done: effects (reverb, filters
 
 ## Español
 
-Los juegos de .NET Framework como Celeste solo traen código IL. HyperPlay los ejecuta con **Mono
+Los juegos de .NET Framework como Celeste solo traen código IL. Exedra64 los ejecuta con **Mono
 x64 para Windows**, traducido por el JIT Oryon como el Mono de Unity, y sustituye XNA por **FNA**.
-El juego dibuja con FNA3D/SDL GPU sobre Vulkan, que HyperPlay pasa al Vulkan del teléfono
+El juego dibuja con FNA3D/SDL GPU sobre Vulkan, que Exedra64 pasa al Vulkan del teléfono
 (`app/src/main/cpp/loader/VulkanPassthrough.cpp`). Ver `app/src/main/cpp/loader/ManagedHost.h`.
 El swapchain del juego es virtual (`app/src/main/cpp/gfx/GuestSwapchain.cpp`): el juego dibuja en
-imágenes de HyperPlay y cada present se copia al swapchain real. Con HyperFG activo, HyperPlay
+imágenes de Exedra64 y cada present se copia al swapchain real. Con HyperFG activo, Exedra64
 presenta un frame interpolado entre los del juego (Celeste 60 → 120).
 `setprop debug.hyperplay.vswap 0` apaga el swapchain virtual.
 
@@ -87,7 +87,7 @@ primera vez que se abre un juego .NET (`ManagedRuntime.kt`, con SHA-256) en
 `Android/data/<paquete>/files/runtime/mono` (almacenamiento sin mayúsculas, como Windows).
 
 Sonido: FMOD es propietario y no se distribuye. Cuando el juego pide una función al shim
-`fmodstudio.dll`, HyperPlay responde con su propio FMOD Studio nativo
+`fmodstudio.dll`, Exedra64 responde con su propio FMOD Studio nativo
 (`app/src/main/cpp/audio/FmodStudioHost.cpp`): lee los bancos del juego (`FmodBank.cpp`, formato en
 [FMOD_BANK_FORMAT.md](FMOD_BANK_FORMAT.md)), decodifica sus sonidos Vorbis con Android y los mezcla
 a 48 kHz hacia AAudio. No se usa código de Firelight. Hecho: eventos, líneas de tiempo,

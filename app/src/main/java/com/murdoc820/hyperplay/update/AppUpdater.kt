@@ -215,7 +215,7 @@ object AppUpdater {
      * si no, el primer `.apk`. Devuelve el índice o -1.
      */
     internal fun pickApkAsset(names: List<String>): Int {
-        val official = Regex("""^HyperPlay-v[0-9][^/]*-arm64-v8a\.apk$""", RegexOption.IGNORE_CASE)
+        val official = Regex("""^(?:HyperPlay|Exedra64)-v[0-9][^/]*-arm64-v8a\.apk$""", RegexOption.IGNORE_CASE)
         names.indexOfFirst { official.matches(it) }.takeIf { it >= 0 }?.let { return it }
         names.indexOfFirst { it.endsWith(".apk", true) && it.contains("arm64", true) }.takeIf { it >= 0 }?.let { return it }
         return names.indexOfFirst { it.endsWith(".apk", true) }

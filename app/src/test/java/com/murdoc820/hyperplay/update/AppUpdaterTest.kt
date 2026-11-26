@@ -28,6 +28,9 @@ class AppUpdaterTest {
         assertEquals(0, AppUpdater.pickApkAsset(listOf("app-release.apk", "notes.txt")))
         assertEquals(-1, AppUpdater.pickApkAsset(listOf("$official.sha256", "runtime.zip")))
         assertEquals(-1, AppUpdater.pickApkAsset(emptyList()))
+        // After the rename to Exedra64 the official APK keeps winning.
+        val renamed = "Exedra64-v1.2.0-Snapdragon8Elite-arm64-v8a.apk"
+        assertEquals(1, AppUpdater.pickApkAsset(listOf("other.apk", renamed, "$renamed.sha256")))
     }
 
     @Test

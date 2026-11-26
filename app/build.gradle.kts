@@ -32,7 +32,7 @@ android {
         versionName = hpVersionName
 
         // Actualizaciones (GitHub Releases) e informes de errores (Cloudflare Worker -> Issues).
-        buildConfigField("String", "GITHUB_REPO", "\"murdoc820/HyperPlay\"")
+        buildConfigField("String", "GITHUB_REPO", "\"murdoc820/Exedra64\"")
         buildConfigField("String", "REPORT_URL", "\"${System.getenv("HP_REPORT_URL") ?: (project.findProperty("hpReportUrl") as String?) ?: ""}\"")
 
         ndk {

@@ -57,5 +57,5 @@ PROOT_TMP_DIR=<app data dir>/cache \
    `TALLOC_BUILD_VERSION_*` in `talloc/android/config.h` and re-check the
    undefined symbols of `talloc.o` against bionic.
 
-## Parches locales de HyperPlay
+## Parches locales de Exedra64
 - `proot/src/syscall/enter.c` (`PR_execveat`): si `dirfd != AT_FDCWD` pero la ruta es absoluta, se trata como `execve` (el kernel ignora `dirfd` en ese caso). Necesario porque FEX-Emu se re-ejecuta con `execveat(fd, "/proc/self/exe", ...)`; sin esto Wine no puede lanzar procesos hijos.

@@ -6,7 +6,7 @@
 
 ## English
 
-The HyperPlay app always keeps errors on the phone (`files/diag/`). If the user agrees, it sends
+The Exedra64 app always keeps errors on the phone (`files/diag/`). If the user agrees, it sends
 them to this Worker, which creates a GitHub **Issue** labeled `auto-report` in the repository set
 in `REPORTS_REPO`. That repository should be **private** (for example `HyperPlay-Reports`): reports
 contain logs from users' phones. The GitHub token lives only in Cloudflare: the APK carries no
@@ -38,7 +38,7 @@ file) are kept. Tests: `node --test test/redact.test.js`.
    npx wrangler deploy
    ```
    Wrangler prints the URL, for example `https://hyperplay-reports.<your-account>.workers.dev`.
-5. Check that it answers: open the URL in a browser → `HyperPlay report worker OK`.
+5. Check that it answers: open the URL in a browser → `Exedra64 report worker OK`.
 6. Tell the app where to send: GitHub → repo → Settings → Secrets and variables → Actions →
    **Variables** → `HP_REPORT_URL` = `https://hyperplay-reports.<your-account>.workers.dev/report`.
    The next published versions will carry that URL.
@@ -62,7 +62,7 @@ accounts or personal files.
 
 ## Español
 
-La app HyperPlay guarda siempre los errores en el teléfono (`files/diag/`). Si el usuario lo
+La app Exedra64 guarda siempre los errores en el teléfono (`files/diag/`). Si el usuario lo
 acepta, los envía a este Worker, que crea un **Issue** con la etiqueta `auto-report` en el
 repositorio indicado en `REPORTS_REPO`. Ese repositorio debe ser **privado** (por ejemplo
 `HyperPlay-Reports`): los informes contienen logs de teléfonos de usuarios. El token de GitHub vive
@@ -95,7 +95,7 @@ almacenamiento solo se conservan las dos últimas partes (carpeta del juego y ar
    npx wrangler deploy
    ```
    Wrangler imprime la URL, por ejemplo `https://hyperplay-reports.<tu-cuenta>.workers.dev`.
-5. Comprueba que responde: abre la URL en el navegador → `HyperPlay report worker OK`.
+5. Comprueba que responde: abre la URL en el navegador → `Exedra64 report worker OK`.
 6. Dile a la app dónde enviar: en GitHub → repo → Settings → Secrets and variables → Actions →
    **Variables** → `HP_REPORT_URL` = `https://hyperplay-reports.<tu-cuenta>.workers.dev/report`.
    Las siguientes versiones publicadas llevarán esa URL.

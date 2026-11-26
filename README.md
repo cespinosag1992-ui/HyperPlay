@@ -1,13 +1,17 @@
-# HyperPlay
+# Exedra64
+
+<p align="center"><img src="docs/exedra64-logo.png" alt="Exedra64" width="220"></p>
 
 **[English](#english) · [Español](#español)**
+
+*Formerly HyperPlay. / Antes HyperPlay.*
 
 ---
 
 ## English
 
 **PC games (Windows `.exe`) running directly on Android**: no Wine, no Linux guest, no
-containers. HyperPlay loads the executable in memory, translates x86/x64 code to ARM64 with its
+containers. Exedra64 loads the executable in memory, translates x86/x64 code to ARM64 with its
 own JIT, and wires Direct3D, audio and controllers straight to Vulkan, AAudio and Android input.
 
 > Status: **alpha**. Tuned for Snapdragon 8 Elite (Adreno 830). Tested games: Hollow Knight and
@@ -19,10 +23,10 @@ own JIT, and wires Direct3D, audio and controllers straight to Vulkan, AAudio an
 |---|---|---|
 | Hollow Knight | Unity (Mono), D3D11, x64 | **Playable**: menus, saves, gameplay, benches and physics (geo, bounces) fixed; 60-120 FPS on the GPU path |
 | Cuphead | Unity (Mono), D3D11, x64 | **Playable, in testing**: title, menus, save slots, world map and a run-and-gun level with shooting at ~120 FPS; bosses not verified yet. Real widescreen (more scene at the sides, no stretching), always on |
-| DmC: Devil May Cry | Unreal 3, D3D9, **32-bit** | **Not working yet**: needs the 32-bit (WOW64) path and D3D9 → Vulkan |
-| Celeste | XNA → FNA, .NET Framework | **Starts, in testing**: runs on Mono x64 + FNA (Vulkan passed to the phone): title, menus, file select and the prologue at 60 FPS. HyperPlay downloads its .NET runtime (33 MB) the first time. **Audio without FMOD**: HyperPlay plays the game's own sound banks with its native FMOD Studio (effects, interface, ambience and music, with its layers and stereo position; snapshots still in progress, see `tools/managed-runtime`). Options and game progress are saved |
+| DmC: Devil May Cry | Unreal 3, D3D9, **32-bit** | **Not working yet**: the 32-bit path now loads the game and its DLLs (memory below 4 GB, stdcall/cdecl calls, 32-bit Windows structures) and the .NET Framework from Microsoft; still stops at startup. D3D9 → Vulkan pending |
+| Celeste | XNA → FNA, .NET Framework | **Starts, in testing**: runs on Mono x64 + FNA (Vulkan passed to the phone): title, menus, file select and the prologue at 60 FPS. Exedra64 downloads its .NET runtime (33 MB) the first time. **Audio without FMOD**: Exedra64 plays the game's own sound banks with its native FMOD Studio (effects, interface, ambience and music, with its layers and stereo position; snapshots still in progress, see `tools/managed-runtime`). Options and game progress are saved |
 | Hollow Knight: Silksong | Unity (Mono), D3D12/D3D11, x64 | Starts; first tests only, not verified as playable yet |
-| Stardew Valley | MonoGame, .NET | Shows up in the library with its info; not tested yet |
+| Stardew Valley | MonoGame, .NET 6, OpenGL | **Starts, in testing**: title, menus, new game and gameplay with controller; clean audio. Not verified yet: saves, HyperFG at 120 and internal resolution |
 
 The app itself (library, game page, settings, quick menu, controllers, updates, error reports)
 works and is tested on a RedMagic 10S Pro (Android 15).
@@ -48,7 +52,7 @@ works and is tested on a RedMagic 10S Pro (Android 15).
 
 ### Install
 
-1. Download `HyperPlay-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk` from the latest
+1. Download `Exedra64-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk` from the latest
    [Release](../../releases/latest). The name says the processor it is built for: 64-bit ARM
    (arm64-v8a), tuned for the Snapdragon 8 Elite.
 2. Install it (Android 12 or later, ARM64). The first time, Android asks you to allow apps from
@@ -60,7 +64,7 @@ works and is tested on a RedMagic 10S Pro (Android 15).
 
 Later versions install from **Settings → Updates** inside the app.
 
-> HyperPlay **does not include games**. Only use games you legally own.
+> Exedra64 **does not include games**. Only use games you legally own.
 
 ### Build
 
@@ -85,7 +89,7 @@ UI text lives in `app/src/main/res/values/strings.xml` (English, default) and
 | `server/report-worker` | Cloudflare Worker that turns error reports into Issues |
 | `docs/` | Documentation and screenshots |
 
-More technical detail in [ARCHITECTURE.md](ARCHITECTURE.md). The work log (in Spanish) is in
+More technical detail in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### Error reports
 
@@ -107,7 +111,7 @@ unsent reports and the last 5 game session logs are kept. To report a problem yo
 ## Español
 
 **Juegos de PC (Windows `.exe`) directamente en Android**, sin Wine, sin Linux invitado, sin
-contenedores. HyperPlay carga el ejecutable en memoria, traduce el código x86/x64 a ARM64 con un
+contenedores. Exedra64 carga el ejecutable en memoria, traduce el código x86/x64 a ARM64 con un
 JIT propio y conecta Direct3D, audio y mandos directamente con Vulkan, AAudio y el mando de Android.
 
 > Estado: **alfa**. Optimizado para Snapdragon 8 Elite (Adreno 830). Juegos probados: Hollow
@@ -119,10 +123,10 @@ JIT propio y conecta Direct3D, audio y mandos directamente con Vulkan, AAudio y 
 |---|---|---|
 | Hollow Knight | Unity (Mono), D3D11, x64 | **Jugable**: menús, partidas, gameplay, bancos y física (geo, rebotes) corregidos; 60-120 FPS por la ruta GPU |
 | Cuphead | Unity (Mono), D3D11, x64 | **Jugable, en pruebas**: título, menús, ranuras de partida, mapa del mundo y un nivel de disparos a ~120 FPS; jefes sin verificar. Panorámica real (más escenario a los lados, sin estirar), siempre activa |
-| DmC: Devil May Cry | Unreal 3, D3D9, **32 bits** | **Aún no funciona**: falta la ruta de 32 bits (WOW64) y D3D9 → Vulkan |
-| Celeste | XNA → FNA, .NET Framework | **Arranca, en pruebas**: corre en Mono x64 + FNA (Vulkan pasado al teléfono): título, menús, selección de partida y el prólogo a 60 FPS. HyperPlay descarga su runtime .NET (33 MB) la primera vez. **Sonido sin FMOD**: HyperPlay reproduce los bancos de sonido del propio juego con su FMOD Studio nativo (efectos, interfaz, ambientes y música, con sus capas y la posición en estéreo; los snapshots siguen en curso, ver `tools/managed-runtime`). Se guardan las opciones y la partida |
+| DmC: Devil May Cry | Unreal 3, D3D9, **32 bits** | **Aún no funciona**: la ruta de 32 bits ya carga el juego y sus DLL (memoria por debajo de 4 GB, llamadas stdcall/cdecl, estructuras Windows de 32 bits) y el .NET Framework de Microsoft; aún se para al arrancar. Falta D3D9 → Vulkan |
+| Celeste | XNA → FNA, .NET Framework | **Arranca, en pruebas**: corre en Mono x64 + FNA (Vulkan pasado al teléfono): título, menús, selección de partida y el prólogo a 60 FPS. Exedra64 descarga su runtime .NET (33 MB) la primera vez. **Sonido sin FMOD**: Exedra64 reproduce los bancos de sonido del propio juego con su FMOD Studio nativo (efectos, interfaz, ambientes y música, con sus capas y la posición en estéreo; los snapshots siguen en curso, ver `tools/managed-runtime`). Se guardan las opciones y la partida |
 | Hollow Knight: Silksong | Unity (Mono), D3D12/D3D11, x64 | Arranca; solo primeras pruebas, aún sin verificar que sea jugable |
-| Stardew Valley | MonoGame, .NET | Aparece en la biblioteca con su ficha; sin probar todavía |
+| Stardew Valley | MonoGame, .NET 6, OpenGL | **Arranca, en pruebas**: título, menús, partida nueva y juego con mando; sonido limpio. Sin verificar aún: guardado, HyperFG a 120 y resolución interna |
 
 La app en sí (biblioteca, ficha del juego, ajustes, menú rápido, mandos, actualizaciones,
 informes de errores) funciona y está probada en un RedMagic 10S Pro (Android 15).
@@ -149,7 +153,7 @@ informes de errores) funciona y está probada en un RedMagic 10S Pro (Android 15
 
 ### Instalar
 
-1. Descarga el `HyperPlay-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk` de la última
+1. Descarga el `Exedra64-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk` de la última
    [Release](../../releases/latest). El nombre indica el procesador para el que está hecho: ARM de
    64 bits (arm64-v8a), optimizado para el Snapdragon 8 Elite.
 2. Instálalo (Android 12 o superior, ARM64). La primera vez Android pedirá permitir apps de
@@ -161,7 +165,7 @@ informes de errores) funciona y está probada en un RedMagic 10S Pro (Android 15
 
 Las siguientes versiones se instalan desde **Ajustes → Actualizaciones** dentro de la app.
 
-> HyperPlay **no incluye juegos**. Usa solo juegos que poseas legalmente.
+> Exedra64 **no incluye juegos**. Usa solo juegos que poseas legalmente.
 
 ### Compilar
 
@@ -186,7 +190,7 @@ Los textos de la interfaz están en `app/src/main/res/values/strings.xml` (ingl�
 | `server/report-worker` | Cloudflare Worker que convierte los informes de errores en Issues |
 | `docs/` | Documentación y capturas |
 
-Más detalle técnico en [ARCHITECTURE.md](ARCHITECTURE.md); historial de trabajo en
+Más detalle técnico en [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### Informes de errores
 

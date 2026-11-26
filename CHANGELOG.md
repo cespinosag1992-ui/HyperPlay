@@ -6,10 +6,25 @@ section of the tagged version into the GitHub Release notes.
 Cada versión se describe primero en inglés y luego en español. El workflow de release copia la
 sección de la versión etiquetada en las notas de la Release de GitHub.
 
-## Unreleased
+## 1.2.0
 
 ### English
 
+- **New name: HyperPlay is now Exedra64.** New name, icon and logo (chrome gamepad with "E64":
+  the E doubles as the D-pad, with Select/Start and L1/R1). The GitHub repository moved to
+  `murdoc820/Exedra64` (old links redirect). Installs, saves and updates are unaffected: the
+  package, the `/sdcard/HyperPlay/` folder and `_HyperPlaySaves` keep their names. The release APK
+  is now `Exedra64-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk`; the updater accepts both names.
+- **Stardew Valley is playable (in testing):** controller input works (window focus and cursor
+  fixed), starting a new game no longer crashes (I/O completion ports, thread pool), the audio is
+  no longer distorted (a limiter replaces hard clipping), and characters draw complete
+  (`glGetTexImage` implemented).
+- **32-bit games (groundwork for DmC):** 32-bit executables now get memory, stack and TEB below
+  4 GB, a stdcall/cdecl bridge to native functions, 32-bit layouts of Windows structures
+  (`CRITICAL_SECTION`, `SYSTEM_INFO`, `MEMORY_BASIC_INFORMATION`, `STARTUPINFO`, SRW locks) and
+  up to 65536 DLL exports. The .NET Framework 4.8 from Microsoft can be used by 32-bit games
+  (registry keys, `C:\Windows` mapping, `mscoree`). DmC still stops at startup.
+- Engine: `PCMPISTRI` fixed (invalid-element rules).
 - **Fixed: in-app updates now install.** The update downloaded but the system "Install?" dialog
   never appeared, so it stayed on "Installing…" forever: it was opened from a broadcast receiver,
   which Android 15/16 silently blocks. The launcher screen now opens it. Install failures show a
@@ -80,6 +95,23 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Nuevo nombre: HyperPlay ahora es Exedra64.** Nombre, icono y logo nuevos (mando cromado con
+  "E64": la E hace de cruceta, con Select/Start y L1/R1). El repositorio de GitHub pasa a
+  `murdoc820/Exedra64` (los enlaces antiguos redirigen). Instalaciones, partidas y actualizaciones
+  no cambian: el paquete, la carpeta `/sdcard/HyperPlay/` y `_HyperPlaySaves` conservan su nombre.
+  El APK de cada versión se llama ahora `Exedra64-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk`; el
+  actualizador acepta los dos nombres.
+- **Stardew Valley es jugable (en pruebas):** el mando funciona (foco de ventana y cursor
+  corregidos), empezar partida nueva ya no se cierra (puertos de finalización de E/S, pool de
+  hilos), el sonido ya no se distorsiona (un limitador sustituye el recorte brusco) y los
+  personajes se dibujan completos (`glGetTexImage` implementado).
+- **Juegos de 32 bits (base para DmC):** los ejecutables de 32 bits reciben memoria, pila y TEB por
+  debajo de 4 GB, un puente stdcall/cdecl a las funciones nativas, las estructuras de Windows con
+  su forma de 32 bits (`CRITICAL_SECTION`, `SYSTEM_INFO`, `MEMORY_BASIC_INFORMATION`,
+  `STARTUPINFO`, bloqueos SRW) y hasta 65536 exportaciones por DLL. Los juegos de 32 bits pueden
+  usar el .NET Framework 4.8 de Microsoft (claves de registro, carpeta `C:\Windows`, `mscoree`).
+  DmC aún se para al arrancar.
+- Motor: corregido `PCMPISTRI` (reglas de elementos no válidos).
 - **Arreglado: las actualizaciones desde la app ya se instalan.** La actualización se descargaba,
   pero el diálogo «¿Instalar?» del sistema no aparecía y se quedaba en «Instalando…» para siempre:
   se abría desde un receptor de broadcasts, algo que Android 15/16 bloquea sin avisar. Ahora lo

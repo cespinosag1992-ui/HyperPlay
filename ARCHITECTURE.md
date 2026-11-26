@@ -1,4 +1,11 @@
-# HYPERPLAY (`com.murdoc820.hyperplay`) - PURE BIONIC DIRECT-SILICON ARCHITECTURE (ZVDS)
+# EXEDRA64 (`com.murdoc820.hyperplay`) - PURE BIONIC DIRECT-SILICON ARCHITECTURE (ZVDS)
+
+> **Name / Nombre:** the project was called HyperPlay until v1.2.0. Internal identifiers keep the
+> old name on purpose so installs, saves and updates keep working: package
+> `com.murdoc820.hyperplay`, `libhyperplay.so`, the `/sdcard/HyperPlay/` folder, `_HyperPlaySaves`,
+> log tags and `debug.hyperplay.*` properties. / El proyecto se llamó HyperPlay hasta la v1.2.0.
+> Los identificadores internos conservan el nombre antiguo a propósito para que instalaciones,
+> partidas y actualizaciones sigan funcionando.
 **Target Hardware:** Qualcomm Snapdragon 8 Elite (Oryon 64-bit CPU: 6x Perf @ 3.53GHz + 2x Prime @ 4.32GHz | Adreno 830 GPU)
 **Target OS:** Android 14/15/16 (`arm64-v8a` exclusive, Pure 64-bit Silicon - NO `aarch32` hardware support)
 **Core Philosophy:** ZERO Linux Guest OS, ZERO Ubuntu/Alpine Rootfs, ZERO PRoot/Chroot, ZERO X11/Wayland Servers, ZERO Wine, ZERO Proton, ZERO FEX, ZERO Box64. Pure in-house native execution of portable 32-bit (`x86`) and 64-bit (`x86_64`) Windows `.exe` games directly on Android Bionic via `libhyperplay.so`.
@@ -30,7 +37,7 @@ Instead of loading emulated Windows system DLLs or running a Wine container, `Na
 ---
 
 ### 3. In-House JIT Recompiler `x86/x64 -> ARMv9 AArch64` (`OryonCpuTranslator.cpp` & `OryonEmitterBackend.cpp`)
-HyperPlay implements its own native translation engine in C++20 registered by default as the active `CpuTranslationBackend`:
+Exedra64 implements its own native translation engine in C++20 registered by default as the active `CpuTranslationBackend`:
 - **Real x86/x64 Instruction Decoder:** Decodes REX prefixes (`0x40..0x4F`), ModR/M bytes, SIB addressing, displacements, and immediate values.
 - **Instruction Support:** Translates `MOV` (reg-reg, reg-imm64/32, load/store), stack operations (`PUSH`, `POP`), arithmetic/logic (`ADD`, `SUB`, `CMP`, `TEST`, `AND`, `OR`, `XOR`), control flow (`JMP`, `Jcc`, `CALL`, `RET`), and SSE vector moves (`MOVAPS`, `MOVUPS`).
 - **GPR Mapping to ARMv9:** Maps x86 registers `RAX..R15` directly to AArch64 registers `X0..X15`.
@@ -86,7 +93,7 @@ HyperPlay implements its own native translation engine in C++20 registered by de
 ## 3. PROJECT STRUCTURE / ESTRUCTURA DEL PROYECTO
 
 ```text
-HyperPlay/
+Exedra64/
 ├── ARCHITECTURE.md
 ├── CHANGELOG.md
 ├── README.md
