@@ -2868,6 +2868,27 @@ static void probeLog(CpuContext* c, uint64_t rip) {
              static_cast<unsigned long long>(q[1]), probeText(q[1]).c_str(),
              static_cast<unsigned long long>(q[2]), static_cast<unsigned long long>(q[3]));
     }
+    if (probeReadable(c->gpr[4] + 0x28, 8)) {
+        const uint64_t a5 = *reinterpret_cast<const uint64_t*>(c->gpr[4] + 0x28);
+        uint64_t a5_28 = 0, asm10 = 0;
+        if (probeReadable(a5 + 0x28, 8)) a5_28 = *reinterpret_cast<const uint64_t*>(a5 + 0x28);
+        if (probeReadable(a5_28 + 0x10, 8)) asm10 = *reinterpret_cast<const uint64_t*>(a5_28 + 0x10);
+        LOGI("[Sonda]   arg5=[rsp+28]=%llx -> [+28]=%llx -> [+10]=%llx", static_cast<unsigned long long>(a5),
+             static_cast<unsigned long long>(a5_28), static_cast<unsigned long long>(asm10));
+    }
+    if (probeReadable(c->gpr[5] + 0x40, 16)) {
+        const auto* q = reinterpret_cast<const uint64_t*>(c->gpr[5] + 0x40);
+        uint64_t m28 = 0, m8 = 0, m10 = 0;
+        if (probeReadable(q[1] + 8, 0x28)) {
+            m8 = reinterpret_cast<const uint64_t*>(q[1])[1];
+            m10 = reinterpret_cast<const uint64_t*>(q[1])[2];
+            m28 = reinterpret_cast<const uint64_t*>(q[1])[5];
+        }
+        LOGI("[Sonda]   rbp=%llx [rbp+40]=%llx [rbp+48]=%llx -> [+8]=%llx [+10]=%llx [+28]=%llx",
+             static_cast<unsigned long long>(c->gpr[5]), static_cast<unsigned long long>(q[0]),
+             static_cast<unsigned long long>(q[1]), static_cast<unsigned long long>(m8),
+             static_cast<unsigned long long>(m10), static_cast<unsigned long long>(m28));
+    }
     LOGI("[Sonda]   rbx=%llx rsi=%llx rdi=%llx r12=%llx r13=%llx r14=%llx r15=%llx",
          static_cast<unsigned long long>(c->gpr[3]), static_cast<unsigned long long>(c->gpr[6]),
          static_cast<unsigned long long>(c->gpr[7]), static_cast<unsigned long long>(c->gpr[12]),
