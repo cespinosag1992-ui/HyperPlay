@@ -5070,6 +5070,42 @@ void testParityFlagAndJcc() {
     }
 }
 
+// Hash de nombres de tipo de ReadyToRun (ComputeNameHashCode), bytes reales de coreclr.dll
+// 6.0 (RVA 0x205e0): rol 5/8, movsx desde memoria con SIB, lea. Lo usa la búsqueda de tipos
+// por nombre de .NET (Stardew Valley no encontraba StardewValley.Mods.ModDataDictionary).
+uint32_t refNameHash(const char* s) {
+    auto rotl = [](uint32_t v, int n) { return (v << n) | (v >> (32 - n)); };
+    if (s == nullptr || s[0] == 0) return 0;
+    uint32_t h1 = 0x6DA3B944u, h2 = 0;
+    for (size_t i = 0;; i += 2) {
+        h1 = (h1 + rotl(h1, 5)) ^ static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(s[i])));
+        if (s[i + 1] == 0) break;
+        h2 = (h2 + rotl(h2, 5)) ^ static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(s[i + 1])));
+        if (s[i + 2] == 0) break;
+    }
+    return (h2 + rotl(h2, 8)) ^ (rotl(h1, 8) + h1);
+}
+
+void testCoreclrNameHash() {
+    const Bytes code = {0x4c, 0x8b, 0xd9, 0x48, 0x85, 0xc9, 0x74, 0x5f, 0x44, 0x0f, 0xb6, 0x11, 0x45, 0x84, 0xd2,
+                        0x74, 0x56, 0x33, 0xc0, 0x41, 0xb9, 0x44, 0xb9, 0xa3, 0x6d, 0x44, 0x8b, 0xc0, 0x0f, 0x1f,
+                        0x40, 0x00, 0x41, 0x8b, 0xd1, 0x41, 0x0f, 0xbe, 0xca, 0xc1, 0xc2, 0x05, 0x44, 0x03, 0xca,
+                        0x44, 0x33, 0xc9, 0x41, 0x8d, 0x48, 0x01, 0x42, 0x0f, 0xbe, 0x0c, 0x19, 0x84, 0xc9, 0x74,
+                        0x17, 0x8b, 0xd0, 0x41, 0x83, 0xc0, 0x02, 0xc1, 0xc2, 0x05, 0x03, 0xc2, 0x33, 0xc1, 0x47,
+                        0x0f, 0xb6, 0x14, 0x18, 0x45, 0x84, 0xd2, 0x75, 0xcc, 0x8b, 0xd0, 0x41, 0x8b, 0xc9, 0xc1,
+                        0xc2, 0x08, 0xc1, 0xc1, 0x08, 0x03, 0xc2, 0x41, 0x03, 0xc9, 0x33, 0xc1, 0xc3, 0x33, 0xc0,
+                        0xc3};
+    const char* names[] = {"StardewValley.Mods", "ModDataDictionary", "System.Xml.Serialization",
+                           "XmlSerializerImplementation", "a", "ab", "abc", "Item", "StardewValley"};
+    CHECK(configureBackend(false));
+    for (const char* n : names) {
+        g_backend->context().gpr[1] = reinterpret_cast<uintptr_t>(n);  // RCX
+        const auto got = static_cast<uint32_t>(runCode(code));
+        if (got != refNameHash(n)) std::printf("  hash('%s') = %08x, esperado %08x\n", n, got, refNameHash(n));
+        CHECK_EQ(got, refNameHash(n));
+    }
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
@@ -5138,6 +5174,8 @@ int main() {
     OryonEmitterBackend backend;
     g_backend = &backend;
 
+    std::printf("testCoreclrNameHash\n");
+    testCoreclrNameHash();
     std::printf("testMovAdd64\n");
     testMovAdd64();
     std::printf("test32BitWrapAndZeroFlag\n");
