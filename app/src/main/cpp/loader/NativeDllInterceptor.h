@@ -115,6 +115,14 @@ public:
     static void win_SubmitThreadpoolWork(void* pwk);
     static void win_WaitForThreadpoolWorkCallbacks(void* pwk, int32_t fCancelPendingCallbacks);
     static void win_CloseThreadpoolWork(void* pwk);
+    // Puertos de finalización de E/S (IOCP): cola de paquetes; las E/S de archivo son síncronas, así que
+    // solo llegan los paquetes de PostQueuedCompletionStatus (lo que usa el pool de hilos de .NET).
+    static void* win_CreateIoCompletionPort(void* fileHandle, void* existingPort, uint64_t key, uint32_t threads);
+    static int32_t win_GetQueuedCompletionStatus(void* port, uint32_t* bytes, uint64_t* key, void** overlapped,
+                                                 uint32_t ms);
+    static int32_t win_GetQueuedCompletionStatusEx(void* port, void* entries, uint32_t count, uint32_t* removed,
+                                                   uint32_t ms, int32_t alertable);
+    static int32_t win_PostQueuedCompletionStatus(void* port, uint32_t bytes, uint64_t key, void* overlapped);
     static void* win_AddVectoredExceptionHandler(uint32_t first, void* handler);
     static uint32_t win_RemoveVectoredExceptionHandler(void* handle);
     static int32_t win_SetThreadStackGuarantee(uint32_t* stackSizeInBytes);

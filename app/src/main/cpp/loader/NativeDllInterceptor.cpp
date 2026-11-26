@@ -3225,6 +3225,10 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "SubmitThreadpoolWork") result = reinterpret_cast<void*>(&win_SubmitThreadpoolWork);
         else if (funcName == "WaitForThreadpoolWorkCallbacks") result = reinterpret_cast<void*>(&win_WaitForThreadpoolWorkCallbacks);
         else if (funcName == "CloseThreadpoolWork") result = reinterpret_cast<void*>(&win_CloseThreadpoolWork);
+        else if (funcName == "CreateIoCompletionPort") result = reinterpret_cast<void*>(&win_CreateIoCompletionPort);
+        else if (funcName == "GetQueuedCompletionStatus") result = reinterpret_cast<void*>(&win_GetQueuedCompletionStatus);
+        else if (funcName == "GetQueuedCompletionStatusEx") result = reinterpret_cast<void*>(&win_GetQueuedCompletionStatusEx);
+        else if (funcName == "PostQueuedCompletionStatus") result = reinterpret_cast<void*>(&win_PostQueuedCompletionStatus);
         else if (funcName == "GetProcessTimes") result = reinterpret_cast<void*>(&win_GetProcessTimes);
         else if (funcName == "GetSystemTimes") result = reinterpret_cast<void*>(&win_GetSystemTimes);
         else if (funcName == "FormatMessageW") result = reinterpret_cast<void*>(&win_FormatMessageW);
@@ -10478,6 +10482,116 @@ void NativeDllInterceptor::win_CloseThreadpoolWork(void* pwk) {
         pending.swap(w->threads);
     }
     for (void* h : pending) win_CloseHandle(h);
+}
+
+namespace {
+struct IocpPacket { uint32_t bytes; uint64_t key; void* overlapped; };
+struct Iocp {
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::deque<IocpPacket> queue;
+};
+std::mutex s_iocpMtx;
+std::unordered_map<uintptr_t, std::shared_ptr<Iocp>> s_iocps;
+std::atomic<uintptr_t> s_nextIocp{0x7E000000};
+
+std::shared_ptr<Iocp> findIocp(void* h) {
+    std::lock_guard<std::mutex> lk(s_iocpMtx);
+    const auto it = s_iocps.find(reinterpret_cast<uintptr_t>(h));
+    return it == s_iocps.end() ? nullptr : it->second;
+}
+
+// Espera hasta 'ms' (INFINITE = 0xFFFFFFFF) a que haya al menos un paquete. true si lo hay.
+bool iocpWait(Iocp& p, std::unique_lock<std::mutex>& lk, uint32_t ms) {
+    if (ms == 0xFFFFFFFFu) {
+        p.cv.wait(lk, [&] { return !p.queue.empty(); });
+        return true;
+    }
+    return p.cv.wait_for(lk, std::chrono::milliseconds(ms), [&] { return !p.queue.empty(); });
+}
+}  // namespace
+
+void* NativeDllInterceptor::win_CreateIoCompletionPort(void* fileHandle, void* existingPort, uint64_t, uint32_t) {
+    s_kernel32Calls.fetch_add(1);
+    if (reinterpret_cast<intptr_t>(fileHandle) != -1) {
+        // Asociar un archivo: las E/S de HyperPlay terminan de forma síncrona, no generan paquetes.
+        if (existingPort != nullptr) return existingPort;
+    }
+    const uintptr_t h = s_nextIocp.fetch_add(4);
+    {
+        std::lock_guard<std::mutex> lk(s_iocpMtx);
+        s_iocps[h] = std::make_shared<Iocp>();
+    }
+    LOGI("CreateIoCompletionPort -> %p", reinterpret_cast<void*>(h));
+    return reinterpret_cast<void*>(h);
+}
+
+int32_t NativeDllInterceptor::win_PostQueuedCompletionStatus(void* port, uint32_t bytes, uint64_t key, void* overlapped) {
+    s_kernel32Calls.fetch_add(1);
+    auto p = findIocp(port);
+    if (!p) {
+        win_SetLastError(6);  // ERROR_INVALID_HANDLE
+        return 0;
+    }
+    {
+        std::lock_guard<std::mutex> lk(p->mtx);
+        p->queue.push_back({bytes, key, overlapped});
+    }
+    p->cv.notify_one();
+    return 1;
+}
+
+int32_t NativeDllInterceptor::win_GetQueuedCompletionStatus(void* port, uint32_t* bytes, uint64_t* key, void** overlapped,
+                                                            uint32_t ms) {
+    s_kernel32Calls.fetch_add(1);
+    if (overlapped) *overlapped = nullptr;
+    auto p = findIocp(port);
+    if (!p) {
+        win_SetLastError(6);
+        return 0;
+    }
+    std::unique_lock<std::mutex> lk(p->mtx);
+    if (!iocpWait(*p, lk, ms)) {
+        win_SetLastError(258);  // WAIT_TIMEOUT
+        return 0;
+    }
+    const IocpPacket pk = p->queue.front();
+    p->queue.pop_front();
+    if (bytes) *bytes = pk.bytes;
+    if (key) *key = pk.key;
+    if (overlapped) *overlapped = pk.overlapped;
+    return 1;
+}
+
+int32_t NativeDllInterceptor::win_GetQueuedCompletionStatusEx(void* port, void* entries, uint32_t count, uint32_t* removed,
+                                                              uint32_t ms, int32_t) {
+    s_kernel32Calls.fetch_add(1);
+    if (removed) *removed = 0;
+    auto p = findIocp(port);
+    if (!p || entries == nullptr || count == 0) {
+        win_SetLastError(p ? 87 : 6);
+        return 0;
+    }
+    std::unique_lock<std::mutex> lk(p->mtx);
+    if (!iocpWait(*p, lk, ms)) {
+        win_SetLastError(258);
+        return 0;
+    }
+    // OVERLAPPED_ENTRY x64: lpCompletionKey, lpOverlapped, Internal, dwNumberOfBytesTransferred (32 bytes).
+    auto* e = static_cast<uint8_t*>(entries);
+    uint32_t n = 0;
+    while (n < count && !p->queue.empty()) {
+        const IocpPacket pk = p->queue.front();
+        p->queue.pop_front();
+        uint8_t* row = e + static_cast<size_t>(n) * 32;
+        std::memset(row, 0, 32);
+        std::memcpy(row, &pk.key, 8);
+        std::memcpy(row + 8, &pk.overlapped, 8);
+        std::memcpy(row + 24, &pk.bytes, 4);
+        ++n;
+    }
+    if (removed) *removed = n;
+    return 1;
 }
 
 void NativeDllInterceptor::win_FlushProcessWriteBuffers() {
