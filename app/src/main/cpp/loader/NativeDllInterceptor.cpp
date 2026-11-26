@@ -17,6 +17,7 @@
 #include "DxbcVm.h"
 #include "SoftRaster.h"
 #include "Win64ThunkAbi.h"
+#include "Win32Arity.h"
 #include "Win64Context.h"
 #include "GuestSeh.h"
 #include "gfx/GuestOpenGl.h"
@@ -109,6 +110,101 @@ void registerTrampolineAddress(void* ptr, const std::string& name = "") {
     }
 }
 
+std::string findTrampolineName(uintptr_t addr);
+}  // namespace (se reabre abajo)
+
+namespace w32arity {
+namespace {
+std::mutex& arityMutex() {
+    static std::mutex m;
+    return m;
+}
+std::unordered_map<const void*, Arity>& arityMap() {
+    static std::unordered_map<const void*, Arity> m;
+    return m;
+}
+}  // namespace
+void record(const void* fn, const Arity& a) {
+    std::lock_guard<std::mutex> lk(arityMutex());
+    arityMap()[fn] = a;
+}
+bool lookup(const void* fn, Arity& out) {
+    std::lock_guard<std::mutex> lk(arityMutex());
+    const auto it = arityMap().find(fn);
+    if (it == arityMap().end()) return false;
+    out = it->second;
+    return true;
+}
+}  // namespace w32arity
+
+// --- Alias bajo 4 GB de funciones nativas (invitados de 32 bits) ---------------------------------
+// Una IAT de 32 bits solo guarda punteros de 4 bytes, y las funciones de libhyperplay.so viven por
+// encima de 4 GB. Cada función recibe una dirección propia en una región baja (16 bytes por entrada,
+// rellena con INT3: nunca se ejecuta, el traductor la reconoce como trampolín antes de traducirla) y
+// dispatchThunk la traduce de vuelta a la función real.
+namespace w32alias {
+namespace {
+std::mutex s_mtx;
+std::unordered_map<uintptr_t, uintptr_t> s_hostToLow;
+std::unordered_map<uintptr_t, uintptr_t> s_lowToHost;
+uint8_t* s_region = nullptr;
+size_t s_used = 0;
+constexpr size_t kRegionSize = 1u << 20;  // 65536 entradas
+constexpr size_t kEntry = 16;
+
+uint8_t* region() {
+    if (s_region != nullptr) return s_region;
+    // Por debajo de 2 GB y lejos del arena del invitado (que empieza abajo): se prueba de arriba abajo.
+    for (uintptr_t hint = 0x7F000000u; hint >= 0x40000000u; hint -= 0x01000000u) {
+        void* p = mmap(reinterpret_cast<void*>(hint), kRegionSize, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        if (p == MAP_FAILED) continue;
+        if (reinterpret_cast<uintptr_t>(p) + kRegionSize > 0xFFFFFFFFull) {
+            munmap(p, kRegionSize);
+            continue;
+        }
+        std::memset(p, 0xCC, kRegionSize);  // INT3
+        mprotect(p, kRegionSize, PROT_READ);
+        s_region = static_cast<uint8_t*>(p);
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "Alias de 32 bits en %p (%zu entradas)", p, kRegionSize / kEntry);
+        break;
+    }
+    return s_region;
+}
+}  // namespace
+
+uintptr_t hostFor(uintptr_t addr) {
+    std::lock_guard<std::mutex> lk(s_mtx);
+    const auto it = s_lowToHost.find(addr);
+    return it == s_lowToHost.end() ? addr : it->second;
+}
+
+bool isAlias(uintptr_t addr) {
+    return s_region != nullptr && addr >= reinterpret_cast<uintptr_t>(s_region) &&
+           addr < reinterpret_cast<uintptr_t>(s_region) + kRegionSize;
+}
+
+// Dirección < 4 GB para 'host' (la misma si ya lo está); 0 si no queda espacio.
+uintptr_t lowFor(void* host, const std::string& name) {
+    const auto h = reinterpret_cast<uintptr_t>(host);
+    if (h <= 0xFFFFFFFFull) return h;
+    uintptr_t low = 0;
+    {
+        std::lock_guard<std::mutex> lk(s_mtx);
+        if (const auto it = s_hostToLow.find(h); it != s_hostToLow.end()) return it->second;
+        uint8_t* r = region();
+        if (r == nullptr || s_used + kEntry > kRegionSize) return 0;
+        low = reinterpret_cast<uintptr_t>(r + s_used);
+        s_used += kEntry;
+        s_hostToLow[h] = low;
+        s_lowToHost[low] = h;
+    }
+    registerTrampolineAddress(reinterpret_cast<void*>(low), name.empty() ? findTrampolineName(h) : name);
+    return low;
+}
+}  // namespace w32alias
+
+namespace {
 std::string findTrampolineName(uintptr_t addr) {
     std::lock_guard<std::mutex> lock(s_trampolineMutex);
     auto it = s_trampolineNames.find(addr);
@@ -1398,52 +1494,52 @@ void* win_InterlockedPushListSListEx(void* head, void* list, void* listEnd, uint
 
 void* resolveSystemExtraExport(const std::string& funcName) {
     static const std::unordered_map<std::string, void*> kExports = {
-        {"RtlAddGrowableFunctionTable", reinterpret_cast<void*>(&win_RtlAddGrowableFunctionTable)},
-        {"RtlGrowFunctionTable", reinterpret_cast<void*>(&win_RtlGrowFunctionTable)},
-        {"RtlDeleteGrowableFunctionTable", reinterpret_cast<void*>(&win_RtlDeleteGrowableFunctionTable)},
-        {"RtlInstallFunctionTableCallback", reinterpret_cast<void*>(&win_RtlInstallFunctionTableCallback)},
-        {"RtlAddFunctionTable", reinterpret_cast<void*>(&win_RtlAddFunctionTable)},
-        {"RtlDeleteFunctionTable", reinterpret_cast<void*>(&win_RtlDeleteFunctionTable)},
-        {"AreFileApisANSI", reinterpret_cast<void*>(&win_AreFileApisANSI)},
-        {"IsWow64Process", reinterpret_cast<void*>(&win_IsWow64Process)},
-        {"HeapCompact", reinterpret_cast<void*>(&win_HeapCompact)},
-        {"RtlRestoreContext", reinterpret_cast<void*>(&win_RtlRestoreContext)},
-        {"RtlUnwind", reinterpret_cast<void*>(&win_RtlUnwind)},
-        {"RtlRaiseException", reinterpret_cast<void*>(&win_RtlRaiseException)},
-        {"GetNumaHighestNodeNumber", reinterpret_cast<void*>(&win_GetNumaHighestNodeNumber)},
-        {"NtQuerySystemInformation", reinterpret_cast<void*>(&win_NtQuerySystemInformation)},
-        {"GetProcessAffinityMask", reinterpret_cast<void*>(&win_GetProcessAffinityMask)},
-        {"GetCurrentProcessorNumber", reinterpret_cast<void*>(&win_GetCurrentProcessorNumber)},
-        {"WerRegisterRuntimeExceptionModule", reinterpret_cast<void*>(&win_WerRegisterRuntimeExceptionModule)},
-        {"RtlGetVersion", reinterpret_cast<void*>(&win_RtlGetVersion)},
-        {"VerSetConditionMask", reinterpret_cast<void*>(&win_VerSetConditionMask)},
-        {"VerifyVersionInfoW", reinterpret_cast<void*>(&win_VerifyVersionInfoW)},
-        {"SetEndOfFile", reinterpret_cast<void*>(&win_SetEndOfFile)},
-        {"LockFileEx", reinterpret_cast<void*>(&win_LockFileEx)},
-        {"UnlockFileEx", reinterpret_cast<void*>(&win_UnlockFileEx)},
-        {"SetFileTime", reinterpret_cast<void*>(&win_SetFileTime)},
-        {"SetFileAttributesW", reinterpret_cast<void*>(&win_SetFileAttributesW)},
-        {"GetLogicalDrives", reinterpret_cast<void*>(&win_GetLogicalDrives)},
-        {"GetDiskFreeSpaceW", reinterpret_cast<void*>(&win_GetDiskFreeSpaceW)},
-        {"SetFileInformationByHandle", reinterpret_cast<void*>(&win_SetFileInformationByHandle)},
-        {"OutputDebugStringW", reinterpret_cast<void*>(&win_OutputDebugStringW)},
-        {"LCMapStringEx", reinterpret_cast<void*>(&win_LCMapStringEx)},
-        {"RegisterEventSourceW", reinterpret_cast<void*>(&win_RegisterEventSourceW)},
-        {"DeregisterEventSource", reinterpret_cast<void*>(&win_DeregisterEventSource)},
-        {"ReportEventW", reinterpret_cast<void*>(&win_ReportEventW)},
-        {"SetThreadErrorMode", reinterpret_cast<void*>(&win_SetThreadErrorMode)},
-        {"GetSystemTimePreciseAsFileTime", reinterpret_cast<void*>(&win_GetSystemTimePreciseAsFileTime)},
-        {"AppPolicyGetThreadInitializationType", reinterpret_cast<void*>(&win_AppPolicyGetThreadInitializationType)},
-        {"GetCurrentPackageId", reinterpret_cast<void*>(&win_GetCurrentPackageId)},
-        {"InitializeConditionVariable", reinterpret_cast<void*>(&win_InitializeConditionVariable)},
-        {"QueryDepthSList", reinterpret_cast<void*>(&win_QueryDepthSList)},
-        {"RtlQueryDepthSList", reinterpret_cast<void*>(&win_QueryDepthSList)},
-        {"InterlockedPushListSListEx", reinterpret_cast<void*>(&win_InterlockedPushListSListEx)},
-        {"RtlInterlockedPushListSListEx", reinterpret_cast<void*>(&win_InterlockedPushListSListEx)},
-        {"RtlInterlockedPushEntrySList", reinterpret_cast<void*>(&NativeDllInterceptor::win_InterlockedPushEntrySList)},
-        {"RtlInterlockedPopEntrySList", reinterpret_cast<void*>(&NativeDllInterceptor::win_InterlockedPopEntrySList)},
-        {"RtlInterlockedFlushSList", reinterpret_cast<void*>(&NativeDllInterceptor::win_InterlockedFlushSList)},
-        {"RtlInitializeSListHead", reinterpret_cast<void*>(&NativeDllInterceptor::win_InitializeSListHead)},
+        {"RtlAddGrowableFunctionTable", w32arity::hpFn(&win_RtlAddGrowableFunctionTable)},
+        {"RtlGrowFunctionTable", w32arity::hpFn(&win_RtlGrowFunctionTable)},
+        {"RtlDeleteGrowableFunctionTable", w32arity::hpFn(&win_RtlDeleteGrowableFunctionTable)},
+        {"RtlInstallFunctionTableCallback", w32arity::hpFn(&win_RtlInstallFunctionTableCallback)},
+        {"RtlAddFunctionTable", w32arity::hpFn(&win_RtlAddFunctionTable)},
+        {"RtlDeleteFunctionTable", w32arity::hpFn(&win_RtlDeleteFunctionTable)},
+        {"AreFileApisANSI", w32arity::hpFn(&win_AreFileApisANSI)},
+        {"IsWow64Process", w32arity::hpFn(&win_IsWow64Process)},
+        {"HeapCompact", w32arity::hpFn(&win_HeapCompact)},
+        {"RtlRestoreContext", w32arity::hpFn(&win_RtlRestoreContext)},
+        {"RtlUnwind", w32arity::hpFn(&win_RtlUnwind)},
+        {"RtlRaiseException", w32arity::hpFn(&win_RtlRaiseException)},
+        {"GetNumaHighestNodeNumber", w32arity::hpFn(&win_GetNumaHighestNodeNumber)},
+        {"NtQuerySystemInformation", w32arity::hpFn(&win_NtQuerySystemInformation)},
+        {"GetProcessAffinityMask", w32arity::hpFn(&win_GetProcessAffinityMask)},
+        {"GetCurrentProcessorNumber", w32arity::hpFn(&win_GetCurrentProcessorNumber)},
+        {"WerRegisterRuntimeExceptionModule", w32arity::hpFn(&win_WerRegisterRuntimeExceptionModule)},
+        {"RtlGetVersion", w32arity::hpFn(&win_RtlGetVersion)},
+        {"VerSetConditionMask", w32arity::hpFn(&win_VerSetConditionMask)},
+        {"VerifyVersionInfoW", w32arity::hpFn(&win_VerifyVersionInfoW)},
+        {"SetEndOfFile", w32arity::hpFn(&win_SetEndOfFile)},
+        {"LockFileEx", w32arity::hpFn(&win_LockFileEx)},
+        {"UnlockFileEx", w32arity::hpFn(&win_UnlockFileEx)},
+        {"SetFileTime", w32arity::hpFn(&win_SetFileTime)},
+        {"SetFileAttributesW", w32arity::hpFn(&win_SetFileAttributesW)},
+        {"GetLogicalDrives", w32arity::hpFn(&win_GetLogicalDrives)},
+        {"GetDiskFreeSpaceW", w32arity::hpFn(&win_GetDiskFreeSpaceW)},
+        {"SetFileInformationByHandle", w32arity::hpFn(&win_SetFileInformationByHandle)},
+        {"OutputDebugStringW", w32arity::hpFn(&win_OutputDebugStringW)},
+        {"LCMapStringEx", w32arity::hpFn(&win_LCMapStringEx)},
+        {"RegisterEventSourceW", w32arity::hpFn(&win_RegisterEventSourceW)},
+        {"DeregisterEventSource", w32arity::hpFn(&win_DeregisterEventSource)},
+        {"ReportEventW", w32arity::hpFn(&win_ReportEventW)},
+        {"SetThreadErrorMode", w32arity::hpFn(&win_SetThreadErrorMode)},
+        {"GetSystemTimePreciseAsFileTime", w32arity::hpFn(&win_GetSystemTimePreciseAsFileTime)},
+        {"AppPolicyGetThreadInitializationType", w32arity::hpFn(&win_AppPolicyGetThreadInitializationType)},
+        {"GetCurrentPackageId", w32arity::hpFn(&win_GetCurrentPackageId)},
+        {"InitializeConditionVariable", w32arity::hpFn(&win_InitializeConditionVariable)},
+        {"QueryDepthSList", w32arity::hpFn(&win_QueryDepthSList)},
+        {"RtlQueryDepthSList", w32arity::hpFn(&win_QueryDepthSList)},
+        {"InterlockedPushListSListEx", w32arity::hpFn(&win_InterlockedPushListSListEx)},
+        {"RtlInterlockedPushListSListEx", w32arity::hpFn(&win_InterlockedPushListSListEx)},
+        {"RtlInterlockedPushEntrySList", w32arity::hpFn(&NativeDllInterceptor::win_InterlockedPushEntrySList)},
+        {"RtlInterlockedPopEntrySList", w32arity::hpFn(&NativeDllInterceptor::win_InterlockedPopEntrySList)},
+        {"RtlInterlockedFlushSList", w32arity::hpFn(&NativeDllInterceptor::win_InterlockedFlushSList)},
+        {"RtlInitializeSListHead", w32arity::hpFn(&NativeDllInterceptor::win_InitializeSListHead)},
     };
     auto it = kExports.find(funcName);
     return it == kExports.end() ? nullptr : it->second;
@@ -1451,34 +1547,34 @@ void* resolveSystemExtraExport(const std::string& funcName) {
 
 void* resolveRegistryExport(const std::string& funcName) {
     static const std::unordered_map<std::string, void*> kExports = {
-        {"RegOpenKeyExW", reinterpret_cast<void*>(&win_RegOpenKeyExW)},
-        {"RegisterEventSourceW", reinterpret_cast<void*>(&win_RegisterEventSourceW)},
-        {"DeregisterEventSource", reinterpret_cast<void*>(&win_DeregisterEventSource)},
-        {"ReportEventW", reinterpret_cast<void*>(&win_ReportEventW)},
-        {"EventRegister", reinterpret_cast<void*>(&win_EventRegister)},
-        {"EventUnregister", reinterpret_cast<void*>(&win_EventUnregister)},
-        {"EventSetInformation", reinterpret_cast<void*>(&win_EventSetInformation)},
-        {"EventWriteTransfer", reinterpret_cast<void*>(&win_EventWriteTransfer)},
-        {"EventActivityIdControl", reinterpret_cast<void*>(&win_EventActivityIdControl)},
-        {"EventEnabled", reinterpret_cast<void*>(&win_EventEnabled)},
-        {"RegOpenKeyExA", reinterpret_cast<void*>(&win_RegOpenKeyExA)},
-        {"RegOpenKeyW", reinterpret_cast<void*>(&win_RegOpenKeyW)},
-        {"RegCreateKeyExW", reinterpret_cast<void*>(&win_RegCreateKeyExW)},
-        {"RegCreateKeyExA", reinterpret_cast<void*>(&win_RegCreateKeyExA)},
-        {"RegCreateKeyW", reinterpret_cast<void*>(&win_RegCreateKeyW)},
-        {"RegCloseKey", reinterpret_cast<void*>(&win_RegCloseKey)},
-        {"RegFlushKey", reinterpret_cast<void*>(&win_RegFlushKey)},
-        {"RegSetValueExW", reinterpret_cast<void*>(&win_RegSetValueExW)},
-        {"RegSetValueExA", reinterpret_cast<void*>(&win_RegSetValueExA)},
-        {"RegQueryValueExW", reinterpret_cast<void*>(&win_RegQueryValueExW)},
-        {"RegQueryValueExA", reinterpret_cast<void*>(&win_RegQueryValueExA)},
-        {"RegGetValueW", reinterpret_cast<void*>(&win_RegGetValueW)},
-        {"RegDeleteValueW", reinterpret_cast<void*>(&win_RegDeleteValueW)},
-        {"RegDeleteValueA", reinterpret_cast<void*>(&win_RegDeleteValueA)},
-        {"RegDeleteKeyW", reinterpret_cast<void*>(&win_RegDeleteKeyW)},
-        {"RegEnumValueW", reinterpret_cast<void*>(&win_RegEnumValueW)},
-        {"RegEnumKeyExW", reinterpret_cast<void*>(&win_RegEnumKeyExW)},
-        {"RegQueryInfoKeyW", reinterpret_cast<void*>(&win_RegQueryInfoKeyW)},
+        {"RegOpenKeyExW", w32arity::hpFn(&win_RegOpenKeyExW)},
+        {"RegisterEventSourceW", w32arity::hpFn(&win_RegisterEventSourceW)},
+        {"DeregisterEventSource", w32arity::hpFn(&win_DeregisterEventSource)},
+        {"ReportEventW", w32arity::hpFn(&win_ReportEventW)},
+        {"EventRegister", w32arity::hpFn(&win_EventRegister)},
+        {"EventUnregister", w32arity::hpFn(&win_EventUnregister)},
+        {"EventSetInformation", w32arity::hpFn(&win_EventSetInformation)},
+        {"EventWriteTransfer", w32arity::hpFn(&win_EventWriteTransfer)},
+        {"EventActivityIdControl", w32arity::hpFn(&win_EventActivityIdControl)},
+        {"EventEnabled", w32arity::hpFn(&win_EventEnabled)},
+        {"RegOpenKeyExA", w32arity::hpFn(&win_RegOpenKeyExA)},
+        {"RegOpenKeyW", w32arity::hpFn(&win_RegOpenKeyW)},
+        {"RegCreateKeyExW", w32arity::hpFn(&win_RegCreateKeyExW)},
+        {"RegCreateKeyExA", w32arity::hpFn(&win_RegCreateKeyExA)},
+        {"RegCreateKeyW", w32arity::hpFn(&win_RegCreateKeyW)},
+        {"RegCloseKey", w32arity::hpFn(&win_RegCloseKey)},
+        {"RegFlushKey", w32arity::hpFn(&win_RegFlushKey)},
+        {"RegSetValueExW", w32arity::hpFn(&win_RegSetValueExW)},
+        {"RegSetValueExA", w32arity::hpFn(&win_RegSetValueExA)},
+        {"RegQueryValueExW", w32arity::hpFn(&win_RegQueryValueExW)},
+        {"RegQueryValueExA", w32arity::hpFn(&win_RegQueryValueExA)},
+        {"RegGetValueW", w32arity::hpFn(&win_RegGetValueW)},
+        {"RegDeleteValueW", w32arity::hpFn(&win_RegDeleteValueW)},
+        {"RegDeleteValueA", w32arity::hpFn(&win_RegDeleteValueA)},
+        {"RegDeleteKeyW", w32arity::hpFn(&win_RegDeleteKeyW)},
+        {"RegEnumValueW", w32arity::hpFn(&win_RegEnumValueW)},
+        {"RegEnumKeyExW", w32arity::hpFn(&win_RegEnumKeyExW)},
+        {"RegQueryInfoKeyW", w32arity::hpFn(&win_RegQueryInfoKeyW)},
     };
     auto it = kExports.find(funcName);
     return it == kExports.end() ? nullptr : it->second;
@@ -2221,6 +2317,80 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
         return false;
     }
 
+    // --- Invitado de 32 bits (WoW64 propio): argumentos en la pila y limpieza stdcall ---------------
+    if (ctx.mode32 != 0) {
+        const uintptr_t host = w32alias::hostFor(target);
+        const uint32_t esp = static_cast<uint32_t>(ctx.gpr[4]);
+        if (esp == 0) return false;
+        uint32_t ret32 = 0;
+        std::memcpy(&ret32, reinterpret_cast<const void*>(static_cast<uintptr_t>(esp)), 4);
+        const ThunkInfo* info = thunkInfoFor(target);
+        info->total.fetch_add(1, std::memory_order_relaxed);
+        const std::string& name = info->name;
+        const size_t bang = name.rfind('!');
+        const std::string dll = toLower(bang == std::string::npos ? std::string() : name.substr(0, bang));
+        // CRT y variádicas: cdecl (limpia el llamador). El resto de la API de Windows: stdcall.
+        const bool crtDll = dll.find("msvcr") != std::string::npos || dll.find("msvcp") != std::string::npos ||
+                            dll.find("ucrtbase") != std::string::npos || dll.find("api-ms-win-crt") != std::string::npos ||
+                            dll == "msvcrt.dll" || dll.find("steam_api") != std::string::npos;
+        w32arity::Arity ar{};
+        const bool known = w32arity::lookup(reinterpret_cast<const void*>(host), ar);
+        const std::string* stubName = info->stubName != nullptr ? info->stubName : DynamicStubManager::findStubName(host);
+        if (!known || stubName != nullptr) {
+            static std::mutex s_m;
+            static std::unordered_set<std::string> s_warned;
+            std::lock_guard<std::mutex> lk(s_m);
+            if (s_warned.insert(name).second)
+                LOGW("[32 bits] %s: aridad desconocida%s (se trata como cdecl)", name.c_str(),
+                     stubName != nullptr ? " (stub)" : "");
+        }
+        win64abi::ThunkArgs args{};
+        uint32_t slot = 0;
+        const size_t nargs = known ? ar.args : 8;
+        for (size_t i = 0; i < nargs && i < args.size(); ++i) {
+            uint32_t lo = 0, hi = 0;
+            std::memcpy(&lo, reinterpret_cast<const void*>(static_cast<uintptr_t>(esp) + 4 + 4 * slot), 4);
+            ++slot;
+            if (known && (ar.wideMask & (1u << i)) != 0) {
+                std::memcpy(&hi, reinterpret_cast<const void*>(static_cast<uintptr_t>(esp) + 4 + 4 * slot), 4);
+                ++slot;
+            }
+            args[i] = (static_cast<uint64_t>(hi) << 32) | lo;
+        }
+        const bool stdcall = known && stubName == nullptr && !ar.variadic && !crtDll;
+        if (info->calls.fetch_add(1, std::memory_order_relaxed) < 4) {
+            LOGI("[NativeThunk32] %s(0x%llx, 0x%llx, 0x%llx, 0x%llx) desde EIP=0x%x (%s, %u slots)", name.c_str(),
+                 static_cast<unsigned long long>(args[0]), static_cast<unsigned long long>(args[1]),
+                 static_cast<unsigned long long>(args[2]), static_cast<unsigned long long>(args[3]), ret32,
+                 stdcall ? "stdcall" : "cdecl", known ? ar.slots : 0u);
+        }
+        uint64_t ret = 0;
+        if (stubName != nullptr) {
+            ret = 0;
+        } else {
+            t_dispatchBackend = static_cast<OryonEmitterBackend*>(user);
+            CpuContext* const prevThunkCtx = t_thunkCtx;
+            const uint64_t prevThunkRet = t_thunkRet;
+            t_thunkCtx = &ctx;
+            t_thunkRet = ret32;
+            ret = win64abi::invokeThunk(host, args);
+            t_thunkCtx = prevThunkCtx;
+            t_thunkRet = prevThunkRet;
+            if (t_ctxOverride) {
+                t_ctxOverride = false;
+                ctx = t_ctxOverrideValue;
+                return true;
+            }
+        }
+        if (!info->isVoid) {
+            ctx.gpr[0] = ret & 0xFFFFFFFFull;          // EAX
+            ctx.gpr[2] = (ret >> 32) & 0xFFFFFFFFull;  // EDX (retornos de 64 bits)
+        }
+        ctx.gpr[4] = static_cast<uint64_t>(esp) + 4 + (stdcall ? 4u * ar.slots : 0u);
+        ctx.rip = ret32;
+        return true;
+    }
+
     // --- Hooks internos de Unity MemoryManager (evitan asignaciones nulas para label=1 kMemTempAlloc) ---
     if (target == s_unityMemoryManagerAllocate) {
         const uint16_t label = static_cast<uint16_t>(ctx.gpr[9]);
@@ -2493,11 +2663,16 @@ IatHijackStats NativeDllInterceptor::hijackIatChecked(LoadedPeImage& image) {
                 continue;  // se deja el slot intacto; el llamador aborta la ejecución
             }
             if (image.is32Bit && reinterpret_cast<uintptr_t>(nativeFunc) > 0xFFFFFFFFull) {
-                ++stats.unresolved;  // imposible representarlo en una IAT de 32 bits
-                if (stats.unresolvedImports.size() < 512) {
-                    stats.unresolvedImports.push_back(mod.name + "!" + fn.name + " (dirección >4GB)");
+                // IAT de 32 bits: alias bajo 4 GB que dispatchThunk traduce a la función real.
+                const uintptr_t low = w32alias::lowFor(nativeFunc, mod.name + "!" + fn.name);
+                if (low == 0) {
+                    ++stats.unresolved;
+                    if (stats.unresolvedImports.size() < 512) {
+                        stats.unresolvedImports.push_back(mod.name + "!" + fn.name + " (sin alias <4GB)");
+                    }
+                    continue;
                 }
-                continue;
+                nativeFunc = reinterpret_cast<void*>(low);
             }
 
             uint8_t* target = base + fn.iatRva;
@@ -2556,7 +2731,7 @@ void patchStaticMsvcMemcpy(LoadedPeImage& image) {
     char v[PROP_VALUE_MAX] = {};
     if (__system_property_get("debug.hyperplay.hostmemcpy", v) > 0 && v[0] == '0') return;
     static const bool s_reg = [] {
-        registerTrampolineAddress(reinterpret_cast<void*>(&hostMemmove), "hostcrt!memmove");
+        registerTrampolineAddress(w32arity::hpFn(&hostMemmove), "hostcrt!memmove");
         return true;
     }();
     (void)s_reg;
@@ -2634,8 +2809,10 @@ IatHijackStats NativeDllInterceptor::hijackLocalDllIat(LoadedPeImage& image) {
                 }
             }
 
-            const uintptr_t value = reinterpret_cast<uintptr_t>(nativeFunc);
+            uintptr_t value = reinterpret_cast<uintptr_t>(nativeFunc);
             if (image.is32Bit) {
+                // Antes se truncaba a 32 bits en silencio (salto a basura): alias bajo 4 GB.
+                if (value > 0xFFFFFFFFull) value = w32alias::lowFor(nativeFunc, mod.name + "!" + fn.name);
                 const uint32_t slot = static_cast<uint32_t>(value);
                 std::memcpy(target, &slot, sizeof(slot));
             } else {
@@ -2947,11 +3124,11 @@ static int hp_msvcrt_fprintf(void*, const char* fmt) {
     return 0;
 }
 static void* msvcrtOnlyExport(const std::string& fn) {
-    if (fn == "__iob_func") return reinterpret_cast<void*>(&hp_msvcrt_iob_func);
-    if (fn == "_lock") return reinterpret_cast<void*>(&hp_msvcrt_lock);
-    if (fn == "_unlock") return reinterpret_cast<void*>(&hp_msvcrt_unlock);
-    if (fn == "_amsg_exit") return reinterpret_cast<void*>(&hp_msvcrt_amsg_exit);
-    if (fn == "fprintf" || fn == "vfprintf") return reinterpret_cast<void*>(&hp_msvcrt_fprintf);
+    if (fn == "__iob_func") return w32arity::hpFn(&hp_msvcrt_iob_func);
+    if (fn == "_lock") return w32arity::hpFn(&hp_msvcrt_lock);
+    if (fn == "_unlock") return w32arity::hpFn(&hp_msvcrt_unlock);
+    if (fn == "_amsg_exit") return w32arity::hpFn(&hp_msvcrt_amsg_exit);
+    if (fn == "fprintf" || fn == "vfprintf") return w32arity::hpFn(&hp_msvcrt_fprintf);
     return nullptr;
 }
 
@@ -3039,16 +3216,16 @@ size_t strnlen(const char* s, size_t m) { return s == nullptr ? 0 : lenN(s, m); 
 size_t wcsnlen(const char16_t* s, size_t m) { return s == nullptr ? 0 : lenN(s, m); }
 
 void* resolve(const std::string& fn) {
-    if (fn == "strcpy_s") return reinterpret_cast<void*>(&strcpy_s);
-    if (fn == "strncpy_s") return reinterpret_cast<void*>(&strncpy_s);
-    if (fn == "strcat_s") return reinterpret_cast<void*>(&strcat_s);
-    if (fn == "strncat_s") return reinterpret_cast<void*>(&strncat_s);
-    if (fn == "wcscpy_s") return reinterpret_cast<void*>(&wcscpy_s);
-    if (fn == "wcsncpy_s") return reinterpret_cast<void*>(&wcsncpy_s);
-    if (fn == "wcscat_s") return reinterpret_cast<void*>(&wcscat_s);
-    if (fn == "wcsncat_s") return reinterpret_cast<void*>(&wcsncat_s);
-    if (fn == "strnlen") return reinterpret_cast<void*>(&strnlen);
-    if (fn == "wcsnlen") return reinterpret_cast<void*>(&wcsnlen);
+    if (fn == "strcpy_s") return w32arity::hpFn(&strcpy_s);
+    if (fn == "strncpy_s") return w32arity::hpFn(&strncpy_s);
+    if (fn == "strcat_s") return w32arity::hpFn(&strcat_s);
+    if (fn == "strncat_s") return w32arity::hpFn(&strncat_s);
+    if (fn == "wcscpy_s") return w32arity::hpFn(&wcscpy_s);
+    if (fn == "wcsncpy_s") return w32arity::hpFn(&wcsncpy_s);
+    if (fn == "wcscat_s") return w32arity::hpFn(&wcscat_s);
+    if (fn == "wcsncat_s") return w32arity::hpFn(&wcsncat_s);
+    if (fn == "strnlen") return w32arity::hpFn(&strnlen);
+    if (fn == "wcsnlen") return w32arity::hpFn(&wcsnlen);
     return nullptr;
 }
 }  // namespace hostcrt
@@ -3079,15 +3256,15 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     if (!result && (dll.find("xinput") != std::string::npos || dll == "dinput8.dll")) {
         s_xinputCalls.fetch_add(1);
         if (funcName == "XInputGetState" || funcName == "XInputGetStateEx") {
-            result = reinterpret_cast<void*>(&DirectXInputBridge::XInputGetState);
+            result = w32arity::hpFn(&DirectXInputBridge::XInputGetState);
         }
-        else if (funcName == "XInputSetState") result = reinterpret_cast<void*>(&DirectXInputBridge::XInputSetState);
-        else if (funcName == "XInputGetCapabilities") result = reinterpret_cast<void*>(&DirectXInputBridge::XInputGetCapabilities);
-        else if (funcName == "XInputEnable") result = reinterpret_cast<void*>(&DirectXInputBridge::XInputEnable);
+        else if (funcName == "XInputSetState") result = w32arity::hpFn(&DirectXInputBridge::XInputSetState);
+        else if (funcName == "XInputGetCapabilities") result = w32arity::hpFn(&DirectXInputBridge::XInputGetCapabilities);
+        else if (funcName == "XInputEnable") result = w32arity::hpFn(&DirectXInputBridge::XInputEnable);
         else if (funcName == "XInputGetBatteryInformation") {
-            result = reinterpret_cast<void*>(&DirectXInputBridge::XInputGetBatteryInformation);
+            result = w32arity::hpFn(&DirectXInputBridge::XInputGetBatteryInformation);
         }
-        else if (funcName == "XInputGetKeystroke") result = reinterpret_cast<void*>(&DirectXInputBridge::XInputGetKeystroke);
+        else if (funcName == "XInputGetKeystroke") result = w32arity::hpFn(&DirectXInputBridge::XInputGetKeystroke);
     }
 
     if (!result && dll == "msvcrt.dll" && guestCrtDll(dll)) result = msvcrtOnlyExport(funcName);
@@ -3105,471 +3282,471 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else s_ntdllCalls.fetch_add(1);
 
         // Memoria
-        if (funcName == "VirtualAlloc") result = reinterpret_cast<void*>(&win_VirtualAlloc);
-        else if (funcName == "VirtualFree") result = reinterpret_cast<void*>(&win_VirtualFree);
-        else if (funcName == "VirtualProtect") result = reinterpret_cast<void*>(&win_VirtualProtect);
-        else if (funcName == "GetProcessHeap") result = reinterpret_cast<void*>(&win_GetProcessHeap);
-        else if (funcName == "HeapAlloc") result = reinterpret_cast<void*>(&win_HeapAlloc);
-        else if (funcName == "HeapFree") result = reinterpret_cast<void*>(&win_HeapFree);
-        else if (funcName == "HeapSize") result = reinterpret_cast<void*>(&win_HeapSize);
-        else if (funcName == "HeapReAlloc") result = reinterpret_cast<void*>(&win_HeapReAlloc);
-        else if (funcName == "VirtualQuery") result = reinterpret_cast<void*>(&win_VirtualQuery);
-        else if (funcName == "HeapCreate") result = reinterpret_cast<void*>(&win_HeapCreate);
-        else if (funcName == "HeapDestroy") result = reinterpret_cast<void*>(&win_HeapDestroy);
+        if (funcName == "VirtualAlloc") result = w32arity::hpFn(&win_VirtualAlloc);
+        else if (funcName == "VirtualFree") result = w32arity::hpFn(&win_VirtualFree);
+        else if (funcName == "VirtualProtect") result = w32arity::hpFn(&win_VirtualProtect);
+        else if (funcName == "GetProcessHeap") result = w32arity::hpFn(&win_GetProcessHeap);
+        else if (funcName == "HeapAlloc") result = w32arity::hpFn(&win_HeapAlloc);
+        else if (funcName == "HeapFree") result = w32arity::hpFn(&win_HeapFree);
+        else if (funcName == "HeapSize") result = w32arity::hpFn(&win_HeapSize);
+        else if (funcName == "HeapReAlloc") result = w32arity::hpFn(&win_HeapReAlloc);
+        else if (funcName == "VirtualQuery") result = w32arity::hpFn(&win_VirtualQuery);
+        else if (funcName == "HeapCreate") result = w32arity::hpFn(&win_HeapCreate);
+        else if (funcName == "HeapDestroy") result = w32arity::hpFn(&win_HeapDestroy);
 
         // Archivos y E/S
-        else if (funcName == "CreateFileW") result = reinterpret_cast<void*>(&win_CreateFileW);
-        else if (funcName == "CreateFileA") result = reinterpret_cast<void*>(&win_CreateFileA);
-        else if (funcName == "ReadFile") result = reinterpret_cast<void*>(&win_ReadFile);
-        else if (funcName == "WriteFile") result = reinterpret_cast<void*>(&win_WriteFile);
-        else if (funcName == "CloseHandle") result = reinterpret_cast<void*>(&win_CloseHandle);
-        else if (funcName == "GetFileSize") result = reinterpret_cast<void*>(&win_GetFileSize);
-        else if (funcName == "GetFileSizeEx") result = reinterpret_cast<void*>(&win_GetFileSizeEx);
-        else if (funcName == "SetFilePointer") result = reinterpret_cast<void*>(&win_SetFilePointer);
-        else if (funcName == "SetFilePointerEx") result = reinterpret_cast<void*>(&win_SetFilePointerEx);
-        else if (funcName == "FlushFileBuffers") result = reinterpret_cast<void*>(&win_FlushFileBuffers);
-        else if (funcName == "CreateFileMappingW") result = reinterpret_cast<void*>(&win_CreateFileMappingW);
-        else if (funcName == "CreateFileMappingA") result = reinterpret_cast<void*>(&win_CreateFileMappingA);
-        else if (funcName == "MapViewOfFile") result = reinterpret_cast<void*>(&win_MapViewOfFile);
-        else if (funcName == "MapViewOfFileEx") result = reinterpret_cast<void*>(&win_MapViewOfFileEx);
-        else if (funcName == "UnmapViewOfFile") result = reinterpret_cast<void*>(&win_UnmapViewOfFile);
-        else if (funcName == "FlushViewOfFile") result = reinterpret_cast<void*>(&win_FlushViewOfFile);
-        else if (funcName == "OpenFileMappingW") result = reinterpret_cast<void*>(&win_OpenFileMappingW);
-        else if (funcName == "OpenFileMappingA") result = reinterpret_cast<void*>(&win_OpenFileMappingA);
-        else if (funcName == "FindFirstFileExW") result = reinterpret_cast<void*>(&win_FindFirstFileExW);
-        else if (funcName == "FindNextFileW") result = reinterpret_cast<void*>(&win_FindNextFileW);
-        else if (funcName == "FindClose") result = reinterpret_cast<void*>(&win_FindClose);
-        else if (funcName == "GetCurrentDirectoryW") result = reinterpret_cast<void*>(&win_GetCurrentDirectoryW);
-        else if (funcName == "SetCurrentDirectoryW") result = reinterpret_cast<void*>(&win_SetCurrentDirectoryW);
-        else if (funcName == "GetDriveTypeW") result = reinterpret_cast<void*>(&win_GetDriveTypeW);
-        else if (funcName == "GetLogicalDriveStringsW") result = reinterpret_cast<void*>(&win_GetLogicalDriveStringsW);
-        else if (funcName == "GetDiskFreeSpaceExW") result = reinterpret_cast<void*>(&win_GetDiskFreeSpaceExW);
-        else if (funcName == "GetVolumeInformationW") result = reinterpret_cast<void*>(&win_GetVolumeInformationW);
-        else if (funcName == "GetFullPathNameW") result = reinterpret_cast<void*>(&win_GetFullPathNameW);
-        else if (funcName == "GetFileInformationByHandle") result = reinterpret_cast<void*>(&win_GetFileInformationByHandle);
-        else if (funcName == "GetFileInformationByHandleEx") result = reinterpret_cast<void*>(&win_GetFileInformationByHandleEx);
+        else if (funcName == "CreateFileW") result = w32arity::hpFn(&win_CreateFileW);
+        else if (funcName == "CreateFileA") result = w32arity::hpFn(&win_CreateFileA);
+        else if (funcName == "ReadFile") result = w32arity::hpFn(&win_ReadFile);
+        else if (funcName == "WriteFile") result = w32arity::hpFn(&win_WriteFile);
+        else if (funcName == "CloseHandle") result = w32arity::hpFn(&win_CloseHandle);
+        else if (funcName == "GetFileSize") result = w32arity::hpFn(&win_GetFileSize);
+        else if (funcName == "GetFileSizeEx") result = w32arity::hpFn(&win_GetFileSizeEx);
+        else if (funcName == "SetFilePointer") result = w32arity::hpFn(&win_SetFilePointer);
+        else if (funcName == "SetFilePointerEx") result = w32arity::hpFn(&win_SetFilePointerEx);
+        else if (funcName == "FlushFileBuffers") result = w32arity::hpFn(&win_FlushFileBuffers);
+        else if (funcName == "CreateFileMappingW") result = w32arity::hpFn(&win_CreateFileMappingW);
+        else if (funcName == "CreateFileMappingA") result = w32arity::hpFn(&win_CreateFileMappingA);
+        else if (funcName == "MapViewOfFile") result = w32arity::hpFn(&win_MapViewOfFile);
+        else if (funcName == "MapViewOfFileEx") result = w32arity::hpFn(&win_MapViewOfFileEx);
+        else if (funcName == "UnmapViewOfFile") result = w32arity::hpFn(&win_UnmapViewOfFile);
+        else if (funcName == "FlushViewOfFile") result = w32arity::hpFn(&win_FlushViewOfFile);
+        else if (funcName == "OpenFileMappingW") result = w32arity::hpFn(&win_OpenFileMappingW);
+        else if (funcName == "OpenFileMappingA") result = w32arity::hpFn(&win_OpenFileMappingA);
+        else if (funcName == "FindFirstFileExW") result = w32arity::hpFn(&win_FindFirstFileExW);
+        else if (funcName == "FindNextFileW") result = w32arity::hpFn(&win_FindNextFileW);
+        else if (funcName == "FindClose") result = w32arity::hpFn(&win_FindClose);
+        else if (funcName == "GetCurrentDirectoryW") result = w32arity::hpFn(&win_GetCurrentDirectoryW);
+        else if (funcName == "SetCurrentDirectoryW") result = w32arity::hpFn(&win_SetCurrentDirectoryW);
+        else if (funcName == "GetDriveTypeW") result = w32arity::hpFn(&win_GetDriveTypeW);
+        else if (funcName == "GetLogicalDriveStringsW") result = w32arity::hpFn(&win_GetLogicalDriveStringsW);
+        else if (funcName == "GetDiskFreeSpaceExW") result = w32arity::hpFn(&win_GetDiskFreeSpaceExW);
+        else if (funcName == "GetVolumeInformationW") result = w32arity::hpFn(&win_GetVolumeInformationW);
+        else if (funcName == "GetFullPathNameW") result = w32arity::hpFn(&win_GetFullPathNameW);
+        else if (funcName == "GetFileInformationByHandle") result = w32arity::hpFn(&win_GetFileInformationByHandle);
+        else if (funcName == "GetFileInformationByHandleEx") result = w32arity::hpFn(&win_GetFileInformationByHandleEx);
 
         // Procesos, Hilos y Consola
-        else if (funcName == "GetCurrentProcessId") result = reinterpret_cast<void*>(&win_GetCurrentProcessId);
-        else if (funcName == "GetCurrentProcess") result = reinterpret_cast<void*>(&win_GetCurrentProcess);
-        else if (funcName == "GetStartupInfoW") result = reinterpret_cast<void*>(&win_GetStartupInfoW);
-        else if (funcName == "GetCommandLineA") result = reinterpret_cast<void*>(&win_GetCommandLineA);
-        else if (funcName == "GetCommandLineW") result = reinterpret_cast<void*>(&win_GetCommandLineW);
-        else if (funcName == "GetEnvironmentStringsW") result = reinterpret_cast<void*>(&win_GetEnvironmentStringsW);
-        else if (funcName == "FreeEnvironmentStringsW") result = reinterpret_cast<void*>(&win_FreeEnvironmentStringsW);
-        else if (funcName == "GetEnvironmentVariableW") result = reinterpret_cast<void*>(&win_GetEnvironmentVariableW);
-        else if (funcName == "GetEnvironmentVariableA") result = reinterpret_cast<void*>(&win_GetEnvironmentVariableA);
-        else if (funcName == "SetEnvironmentVariableW") result = reinterpret_cast<void*>(&win_SetEnvironmentVariableW);
-        else if (funcName == "GetStdHandle") result = reinterpret_cast<void*>(&win_GetStdHandle);
-        else if (funcName == "SetStdHandle") result = reinterpret_cast<void*>(&win_SetStdHandle);
-        else if (funcName == "WriteConsoleW") result = reinterpret_cast<void*>(&win_WriteConsoleW);
-        else if (funcName == "GetConsoleOutputCP") result = reinterpret_cast<void*>(&win_GetConsoleOutputCP);
-        else if (funcName == "GetConsoleCP") result = reinterpret_cast<void*>(&win_GetConsoleCP);
-        else if (funcName == "GetConsoleMode") result = reinterpret_cast<void*>(&win_GetConsoleMode);
-        else if (funcName == "GetFileType") result = reinterpret_cast<void*>(&win_GetFileType);
-        else if (funcName == "GetFileAttributesA") result = reinterpret_cast<void*>(&win_GetFileAttributesA);
-        else if (funcName == "GetFileAttributesW") result = reinterpret_cast<void*>(&win_GetFileAttributesW);
-        else if (funcName == "CreateDirectoryW") result = reinterpret_cast<void*>(&win_CreateDirectoryW);
-        else if (funcName == "MoveFileExW") result = reinterpret_cast<void*>(&winfile::MoveFileExW);
-        else if (funcName == "MoveFileExA") result = reinterpret_cast<void*>(&winfile::MoveFileExA);
-        else if (funcName == "MoveFileW") result = reinterpret_cast<void*>(&winfile::MoveFileW);
-        else if (funcName == "MoveFileA") result = reinterpret_cast<void*>(&winfile::MoveFileA);
-        else if (funcName == "DeleteFileW") result = reinterpret_cast<void*>(&winfile::DeleteFileW);
-        else if (funcName == "DeleteFileA") result = reinterpret_cast<void*>(&winfile::DeleteFileA);
-        else if (funcName == "RemoveDirectoryW") result = reinterpret_cast<void*>(&winfile::RemoveDirectoryW);
-        else if (funcName == "RemoveDirectoryA") result = reinterpret_cast<void*>(&winfile::RemoveDirectoryA);
-        else if (funcName == "CopyFileW") result = reinterpret_cast<void*>(&winfile::CopyFileW);
-        else if (funcName == "CopyFileA") result = reinterpret_cast<void*>(&winfile::CopyFileA);
-        else if (funcName == "CopyFileExW") result = reinterpret_cast<void*>(&winfile::CopyFileExW);
-        else if (funcName == "ReplaceFileW") result = reinterpret_cast<void*>(&winfile::ReplaceFileW);
-        else if (funcName == "NtQueryDirectoryFile") result = reinterpret_cast<void*>(&winfile::NtQueryDirectoryFile);
-        else if (funcName == "CreateDirectoryA") result = reinterpret_cast<void*>(&win_CreateDirectoryA);
-        else if (funcName == "GetFileAttributesExW") result = reinterpret_cast<void*>(&win_GetFileAttributesExW);
-        else if (funcName == "GetFileAttributesExA") result = reinterpret_cast<void*>(&win_GetFileAttributesExA);
-        else if (funcName == "GetModuleFileNameW") result = reinterpret_cast<void*>(&win_GetModuleFileNameW);
+        else if (funcName == "GetCurrentProcessId") result = w32arity::hpFn(&win_GetCurrentProcessId);
+        else if (funcName == "GetCurrentProcess") result = w32arity::hpFn(&win_GetCurrentProcess);
+        else if (funcName == "GetStartupInfoW") result = w32arity::hpFn(&win_GetStartupInfoW);
+        else if (funcName == "GetCommandLineA") result = w32arity::hpFn(&win_GetCommandLineA);
+        else if (funcName == "GetCommandLineW") result = w32arity::hpFn(&win_GetCommandLineW);
+        else if (funcName == "GetEnvironmentStringsW") result = w32arity::hpFn(&win_GetEnvironmentStringsW);
+        else if (funcName == "FreeEnvironmentStringsW") result = w32arity::hpFn(&win_FreeEnvironmentStringsW);
+        else if (funcName == "GetEnvironmentVariableW") result = w32arity::hpFn(&win_GetEnvironmentVariableW);
+        else if (funcName == "GetEnvironmentVariableA") result = w32arity::hpFn(&win_GetEnvironmentVariableA);
+        else if (funcName == "SetEnvironmentVariableW") result = w32arity::hpFn(&win_SetEnvironmentVariableW);
+        else if (funcName == "GetStdHandle") result = w32arity::hpFn(&win_GetStdHandle);
+        else if (funcName == "SetStdHandle") result = w32arity::hpFn(&win_SetStdHandle);
+        else if (funcName == "WriteConsoleW") result = w32arity::hpFn(&win_WriteConsoleW);
+        else if (funcName == "GetConsoleOutputCP") result = w32arity::hpFn(&win_GetConsoleOutputCP);
+        else if (funcName == "GetConsoleCP") result = w32arity::hpFn(&win_GetConsoleCP);
+        else if (funcName == "GetConsoleMode") result = w32arity::hpFn(&win_GetConsoleMode);
+        else if (funcName == "GetFileType") result = w32arity::hpFn(&win_GetFileType);
+        else if (funcName == "GetFileAttributesA") result = w32arity::hpFn(&win_GetFileAttributesA);
+        else if (funcName == "GetFileAttributesW") result = w32arity::hpFn(&win_GetFileAttributesW);
+        else if (funcName == "CreateDirectoryW") result = w32arity::hpFn(&win_CreateDirectoryW);
+        else if (funcName == "MoveFileExW") result = w32arity::hpFn(&winfile::MoveFileExW);
+        else if (funcName == "MoveFileExA") result = w32arity::hpFn(&winfile::MoveFileExA);
+        else if (funcName == "MoveFileW") result = w32arity::hpFn(&winfile::MoveFileW);
+        else if (funcName == "MoveFileA") result = w32arity::hpFn(&winfile::MoveFileA);
+        else if (funcName == "DeleteFileW") result = w32arity::hpFn(&winfile::DeleteFileW);
+        else if (funcName == "DeleteFileA") result = w32arity::hpFn(&winfile::DeleteFileA);
+        else if (funcName == "RemoveDirectoryW") result = w32arity::hpFn(&winfile::RemoveDirectoryW);
+        else if (funcName == "RemoveDirectoryA") result = w32arity::hpFn(&winfile::RemoveDirectoryA);
+        else if (funcName == "CopyFileW") result = w32arity::hpFn(&winfile::CopyFileW);
+        else if (funcName == "CopyFileA") result = w32arity::hpFn(&winfile::CopyFileA);
+        else if (funcName == "CopyFileExW") result = w32arity::hpFn(&winfile::CopyFileExW);
+        else if (funcName == "ReplaceFileW") result = w32arity::hpFn(&winfile::ReplaceFileW);
+        else if (funcName == "NtQueryDirectoryFile") result = w32arity::hpFn(&winfile::NtQueryDirectoryFile);
+        else if (funcName == "CreateDirectoryA") result = w32arity::hpFn(&win_CreateDirectoryA);
+        else if (funcName == "GetFileAttributesExW") result = w32arity::hpFn(&win_GetFileAttributesExW);
+        else if (funcName == "GetFileAttributesExA") result = w32arity::hpFn(&win_GetFileAttributesExA);
+        else if (funcName == "GetModuleFileNameW") result = w32arity::hpFn(&win_GetModuleFileNameW);
         else if (funcName == "K32EnumProcessModules" || funcName == "EnumProcessModules" ||
                  funcName == "K32EnumProcessModulesEx" || funcName == "EnumProcessModulesEx")
-            result = reinterpret_cast<void*>(&win_EnumProcessModules);
+            result = w32arity::hpFn(&win_EnumProcessModules);
         else if (funcName == "K32GetModuleInformation" || funcName == "GetModuleInformation")
-            result = reinterpret_cast<void*>(&win_GetModuleInformation);
+            result = w32arity::hpFn(&win_GetModuleInformation);
         else if (funcName == "K32GetModuleFileNameExW" || funcName == "GetModuleFileNameExW")
-            result = reinterpret_cast<void*>(&win_GetModuleFileNameExW);
-        else if (funcName == "ExitThread" || funcName == "RtlExitUserThread") result = reinterpret_cast<void*>(&hp_ExitThread);
-        else if (funcName == "NtCreateFile") result = reinterpret_cast<void*>(&hp_NtCreateFile);
-        else if (funcName == "NtQueryDirectoryFile") result = reinterpret_cast<void*>(&hp_NtQueryDirectoryFile);
-        else if (funcName == "RtlNtStatusToDosError") result = reinterpret_cast<void*>(&hp_RtlNtStatusToDosError);
+            result = w32arity::hpFn(&win_GetModuleFileNameExW);
+        else if (funcName == "ExitThread" || funcName == "RtlExitUserThread") result = w32arity::hpFn(&hp_ExitThread);
+        else if (funcName == "NtCreateFile") result = w32arity::hpFn(&hp_NtCreateFile);
+        else if (funcName == "NtQueryDirectoryFile") result = w32arity::hpFn(&hp_NtQueryDirectoryFile);
+        else if (funcName == "RtlNtStatusToDosError") result = w32arity::hpFn(&hp_RtlNtStatusToDosError);
         else if (funcName == "K32GetModuleBaseNameW" || funcName == "GetModuleBaseNameW")
-            result = reinterpret_cast<void*>(&hp_K32GetModuleBaseNameW);
-        else if (funcName == "GetThreadLocale") result = reinterpret_cast<void*>(&hp_GetThreadLocale);
-        else if (funcName == "GetLocaleInfoA") result = reinterpret_cast<void*>(&hp_GetLocaleInfoA);
-        else if (funcName == "GetModuleFileNameA") result = reinterpret_cast<void*>(&win_GetModuleFileNameA);
-        else if (funcName == "GetModuleHandleExW") result = reinterpret_cast<void*>(&win_GetModuleHandleExW);
-        else if (funcName == "GetTempPathW") result = reinterpret_cast<void*>(&win_GetTempPathW);
-        else if (funcName == "GetTempPathA") result = reinterpret_cast<void*>(&win_GetTempPathA);
-        else if (funcName == "SetConsoleCtrlHandler") result = reinterpret_cast<void*>(&win_SetConsoleCtrlHandler);
-        else if (funcName == "ExitProcess") result = reinterpret_cast<void*>(&win_ExitProcess);
-        else if (funcName == "TerminateProcess") result = reinterpret_cast<void*>(&win_TerminateProcess);
-        else if (funcName == "IsProcessorFeaturePresent") result = reinterpret_cast<void*>(&win_IsProcessorFeaturePresent);
-        else if (funcName == "IsDebuggerPresent") result = reinterpret_cast<void*>(&win_IsDebuggerPresent);
-        else if (funcName == "GetNativeSystemInfo") result = reinterpret_cast<void*>(&win_GetSystemInfo);
-        else if (funcName == "GlobalMemoryStatusEx") result = reinterpret_cast<void*>(&win_GlobalMemoryStatusEx);
-        else if (funcName == "CreatePipe") result = reinterpret_cast<void*>(&win_CreatePipe);
-        else if (funcName == "SetErrorMode") result = reinterpret_cast<void*>(&win_SetErrorMode);
-        else if (funcName == "SetHandleInformation") result = reinterpret_cast<void*>(&win_SetHandleInformation);
-        else if (funcName == "LocalFree" || funcName == "GlobalFree") result = reinterpret_cast<void*>(&win_LocalFree);
-        else if (funcName == "LocalAlloc" || funcName == "GlobalAlloc") result = reinterpret_cast<void*>(&win_LocalAlloc);
-        else if (funcName == "GlobalLock") result = reinterpret_cast<void*>(&win_GlobalLock);
-        else if (funcName == "GlobalUnlock") result = reinterpret_cast<void*>(&win_GlobalUnlock);
-        else if (funcName == "DuplicateHandle") result = reinterpret_cast<void*>(&win_DuplicateHandle);
-        else if (funcName == "InitializeProcThreadAttributeList") result = reinterpret_cast<void*>(&win_InitializeProcThreadAttributeList);
-        else if (funcName == "UpdateProcThreadAttribute") result = reinterpret_cast<void*>(&win_UpdateProcThreadAttribute);
-        else if (funcName == "DeleteProcThreadAttributeList") result = reinterpret_cast<void*>(&win_DeleteProcThreadAttributeList);
-        else if (funcName == "DisableThreadLibraryCalls") result = reinterpret_cast<void*>(&win_DisableThreadLibraryCalls);
-        else if (funcName == "GetCurrentProcessorNumberEx") result = reinterpret_cast<void*>(&win_GetCurrentProcessorNumberEx);
-        else if (funcName == "FlushProcessWriteBuffers") result = reinterpret_cast<void*>(&win_FlushProcessWriteBuffers);
-        else if (funcName == "FlushInstructionCache") result = reinterpret_cast<void*>(&win_FlushInstructionCache);
-        else if (funcName == "CreateThreadpoolWork") result = reinterpret_cast<void*>(&win_CreateThreadpoolWork);
-        else if (funcName == "SubmitThreadpoolWork") result = reinterpret_cast<void*>(&win_SubmitThreadpoolWork);
-        else if (funcName == "WaitForThreadpoolWorkCallbacks") result = reinterpret_cast<void*>(&win_WaitForThreadpoolWorkCallbacks);
-        else if (funcName == "CloseThreadpoolWork") result = reinterpret_cast<void*>(&win_CloseThreadpoolWork);
-        else if (funcName == "GetThreadIOPendingFlag") result = reinterpret_cast<void*>(&hp_GetThreadIOPendingFlag);
-        else if (funcName == "CreateIoCompletionPort") result = reinterpret_cast<void*>(&win_CreateIoCompletionPort);
-        else if (funcName == "GetQueuedCompletionStatus") result = reinterpret_cast<void*>(&win_GetQueuedCompletionStatus);
-        else if (funcName == "GetQueuedCompletionStatusEx") result = reinterpret_cast<void*>(&win_GetQueuedCompletionStatusEx);
-        else if (funcName == "PostQueuedCompletionStatus") result = reinterpret_cast<void*>(&win_PostQueuedCompletionStatus);
-        else if (funcName == "GetProcessTimes") result = reinterpret_cast<void*>(&win_GetProcessTimes);
-        else if (funcName == "GetSystemTimes") result = reinterpret_cast<void*>(&win_GetSystemTimes);
-        else if (funcName == "FormatMessageW") result = reinterpret_cast<void*>(&win_FormatMessageW);
-        else if (funcName == "FormatMessageA") result = reinterpret_cast<void*>(&win_FormatMessageA);
+            result = w32arity::hpFn(&hp_K32GetModuleBaseNameW);
+        else if (funcName == "GetThreadLocale") result = w32arity::hpFn(&hp_GetThreadLocale);
+        else if (funcName == "GetLocaleInfoA") result = w32arity::hpFn(&hp_GetLocaleInfoA);
+        else if (funcName == "GetModuleFileNameA") result = w32arity::hpFn(&win_GetModuleFileNameA);
+        else if (funcName == "GetModuleHandleExW") result = w32arity::hpFn(&win_GetModuleHandleExW);
+        else if (funcName == "GetTempPathW") result = w32arity::hpFn(&win_GetTempPathW);
+        else if (funcName == "GetTempPathA") result = w32arity::hpFn(&win_GetTempPathA);
+        else if (funcName == "SetConsoleCtrlHandler") result = w32arity::hpFn(&win_SetConsoleCtrlHandler);
+        else if (funcName == "ExitProcess") result = w32arity::hpFn(&win_ExitProcess);
+        else if (funcName == "TerminateProcess") result = w32arity::hpFn(&win_TerminateProcess);
+        else if (funcName == "IsProcessorFeaturePresent") result = w32arity::hpFn(&win_IsProcessorFeaturePresent);
+        else if (funcName == "IsDebuggerPresent") result = w32arity::hpFn(&win_IsDebuggerPresent);
+        else if (funcName == "GetNativeSystemInfo") result = w32arity::hpFn(&win_GetSystemInfo);
+        else if (funcName == "GlobalMemoryStatusEx") result = w32arity::hpFn(&win_GlobalMemoryStatusEx);
+        else if (funcName == "CreatePipe") result = w32arity::hpFn(&win_CreatePipe);
+        else if (funcName == "SetErrorMode") result = w32arity::hpFn(&win_SetErrorMode);
+        else if (funcName == "SetHandleInformation") result = w32arity::hpFn(&win_SetHandleInformation);
+        else if (funcName == "LocalFree" || funcName == "GlobalFree") result = w32arity::hpFn(&win_LocalFree);
+        else if (funcName == "LocalAlloc" || funcName == "GlobalAlloc") result = w32arity::hpFn(&win_LocalAlloc);
+        else if (funcName == "GlobalLock") result = w32arity::hpFn(&win_GlobalLock);
+        else if (funcName == "GlobalUnlock") result = w32arity::hpFn(&win_GlobalUnlock);
+        else if (funcName == "DuplicateHandle") result = w32arity::hpFn(&win_DuplicateHandle);
+        else if (funcName == "InitializeProcThreadAttributeList") result = w32arity::hpFn(&win_InitializeProcThreadAttributeList);
+        else if (funcName == "UpdateProcThreadAttribute") result = w32arity::hpFn(&win_UpdateProcThreadAttribute);
+        else if (funcName == "DeleteProcThreadAttributeList") result = w32arity::hpFn(&win_DeleteProcThreadAttributeList);
+        else if (funcName == "DisableThreadLibraryCalls") result = w32arity::hpFn(&win_DisableThreadLibraryCalls);
+        else if (funcName == "GetCurrentProcessorNumberEx") result = w32arity::hpFn(&win_GetCurrentProcessorNumberEx);
+        else if (funcName == "FlushProcessWriteBuffers") result = w32arity::hpFn(&win_FlushProcessWriteBuffers);
+        else if (funcName == "FlushInstructionCache") result = w32arity::hpFn(&win_FlushInstructionCache);
+        else if (funcName == "CreateThreadpoolWork") result = w32arity::hpFn(&win_CreateThreadpoolWork);
+        else if (funcName == "SubmitThreadpoolWork") result = w32arity::hpFn(&win_SubmitThreadpoolWork);
+        else if (funcName == "WaitForThreadpoolWorkCallbacks") result = w32arity::hpFn(&win_WaitForThreadpoolWorkCallbacks);
+        else if (funcName == "CloseThreadpoolWork") result = w32arity::hpFn(&win_CloseThreadpoolWork);
+        else if (funcName == "GetThreadIOPendingFlag") result = w32arity::hpFn(&hp_GetThreadIOPendingFlag);
+        else if (funcName == "CreateIoCompletionPort") result = w32arity::hpFn(&win_CreateIoCompletionPort);
+        else if (funcName == "GetQueuedCompletionStatus") result = w32arity::hpFn(&win_GetQueuedCompletionStatus);
+        else if (funcName == "GetQueuedCompletionStatusEx") result = w32arity::hpFn(&win_GetQueuedCompletionStatusEx);
+        else if (funcName == "PostQueuedCompletionStatus") result = w32arity::hpFn(&win_PostQueuedCompletionStatus);
+        else if (funcName == "GetProcessTimes") result = w32arity::hpFn(&win_GetProcessTimes);
+        else if (funcName == "GetSystemTimes") result = w32arity::hpFn(&win_GetSystemTimes);
+        else if (funcName == "FormatMessageW") result = w32arity::hpFn(&win_FormatMessageW);
+        else if (funcName == "FormatMessageA") result = w32arity::hpFn(&win_FormatMessageA);
 
         // Errores, Excepciones y Unwind
-        else if (funcName == "GetLastError") result = reinterpret_cast<void*>(&win_GetLastError);
-        else if (funcName == "SetLastError") result = reinterpret_cast<void*>(&win_SetLastError);
-        else if (funcName == "SetUnhandledExceptionFilter") result = reinterpret_cast<void*>(&win_SetUnhandledExceptionFilter);
-        else if (funcName == "UnhandledExceptionFilter") result = reinterpret_cast<void*>(&win_UnhandledExceptionFilter);
-        else if (funcName == "RaiseException") result = reinterpret_cast<void*>(&win_RaiseException);
-        else if (funcName == "RtlCaptureContext") result = reinterpret_cast<void*>(&win_RtlCaptureContext);
-        else if (funcName == "RtlLookupFunctionEntry") result = reinterpret_cast<void*>(&win_RtlLookupFunctionEntry);
-        else if (funcName == "RtlVirtualUnwind") result = reinterpret_cast<void*>(&win_RtlVirtualUnwind);
-        else if (funcName == "RtlUnwindEx") result = reinterpret_cast<void*>(&win_RtlUnwindEx);
-        else if (funcName == "RtlPcToFileHeader") result = reinterpret_cast<void*>(&win_RtlPcToFileHeader);
-        else if (funcName == "EncodePointer") result = reinterpret_cast<void*>(&win_EncodePointer);
-        else if (funcName == "DecodePointer") result = reinterpret_cast<void*>(&win_DecodePointer);
-        else if (funcName == "InitializeSListHead") result = reinterpret_cast<void*>(&win_InitializeSListHead);
-        else if (funcName == "AddVectoredExceptionHandler") result = reinterpret_cast<void*>(&win_AddVectoredExceptionHandler);
-        else if (funcName == "RemoveVectoredExceptionHandler") result = reinterpret_cast<void*>(&win_RemoveVectoredExceptionHandler);
-        else if (funcName == "SetThreadStackGuarantee") result = reinterpret_cast<void*>(&win_SetThreadStackGuarantee);
+        else if (funcName == "GetLastError") result = w32arity::hpFn(&win_GetLastError);
+        else if (funcName == "SetLastError") result = w32arity::hpFn(&win_SetLastError);
+        else if (funcName == "SetUnhandledExceptionFilter") result = w32arity::hpFn(&win_SetUnhandledExceptionFilter);
+        else if (funcName == "UnhandledExceptionFilter") result = w32arity::hpFn(&win_UnhandledExceptionFilter);
+        else if (funcName == "RaiseException") result = w32arity::hpFn(&win_RaiseException);
+        else if (funcName == "RtlCaptureContext") result = w32arity::hpFn(&win_RtlCaptureContext);
+        else if (funcName == "RtlLookupFunctionEntry") result = w32arity::hpFn(&win_RtlLookupFunctionEntry);
+        else if (funcName == "RtlVirtualUnwind") result = w32arity::hpFn(&win_RtlVirtualUnwind);
+        else if (funcName == "RtlUnwindEx") result = w32arity::hpFn(&win_RtlUnwindEx);
+        else if (funcName == "RtlPcToFileHeader") result = w32arity::hpFn(&win_RtlPcToFileHeader);
+        else if (funcName == "EncodePointer") result = w32arity::hpFn(&win_EncodePointer);
+        else if (funcName == "DecodePointer") result = w32arity::hpFn(&win_DecodePointer);
+        else if (funcName == "InitializeSListHead") result = w32arity::hpFn(&win_InitializeSListHead);
+        else if (funcName == "AddVectoredExceptionHandler") result = w32arity::hpFn(&win_AddVectoredExceptionHandler);
+        else if (funcName == "RemoveVectoredExceptionHandler") result = w32arity::hpFn(&win_RemoveVectoredExceptionHandler);
+        else if (funcName == "SetThreadStackGuarantee") result = w32arity::hpFn(&win_SetThreadStackGuarantee);
 
         // Hilos, Sincronización, TLS y FLS
-        else if (funcName == "CreateThread") result = reinterpret_cast<void*>(&win_CreateThread);
-        else if (funcName == "GetCurrentThreadId") result = reinterpret_cast<void*>(&win_GetCurrentThreadId);
-        else if (funcName == "Sleep") result = reinterpret_cast<void*>(&win_Sleep);
-        else if (funcName == "SleepEx") result = reinterpret_cast<void*>(&win_SleepEx);
-        else if (funcName == "InitializeCriticalSection") result = reinterpret_cast<void*>(&win_InitializeCriticalSection);
-        else if (funcName == "InitializeCriticalSectionAndSpinCount") result = reinterpret_cast<void*>(&win_InitializeCriticalSectionAndSpinCount);
-        else if (funcName == "InitializeCriticalSectionEx") result = reinterpret_cast<void*>(&win_InitializeCriticalSectionEx);
-        else if (funcName == "EnterCriticalSection") result = reinterpret_cast<void*>(&win_EnterCriticalSection);
-        else if (funcName == "TryEnterCriticalSection") result = reinterpret_cast<void*>(&win_TryEnterCriticalSection);
-        else if (funcName == "LeaveCriticalSection") result = reinterpret_cast<void*>(&win_LeaveCriticalSection);
-        else if (funcName == "DeleteCriticalSection") result = reinterpret_cast<void*>(&win_DeleteCriticalSection);
-        else if (funcName == "InitializeSRWLock") result = reinterpret_cast<void*>(&win_InitializeSRWLock);
-        else if (funcName == "AcquireSRWLockExclusive") result = reinterpret_cast<void*>(&win_AcquireSRWLockExclusive);
-        else if (funcName == "ReleaseSRWLockExclusive") result = reinterpret_cast<void*>(&win_ReleaseSRWLockExclusive);
-        else if (funcName == "TryAcquireSRWLockExclusive") result = reinterpret_cast<void*>(&win_TryAcquireSRWLockExclusive);
-        else if (funcName == "AcquireSRWLockShared") result = reinterpret_cast<void*>(&win_AcquireSRWLockShared);
-        else if (funcName == "ReleaseSRWLockShared") result = reinterpret_cast<void*>(&win_ReleaseSRWLockShared);
-        else if (funcName == "TryAcquireSRWLockShared") result = reinterpret_cast<void*>(&win_TryAcquireSRWLockShared);
-        else if (funcName == "SleepConditionVariableSRW") result = reinterpret_cast<void*>(&win_SleepConditionVariableSRW);
-        else if (funcName == "SleepConditionVariableCS") result = reinterpret_cast<void*>(&win_SleepConditionVariableCS);
-        else if (funcName == "WakeAllConditionVariable") result = reinterpret_cast<void*>(&win_WakeAllConditionVariable);
-        else if (funcName == "WakeConditionVariable") result = reinterpret_cast<void*>(&win_WakeConditionVariable);
-        else if (funcName == "WaitOnAddress") result = reinterpret_cast<void*>(&win_WaitOnAddress);
-        else if (funcName == "WaitOnAddressCheck") result = reinterpret_cast<void*>(&win_WaitOnAddress);
-        else if (funcName == "WakeByAddress") result = reinterpret_cast<void*>(&win_WakeByAddress);
-        else if (funcName == "WakeByAddressSingle") result = reinterpret_cast<void*>(&win_WakeByAddress);
-        else if (funcName == "WakeByAddressAll") result = reinterpret_cast<void*>(&win_WakeByAddressAll);
-        else if (funcName == "CreateEventA") result = reinterpret_cast<void*>(&win_CreateEventA);
-        else if (funcName == "CreateEventW") result = reinterpret_cast<void*>(&win_CreateEventW);
-        else if (funcName == "CreateEventExW") result = reinterpret_cast<void*>(&win_CreateEventExW);
+        else if (funcName == "CreateThread") result = w32arity::hpFn(&win_CreateThread);
+        else if (funcName == "GetCurrentThreadId") result = w32arity::hpFn(&win_GetCurrentThreadId);
+        else if (funcName == "Sleep") result = w32arity::hpFn(&win_Sleep);
+        else if (funcName == "SleepEx") result = w32arity::hpFn(&win_SleepEx);
+        else if (funcName == "InitializeCriticalSection") result = w32arity::hpFn(&win_InitializeCriticalSection);
+        else if (funcName == "InitializeCriticalSectionAndSpinCount") result = w32arity::hpFn(&win_InitializeCriticalSectionAndSpinCount);
+        else if (funcName == "InitializeCriticalSectionEx") result = w32arity::hpFn(&win_InitializeCriticalSectionEx);
+        else if (funcName == "EnterCriticalSection") result = w32arity::hpFn(&win_EnterCriticalSection);
+        else if (funcName == "TryEnterCriticalSection") result = w32arity::hpFn(&win_TryEnterCriticalSection);
+        else if (funcName == "LeaveCriticalSection") result = w32arity::hpFn(&win_LeaveCriticalSection);
+        else if (funcName == "DeleteCriticalSection") result = w32arity::hpFn(&win_DeleteCriticalSection);
+        else if (funcName == "InitializeSRWLock") result = w32arity::hpFn(&win_InitializeSRWLock);
+        else if (funcName == "AcquireSRWLockExclusive") result = w32arity::hpFn(&win_AcquireSRWLockExclusive);
+        else if (funcName == "ReleaseSRWLockExclusive") result = w32arity::hpFn(&win_ReleaseSRWLockExclusive);
+        else if (funcName == "TryAcquireSRWLockExclusive") result = w32arity::hpFn(&win_TryAcquireSRWLockExclusive);
+        else if (funcName == "AcquireSRWLockShared") result = w32arity::hpFn(&win_AcquireSRWLockShared);
+        else if (funcName == "ReleaseSRWLockShared") result = w32arity::hpFn(&win_ReleaseSRWLockShared);
+        else if (funcName == "TryAcquireSRWLockShared") result = w32arity::hpFn(&win_TryAcquireSRWLockShared);
+        else if (funcName == "SleepConditionVariableSRW") result = w32arity::hpFn(&win_SleepConditionVariableSRW);
+        else if (funcName == "SleepConditionVariableCS") result = w32arity::hpFn(&win_SleepConditionVariableCS);
+        else if (funcName == "WakeAllConditionVariable") result = w32arity::hpFn(&win_WakeAllConditionVariable);
+        else if (funcName == "WakeConditionVariable") result = w32arity::hpFn(&win_WakeConditionVariable);
+        else if (funcName == "WaitOnAddress") result = w32arity::hpFn(&win_WaitOnAddress);
+        else if (funcName == "WaitOnAddressCheck") result = w32arity::hpFn(&win_WaitOnAddress);
+        else if (funcName == "WakeByAddress") result = w32arity::hpFn(&win_WakeByAddress);
+        else if (funcName == "WakeByAddressSingle") result = w32arity::hpFn(&win_WakeByAddress);
+        else if (funcName == "WakeByAddressAll") result = w32arity::hpFn(&win_WakeByAddressAll);
+        else if (funcName == "CreateEventA") result = w32arity::hpFn(&win_CreateEventA);
+        else if (funcName == "CreateEventW") result = w32arity::hpFn(&win_CreateEventW);
+        else if (funcName == "CreateEventExW") result = w32arity::hpFn(&win_CreateEventExW);
         else if (funcName == "CreateWaitableTimerW" || funcName == "CreateWaitableTimerA") {
-            result = reinterpret_cast<void*>(&win_CreateWaitableTimerW);
+            result = w32arity::hpFn(&win_CreateWaitableTimerW);
         }
         else if (funcName == "CreateWaitableTimerExW" || funcName == "CreateWaitableTimerExA") {
-            result = reinterpret_cast<void*>(&win_CreateWaitableTimerExW);
+            result = w32arity::hpFn(&win_CreateWaitableTimerExW);
         }
         else if (funcName == "SetWaitableTimer" || funcName == "SetWaitableTimerEx") {
-            result = reinterpret_cast<void*>(&win_SetWaitableTimer);
+            result = w32arity::hpFn(&win_SetWaitableTimer);
         }
-        else if (funcName == "CancelWaitableTimer") result = reinterpret_cast<void*>(&win_CancelWaitableTimer);
-        else if (funcName == "SetEvent") result = reinterpret_cast<void*>(&win_SetEvent);
-        else if (funcName == "ResetEvent") result = reinterpret_cast<void*>(&win_ResetEvent);
-        else if (funcName == "WaitForSingleObject") result = reinterpret_cast<void*>(&win_WaitForSingleObject);
-        else if (funcName == "WaitForSingleObjectEx") result = reinterpret_cast<void*>(&win_WaitForSingleObjectEx);
-        else if (funcName == "WaitForMultipleObjects") result = reinterpret_cast<void*>(&win_WaitForMultipleObjects);
-        else if (funcName == "WaitForMultipleObjectsEx") result = reinterpret_cast<void*>(&win_WaitForMultipleObjectsEx);
-        else if (funcName == "CreateSemaphoreA") result = reinterpret_cast<void*>(&win_CreateSemaphoreA);
-        else if (funcName == "CreateSemaphoreW") result = reinterpret_cast<void*>(&win_CreateSemaphoreW);
-        else if (funcName == "CreateSemaphoreExA") result = reinterpret_cast<void*>(&win_CreateSemaphoreExA);
-        else if (funcName == "CreateSemaphoreExW") result = reinterpret_cast<void*>(&win_CreateSemaphoreExW);
-        else if (funcName == "ReleaseSemaphore") result = reinterpret_cast<void*>(&win_ReleaseSemaphore);
-        else if (funcName == "OpenSemaphoreW") result = reinterpret_cast<void*>(&win_OpenSemaphoreW);
-        else if (funcName == "CreateMutexA") result = reinterpret_cast<void*>(&win_CreateMutexA);
-        else if (funcName == "CreateMutexW") result = reinterpret_cast<void*>(&win_CreateMutexW);
-        else if (funcName == "CreateMutexExA") result = reinterpret_cast<void*>(&win_CreateMutexExA);
-        else if (funcName == "CreateMutexExW") result = reinterpret_cast<void*>(&win_CreateMutexExW);
-        else if (funcName == "ReleaseMutex") result = reinterpret_cast<void*>(&win_ReleaseMutex);
-        else if (funcName == "OpenMutexW") result = reinterpret_cast<void*>(&win_OpenMutexW);
-        else if (funcName == "GetExitCodeThread") result = reinterpret_cast<void*>(&win_GetExitCodeThread);
-        else if (funcName == "GetExitCodeProcess") result = reinterpret_cast<void*>(&win_GetExitCodeProcess);
-        else if (funcName == "SwitchToThread") result = reinterpret_cast<void*>(&win_SwitchToThread);
-        else if (funcName == "GetCurrentThread") result = reinterpret_cast<void*>(&win_GetCurrentThread);
-        else if (funcName == "SetThreadPriority") result = reinterpret_cast<void*>(&win_SetThreadPriority);
-        else if (funcName == "GetThreadPriority") result = reinterpret_cast<void*>(&win_GetThreadPriority);
-        else if (funcName == "ResumeThread") result = reinterpret_cast<void*>(&win_ResumeThread);
-        else if (funcName == "SuspendThread") result = reinterpret_cast<void*>(&win_SuspendThread);
-        else if (funcName == "GetThreadContext") result = reinterpret_cast<void*>(&win_GetThreadContext);
-        else if (funcName == "SetThreadContext") result = reinterpret_cast<void*>(&win_SetThreadContext);
-        else if (funcName == "OpenThread") result = reinterpret_cast<void*>(&win_OpenThread);
-        else if (funcName == "GetThreadId") result = reinterpret_cast<void*>(&win_GetThreadId);
-        else if (funcName == "SetThreadDescription") result = reinterpret_cast<void*>(&win_SetThreadDescription);
-        else if (funcName == "InterlockedPushEntrySList") result = reinterpret_cast<void*>(&win_InterlockedPushEntrySList);
-        else if (funcName == "InterlockedPopEntrySList") result = reinterpret_cast<void*>(&win_InterlockedPopEntrySList);
-        else if (funcName == "InterlockedFlushSList") result = reinterpret_cast<void*>(&win_InterlockedFlushSList);
-        else if (funcName == "TlsAlloc") result = reinterpret_cast<void*>(&win_TlsAlloc);
-        else if (funcName == "InitOnceBeginInitialize") result = reinterpret_cast<void*>(&win_InitOnceBeginInitialize);
-        else if (funcName == "InitOnceComplete") result = reinterpret_cast<void*>(&win_InitOnceComplete);
-        else if (funcName == "TlsGetValue") result = reinterpret_cast<void*>(&win_TlsGetValue);
-        else if (funcName == "TlsSetValue") result = reinterpret_cast<void*>(&win_TlsSetValue);
-        else if (funcName == "TlsFree") result = reinterpret_cast<void*>(&win_TlsFree);
-        else if (funcName == "FlsAlloc") result = reinterpret_cast<void*>(&win_FlsAlloc);
-        else if (funcName == "FlsGetValue") result = reinterpret_cast<void*>(&win_FlsGetValue);
-        else if (funcName == "FlsSetValue") result = reinterpret_cast<void*>(&win_FlsSetValue);
-        else if (funcName == "FlsFree") result = reinterpret_cast<void*>(&win_FlsFree);
+        else if (funcName == "CancelWaitableTimer") result = w32arity::hpFn(&win_CancelWaitableTimer);
+        else if (funcName == "SetEvent") result = w32arity::hpFn(&win_SetEvent);
+        else if (funcName == "ResetEvent") result = w32arity::hpFn(&win_ResetEvent);
+        else if (funcName == "WaitForSingleObject") result = w32arity::hpFn(&win_WaitForSingleObject);
+        else if (funcName == "WaitForSingleObjectEx") result = w32arity::hpFn(&win_WaitForSingleObjectEx);
+        else if (funcName == "WaitForMultipleObjects") result = w32arity::hpFn(&win_WaitForMultipleObjects);
+        else if (funcName == "WaitForMultipleObjectsEx") result = w32arity::hpFn(&win_WaitForMultipleObjectsEx);
+        else if (funcName == "CreateSemaphoreA") result = w32arity::hpFn(&win_CreateSemaphoreA);
+        else if (funcName == "CreateSemaphoreW") result = w32arity::hpFn(&win_CreateSemaphoreW);
+        else if (funcName == "CreateSemaphoreExA") result = w32arity::hpFn(&win_CreateSemaphoreExA);
+        else if (funcName == "CreateSemaphoreExW") result = w32arity::hpFn(&win_CreateSemaphoreExW);
+        else if (funcName == "ReleaseSemaphore") result = w32arity::hpFn(&win_ReleaseSemaphore);
+        else if (funcName == "OpenSemaphoreW") result = w32arity::hpFn(&win_OpenSemaphoreW);
+        else if (funcName == "CreateMutexA") result = w32arity::hpFn(&win_CreateMutexA);
+        else if (funcName == "CreateMutexW") result = w32arity::hpFn(&win_CreateMutexW);
+        else if (funcName == "CreateMutexExA") result = w32arity::hpFn(&win_CreateMutexExA);
+        else if (funcName == "CreateMutexExW") result = w32arity::hpFn(&win_CreateMutexExW);
+        else if (funcName == "ReleaseMutex") result = w32arity::hpFn(&win_ReleaseMutex);
+        else if (funcName == "OpenMutexW") result = w32arity::hpFn(&win_OpenMutexW);
+        else if (funcName == "GetExitCodeThread") result = w32arity::hpFn(&win_GetExitCodeThread);
+        else if (funcName == "GetExitCodeProcess") result = w32arity::hpFn(&win_GetExitCodeProcess);
+        else if (funcName == "SwitchToThread") result = w32arity::hpFn(&win_SwitchToThread);
+        else if (funcName == "GetCurrentThread") result = w32arity::hpFn(&win_GetCurrentThread);
+        else if (funcName == "SetThreadPriority") result = w32arity::hpFn(&win_SetThreadPriority);
+        else if (funcName == "GetThreadPriority") result = w32arity::hpFn(&win_GetThreadPriority);
+        else if (funcName == "ResumeThread") result = w32arity::hpFn(&win_ResumeThread);
+        else if (funcName == "SuspendThread") result = w32arity::hpFn(&win_SuspendThread);
+        else if (funcName == "GetThreadContext") result = w32arity::hpFn(&win_GetThreadContext);
+        else if (funcName == "SetThreadContext") result = w32arity::hpFn(&win_SetThreadContext);
+        else if (funcName == "OpenThread") result = w32arity::hpFn(&win_OpenThread);
+        else if (funcName == "GetThreadId") result = w32arity::hpFn(&win_GetThreadId);
+        else if (funcName == "SetThreadDescription") result = w32arity::hpFn(&win_SetThreadDescription);
+        else if (funcName == "InterlockedPushEntrySList") result = w32arity::hpFn(&win_InterlockedPushEntrySList);
+        else if (funcName == "InterlockedPopEntrySList") result = w32arity::hpFn(&win_InterlockedPopEntrySList);
+        else if (funcName == "InterlockedFlushSList") result = w32arity::hpFn(&win_InterlockedFlushSList);
+        else if (funcName == "TlsAlloc") result = w32arity::hpFn(&win_TlsAlloc);
+        else if (funcName == "InitOnceBeginInitialize") result = w32arity::hpFn(&win_InitOnceBeginInitialize);
+        else if (funcName == "InitOnceComplete") result = w32arity::hpFn(&win_InitOnceComplete);
+        else if (funcName == "TlsGetValue") result = w32arity::hpFn(&win_TlsGetValue);
+        else if (funcName == "TlsSetValue") result = w32arity::hpFn(&win_TlsSetValue);
+        else if (funcName == "TlsFree") result = w32arity::hpFn(&win_TlsFree);
+        else if (funcName == "FlsAlloc") result = w32arity::hpFn(&win_FlsAlloc);
+        else if (funcName == "FlsGetValue") result = w32arity::hpFn(&win_FlsGetValue);
+        else if (funcName == "FlsSetValue") result = w32arity::hpFn(&win_FlsSetValue);
+        else if (funcName == "FlsFree") result = w32arity::hpFn(&win_FlsFree);
 
         // Tiempo & Info del sistema
-        else if (funcName == "GetTickCount") result = reinterpret_cast<void*>(&win_GetTickCount);
-        else if (funcName == "GetTickCount64") result = reinterpret_cast<void*>(&win_GetTickCount64);
-        else if (funcName == "GetSystemTimeAsFileTime") result = reinterpret_cast<void*>(&win_GetSystemTimeAsFileTime);
-        else if (funcName == "GetLocalTime") result = reinterpret_cast<void*>(&win_GetLocalTime);
-        else if (funcName == "SystemTimeToFileTime") result = reinterpret_cast<void*>(&win_SystemTimeToFileTime);
-        else if (funcName == "QueryPerformanceCounter") result = reinterpret_cast<void*>(&win_QueryPerformanceCounter);
-        else if (funcName == "QueryPerformanceFrequency") result = reinterpret_cast<void*>(&win_QueryPerformanceFrequency);
-        else if (funcName == "GetSystemInfo") result = reinterpret_cast<void*>(&win_GetSystemInfo);
-        else if (funcName == "GetLogicalProcessorInformation") result = reinterpret_cast<void*>(&win_GetLogicalProcessorInformation);
-        else if (funcName == "GetLogicalProcessorInformationEx") result = reinterpret_cast<void*>(&win_GetLogicalProcessorInformationEx);
+        else if (funcName == "GetTickCount") result = w32arity::hpFn(&win_GetTickCount);
+        else if (funcName == "GetTickCount64") result = w32arity::hpFn(&win_GetTickCount64);
+        else if (funcName == "GetSystemTimeAsFileTime") result = w32arity::hpFn(&win_GetSystemTimeAsFileTime);
+        else if (funcName == "GetLocalTime") result = w32arity::hpFn(&win_GetLocalTime);
+        else if (funcName == "SystemTimeToFileTime") result = w32arity::hpFn(&win_SystemTimeToFileTime);
+        else if (funcName == "QueryPerformanceCounter") result = w32arity::hpFn(&win_QueryPerformanceCounter);
+        else if (funcName == "QueryPerformanceFrequency") result = w32arity::hpFn(&win_QueryPerformanceFrequency);
+        else if (funcName == "GetSystemInfo") result = w32arity::hpFn(&win_GetSystemInfo);
+        else if (funcName == "GetLogicalProcessorInformation") result = w32arity::hpFn(&win_GetLogicalProcessorInformation);
+        else if (funcName == "GetLogicalProcessorInformationEx") result = w32arity::hpFn(&win_GetLogicalProcessorInformationEx);
 
         // Módulos
-        else if (funcName == "GetModuleHandleW") result = reinterpret_cast<void*>(&win_GetModuleHandleW);
-        else if (funcName == "GetModuleHandleA") result = reinterpret_cast<void*>(&win_GetModuleHandleA);
-        else if (funcName == "GetProcAddress") result = reinterpret_cast<void*>(&win_GetProcAddress);
-        else if (funcName == "LoadLibraryW") result = reinterpret_cast<void*>(&win_LoadLibraryW);
-        else if (funcName == "LoadLibraryA") result = reinterpret_cast<void*>(&win_LoadLibraryA);
-        else if (funcName == "LoadLibraryExW") result = reinterpret_cast<void*>(&win_LoadLibraryExW);
-        else if (funcName == "FreeLibrary") result = reinterpret_cast<void*>(&win_FreeLibrary);
+        else if (funcName == "GetModuleHandleW") result = w32arity::hpFn(&win_GetModuleHandleW);
+        else if (funcName == "GetModuleHandleA") result = w32arity::hpFn(&win_GetModuleHandleA);
+        else if (funcName == "GetProcAddress") result = w32arity::hpFn(&win_GetProcAddress);
+        else if (funcName == "LoadLibraryW") result = w32arity::hpFn(&win_LoadLibraryW);
+        else if (funcName == "LoadLibraryA") result = w32arity::hpFn(&win_LoadLibraryA);
+        else if (funcName == "LoadLibraryExW") result = w32arity::hpFn(&win_LoadLibraryExW);
+        else if (funcName == "FreeLibrary") result = w32arity::hpFn(&win_FreeLibrary);
 
         // Strings y Locale
-        else if (funcName == "MultiByteToWideChar") result = reinterpret_cast<void*>(&win_MultiByteToWideChar);
-        else if (funcName == "WideCharToMultiByte") result = reinterpret_cast<void*>(&win_WideCharToMultiByte);
-        else if (funcName == "IsValidCodePage") result = reinterpret_cast<void*>(&win_IsValidCodePage);
-        else if (funcName == "GetACP") result = reinterpret_cast<void*>(&win_GetACP);
-        else if (funcName == "GetOEMCP") result = reinterpret_cast<void*>(&win_GetOEMCP);
-        else if (funcName == "GetCPInfo") result = reinterpret_cast<void*>(&win_GetCPInfo);
-        else if (funcName == "GetStringTypeW") result = reinterpret_cast<void*>(&win_GetStringTypeW);
-        else if (funcName == "LCMapStringW") result = reinterpret_cast<void*>(&win_LCMapStringW);
-        else if (funcName == "GetUserDefaultLCID") result = reinterpret_cast<void*>(&win_GetUserDefaultLCID);
-        else if (funcName == "GetUserDefaultLocaleName") result = reinterpret_cast<void*>(&win_GetUserDefaultLocaleName);
-        else if (funcName == "LoadStringW") result = reinterpret_cast<void*>(&win_LoadStringW);
-        else if (funcName == "EnumSystemLocalesW") result = reinterpret_cast<void*>(&win_EnumSystemLocalesW);
-        else if (funcName == "IsValidLocale") result = reinterpret_cast<void*>(&win_IsValidLocale);
-        else if (funcName == "CompareStringW") result = reinterpret_cast<void*>(&win_CompareStringW);
-        else if (funcName == "GetLocaleInfoW") result = reinterpret_cast<void*>(&win_GetLocaleInfoW);
-        else if (funcName == "GetLocaleInfoEx") result = reinterpret_cast<void*>(&win_GetLocaleInfoEx);
-        else if (funcName == "GetTimeZoneInformation") result = reinterpret_cast<void*>(&win_GetTimeZoneInformation);
-        else if (funcName == "SystemTimeToTzSpecificLocalTime") result = reinterpret_cast<void*>(&win_SystemTimeToTzSpecificLocalTime);
-        else if (funcName == "TzSpecificLocalTimeToSystemTime") result = reinterpret_cast<void*>(&win_TzSpecificLocalTimeToSystemTime);
-        else if (funcName == "FileTimeToSystemTime") result = reinterpret_cast<void*>(&win_FileTimeToSystemTime);
+        else if (funcName == "MultiByteToWideChar") result = w32arity::hpFn(&win_MultiByteToWideChar);
+        else if (funcName == "WideCharToMultiByte") result = w32arity::hpFn(&win_WideCharToMultiByte);
+        else if (funcName == "IsValidCodePage") result = w32arity::hpFn(&win_IsValidCodePage);
+        else if (funcName == "GetACP") result = w32arity::hpFn(&win_GetACP);
+        else if (funcName == "GetOEMCP") result = w32arity::hpFn(&win_GetOEMCP);
+        else if (funcName == "GetCPInfo") result = w32arity::hpFn(&win_GetCPInfo);
+        else if (funcName == "GetStringTypeW") result = w32arity::hpFn(&win_GetStringTypeW);
+        else if (funcName == "LCMapStringW") result = w32arity::hpFn(&win_LCMapStringW);
+        else if (funcName == "GetUserDefaultLCID") result = w32arity::hpFn(&win_GetUserDefaultLCID);
+        else if (funcName == "GetUserDefaultLocaleName") result = w32arity::hpFn(&win_GetUserDefaultLocaleName);
+        else if (funcName == "LoadStringW") result = w32arity::hpFn(&win_LoadStringW);
+        else if (funcName == "EnumSystemLocalesW") result = w32arity::hpFn(&win_EnumSystemLocalesW);
+        else if (funcName == "IsValidLocale") result = w32arity::hpFn(&win_IsValidLocale);
+        else if (funcName == "CompareStringW") result = w32arity::hpFn(&win_CompareStringW);
+        else if (funcName == "GetLocaleInfoW") result = w32arity::hpFn(&win_GetLocaleInfoW);
+        else if (funcName == "GetLocaleInfoEx") result = w32arity::hpFn(&win_GetLocaleInfoEx);
+        else if (funcName == "GetTimeZoneInformation") result = w32arity::hpFn(&win_GetTimeZoneInformation);
+        else if (funcName == "SystemTimeToTzSpecificLocalTime") result = w32arity::hpFn(&win_SystemTimeToTzSpecificLocalTime);
+        else if (funcName == "TzSpecificLocalTimeToSystemTime") result = w32arity::hpFn(&win_TzSpecificLocalTimeToSystemTime);
+        else if (funcName == "FileTimeToSystemTime") result = w32arity::hpFn(&win_FileTimeToSystemTime);
     }
 
     // 4. WINMM (temporizadores multimedia de Unity/FMOD)
     if (!result && (dll == "winmm.dll" || dll == "winmm")) {
         s_otherCalls.fetch_add(1);
-        if (funcName == "timeGetTime") result = reinterpret_cast<void*>(&win_timeGetTime);
-        else if (funcName == "timeBeginPeriod") result = reinterpret_cast<void*>(&win_timeBeginPeriod);
-        else if (funcName == "timeEndPeriod") result = reinterpret_cast<void*>(&win_timeEndPeriod);
-        else if (funcName == "timeGetDevCaps") result = reinterpret_cast<void*>(&win_timeGetDevCaps);
+        if (funcName == "timeGetTime") result = w32arity::hpFn(&win_timeGetTime);
+        else if (funcName == "timeBeginPeriod") result = w32arity::hpFn(&win_timeBeginPeriod);
+        else if (funcName == "timeEndPeriod") result = w32arity::hpFn(&win_timeEndPeriod);
+        else if (funcName == "timeGetDevCaps") result = w32arity::hpFn(&win_timeGetDevCaps);
     }
 
     // 4. User32 (Windows & Messages)
     if (!result && dll == "user32.dll") {
         s_otherCalls.fetch_add(1);
-        if (funcName == "CreateWindowExW") result = reinterpret_cast<void*>(&win_CreateWindowExW);
-        else if (funcName == "LoadStringW") result = reinterpret_cast<void*>(&win_LoadStringW);
-        else if (funcName == "CreateWindowExA") result = reinterpret_cast<void*>(&win_CreateWindowExA);
-        else if (funcName == "ShowWindow") result = reinterpret_cast<void*>(&win_ShowWindow);
-        else if (funcName == "SetPropW") result = reinterpret_cast<void*>(&hp_SetPropW);
-        else if (funcName == "GetPropW") result = reinterpret_cast<void*>(&hp_GetPropW);
-        else if (funcName == "RemovePropW") result = reinterpret_cast<void*>(&hp_RemovePropW);
-        else if (funcName == "SetPropA") result = reinterpret_cast<void*>(&hp_SetPropA);
-        else if (funcName == "GetPropA") result = reinterpret_cast<void*>(&hp_GetPropA);
-        else if (funcName == "RemovePropA") result = reinterpret_cast<void*>(&hp_RemovePropA);
-        else if (funcName == "PeekMessageW") result = reinterpret_cast<void*>(&win_PeekMessageW);
-        else if (funcName == "DispatchMessageW") result = reinterpret_cast<void*>(&win_DispatchMessageW);
-        else if (funcName == "GetForegroundWindow") result = reinterpret_cast<void*>(&win_GetForegroundWindow);
-        else if (funcName == "GetActiveWindow") result = reinterpret_cast<void*>(&win_GetActiveWindow);
-        else if (funcName == "GetDesktopWindow") result = reinterpret_cast<void*>(&win_GetDesktopWindow);
-        else if (funcName == "GetShellWindow") result = reinterpret_cast<void*>(&win_GetShellWindow);
-        else if (funcName == "SetForegroundWindow") result = reinterpret_cast<void*>(&win_SetForegroundWindow);
-        else if (funcName == "SetActiveWindow") result = reinterpret_cast<void*>(&win_SetActiveWindow);
-        else if (funcName == "GetFocus") result = reinterpret_cast<void*>(&win_GetFocus);
-        else if (funcName == "SetFocus") result = reinterpret_cast<void*>(&win_SetFocus);
-        else if (funcName == "GetClientRect") result = reinterpret_cast<void*>(&win_GetClientRect);
-        else if (funcName == "GetWindowRect") result = reinterpret_cast<void*>(&win_GetWindowRect);
-        else if (funcName == "AdjustWindowRect") result = reinterpret_cast<void*>(&win_AdjustWindowRect);
-        else if (funcName == "AdjustWindowRectEx") result = reinterpret_cast<void*>(&win_AdjustWindowRectEx);
-        else if (funcName == "GetSystemMetrics") result = reinterpret_cast<void*>(&win_GetSystemMetrics);
-        else if (funcName == "SetWindowPos") result = reinterpret_cast<void*>(&win_SetWindowPos);
-        else if (funcName == "SetWindowTextW") result = reinterpret_cast<void*>(&win_SetWindowTextW);
-        else if (funcName == "SetWindowTextA") result = reinterpret_cast<void*>(&win_SetWindowTextA);
-        else if (funcName == "GetDC") result = reinterpret_cast<void*>(&win_GetDC);
-        else if (funcName == "ReleaseDC") result = reinterpret_cast<void*>(&win_ReleaseDC);
-        else if (funcName == "ValidateRect") result = reinterpret_cast<void*>(&win_ValidateRect);
-        else if (funcName == "InvalidateRect") result = reinterpret_cast<void*>(&win_InvalidateRect);
-        else if (funcName == "UpdateWindow") result = reinterpret_cast<void*>(&win_UpdateWindow);
-        else if (funcName == "SetCursor") result = reinterpret_cast<void*>(&win_SetCursor);
-        else if (funcName == "ShowCursor") result = reinterpret_cast<void*>(&win_ShowCursor);
-        else if (funcName == "DefWindowProcW") result = reinterpret_cast<void*>(&win_DefWindowProcW);
-        else if (funcName == "DefWindowProcA") result = reinterpret_cast<void*>(&win_DefWindowProcA);
-        else if (funcName == "PostMessageW") result = reinterpret_cast<void*>(&win_PostMessageW);
-        else if (funcName == "PostQuitMessage") result = reinterpret_cast<void*>(&win_PostQuitMessage);
-        else if (funcName == "RegisterWindowMessageW") result = reinterpret_cast<void*>(&win_RegisterWindowMessageW);
-        else if (funcName == "RegisterWindowMessageA") result = reinterpret_cast<void*>(&win_RegisterWindowMessageA);
-        else if (funcName == "MonitorFromWindow") result = reinterpret_cast<void*>(&win_MonitorFromWindow);
-        else if (funcName == "MonitorFromPoint") result = reinterpret_cast<void*>(&win_MonitorFromPoint);
-        else if (funcName == "MonitorFromRect") result = reinterpret_cast<void*>(&win_MonitorFromRect);
-        else if (funcName == "GetMonitorInfoW") result = reinterpret_cast<void*>(&win_GetMonitorInfoW);
-        else if (funcName == "GetMonitorInfoA") result = reinterpret_cast<void*>(&win_GetMonitorInfoA);
-        else if (funcName == "EnumDisplayMonitors") result = reinterpret_cast<void*>(&win_EnumDisplayMonitors);
-        else if (funcName == "EnumDisplaySettingsW") result = reinterpret_cast<void*>(&win_EnumDisplaySettingsW);
-        else if (funcName == "EnumDisplaySettingsA") result = reinterpret_cast<void*>(&win_EnumDisplaySettingsA);
-        else if (funcName == "GetWindowLongW") result = reinterpret_cast<void*>(&win_GetWindowLongW);
-        else if (funcName == "GetWindowLongA") result = reinterpret_cast<void*>(&win_GetWindowLongA);
-        else if (funcName == "GetWindowLongPtrW") result = reinterpret_cast<void*>(&win_GetWindowLongPtrW);
-        else if (funcName == "GetWindowLongPtrA") result = reinterpret_cast<void*>(&win_GetWindowLongPtrA);
-        else if (funcName == "SetWindowLongW") result = reinterpret_cast<void*>(&win_SetWindowLongW);
-        else if (funcName == "SetWindowLongA") result = reinterpret_cast<void*>(&win_SetWindowLongA);
-        else if (funcName == "SetWindowLongPtrW") result = reinterpret_cast<void*>(&win_SetWindowLongPtrW);
-        else if (funcName == "SetWindowLongPtrA") result = reinterpret_cast<void*>(&win_SetWindowLongPtrA);
-        else if (funcName == "RegisterClassW") result = reinterpret_cast<void*>(&win_RegisterClassW);
-        else if (funcName == "RegisterClassExW") result = reinterpret_cast<void*>(&win_RegisterClassExW);
-        else if (funcName == "UnregisterClassW") result = reinterpret_cast<void*>(&win_UnregisterClassW);
-        else if (funcName == "DestroyWindow") result = reinterpret_cast<void*>(&win_DestroyWindow);
-        else if (funcName == "SetTimer") result = reinterpret_cast<void*>(&win_SetTimer);
-        else if (funcName == "KillTimer") result = reinterpret_cast<void*>(&win_KillTimer);
-        else if (funcName == "SystemParametersInfoW") result = reinterpret_cast<void*>(&win_SystemParametersInfoW);
-        else if (funcName == "GetCursorPos") result = reinterpret_cast<void*>(&win_GetCursorPos);
-        else if (funcName == "SetCursorPos") result = reinterpret_cast<void*>(&win_SetCursorPos);
-        else if (funcName == "ClipCursor") result = reinterpret_cast<void*>(&win_ClipCursor);
-        else if (funcName == "GetClipCursor") result = reinterpret_cast<void*>(&hp_GetClipCursor);
-        else if (funcName == "ClientToScreen") result = reinterpret_cast<void*>(&win_ClientToScreen);
-        else if (funcName == "ScreenToClient") result = reinterpret_cast<void*>(&win_ScreenToClient);
-        else if (funcName == "AllowSetForegroundWindow") result = reinterpret_cast<void*>(&win_AllowSetForegroundWindow);
+        if (funcName == "CreateWindowExW") result = w32arity::hpFn(&win_CreateWindowExW);
+        else if (funcName == "LoadStringW") result = w32arity::hpFn(&win_LoadStringW);
+        else if (funcName == "CreateWindowExA") result = w32arity::hpFn(&win_CreateWindowExA);
+        else if (funcName == "ShowWindow") result = w32arity::hpFn(&win_ShowWindow);
+        else if (funcName == "SetPropW") result = w32arity::hpFn(&hp_SetPropW);
+        else if (funcName == "GetPropW") result = w32arity::hpFn(&hp_GetPropW);
+        else if (funcName == "RemovePropW") result = w32arity::hpFn(&hp_RemovePropW);
+        else if (funcName == "SetPropA") result = w32arity::hpFn(&hp_SetPropA);
+        else if (funcName == "GetPropA") result = w32arity::hpFn(&hp_GetPropA);
+        else if (funcName == "RemovePropA") result = w32arity::hpFn(&hp_RemovePropA);
+        else if (funcName == "PeekMessageW") result = w32arity::hpFn(&win_PeekMessageW);
+        else if (funcName == "DispatchMessageW") result = w32arity::hpFn(&win_DispatchMessageW);
+        else if (funcName == "GetForegroundWindow") result = w32arity::hpFn(&win_GetForegroundWindow);
+        else if (funcName == "GetActiveWindow") result = w32arity::hpFn(&win_GetActiveWindow);
+        else if (funcName == "GetDesktopWindow") result = w32arity::hpFn(&win_GetDesktopWindow);
+        else if (funcName == "GetShellWindow") result = w32arity::hpFn(&win_GetShellWindow);
+        else if (funcName == "SetForegroundWindow") result = w32arity::hpFn(&win_SetForegroundWindow);
+        else if (funcName == "SetActiveWindow") result = w32arity::hpFn(&win_SetActiveWindow);
+        else if (funcName == "GetFocus") result = w32arity::hpFn(&win_GetFocus);
+        else if (funcName == "SetFocus") result = w32arity::hpFn(&win_SetFocus);
+        else if (funcName == "GetClientRect") result = w32arity::hpFn(&win_GetClientRect);
+        else if (funcName == "GetWindowRect") result = w32arity::hpFn(&win_GetWindowRect);
+        else if (funcName == "AdjustWindowRect") result = w32arity::hpFn(&win_AdjustWindowRect);
+        else if (funcName == "AdjustWindowRectEx") result = w32arity::hpFn(&win_AdjustWindowRectEx);
+        else if (funcName == "GetSystemMetrics") result = w32arity::hpFn(&win_GetSystemMetrics);
+        else if (funcName == "SetWindowPos") result = w32arity::hpFn(&win_SetWindowPos);
+        else if (funcName == "SetWindowTextW") result = w32arity::hpFn(&win_SetWindowTextW);
+        else if (funcName == "SetWindowTextA") result = w32arity::hpFn(&win_SetWindowTextA);
+        else if (funcName == "GetDC") result = w32arity::hpFn(&win_GetDC);
+        else if (funcName == "ReleaseDC") result = w32arity::hpFn(&win_ReleaseDC);
+        else if (funcName == "ValidateRect") result = w32arity::hpFn(&win_ValidateRect);
+        else if (funcName == "InvalidateRect") result = w32arity::hpFn(&win_InvalidateRect);
+        else if (funcName == "UpdateWindow") result = w32arity::hpFn(&win_UpdateWindow);
+        else if (funcName == "SetCursor") result = w32arity::hpFn(&win_SetCursor);
+        else if (funcName == "ShowCursor") result = w32arity::hpFn(&win_ShowCursor);
+        else if (funcName == "DefWindowProcW") result = w32arity::hpFn(&win_DefWindowProcW);
+        else if (funcName == "DefWindowProcA") result = w32arity::hpFn(&win_DefWindowProcA);
+        else if (funcName == "PostMessageW") result = w32arity::hpFn(&win_PostMessageW);
+        else if (funcName == "PostQuitMessage") result = w32arity::hpFn(&win_PostQuitMessage);
+        else if (funcName == "RegisterWindowMessageW") result = w32arity::hpFn(&win_RegisterWindowMessageW);
+        else if (funcName == "RegisterWindowMessageA") result = w32arity::hpFn(&win_RegisterWindowMessageA);
+        else if (funcName == "MonitorFromWindow") result = w32arity::hpFn(&win_MonitorFromWindow);
+        else if (funcName == "MonitorFromPoint") result = w32arity::hpFn(&win_MonitorFromPoint);
+        else if (funcName == "MonitorFromRect") result = w32arity::hpFn(&win_MonitorFromRect);
+        else if (funcName == "GetMonitorInfoW") result = w32arity::hpFn(&win_GetMonitorInfoW);
+        else if (funcName == "GetMonitorInfoA") result = w32arity::hpFn(&win_GetMonitorInfoA);
+        else if (funcName == "EnumDisplayMonitors") result = w32arity::hpFn(&win_EnumDisplayMonitors);
+        else if (funcName == "EnumDisplaySettingsW") result = w32arity::hpFn(&win_EnumDisplaySettingsW);
+        else if (funcName == "EnumDisplaySettingsA") result = w32arity::hpFn(&win_EnumDisplaySettingsA);
+        else if (funcName == "GetWindowLongW") result = w32arity::hpFn(&win_GetWindowLongW);
+        else if (funcName == "GetWindowLongA") result = w32arity::hpFn(&win_GetWindowLongA);
+        else if (funcName == "GetWindowLongPtrW") result = w32arity::hpFn(&win_GetWindowLongPtrW);
+        else if (funcName == "GetWindowLongPtrA") result = w32arity::hpFn(&win_GetWindowLongPtrA);
+        else if (funcName == "SetWindowLongW") result = w32arity::hpFn(&win_SetWindowLongW);
+        else if (funcName == "SetWindowLongA") result = w32arity::hpFn(&win_SetWindowLongA);
+        else if (funcName == "SetWindowLongPtrW") result = w32arity::hpFn(&win_SetWindowLongPtrW);
+        else if (funcName == "SetWindowLongPtrA") result = w32arity::hpFn(&win_SetWindowLongPtrA);
+        else if (funcName == "RegisterClassW") result = w32arity::hpFn(&win_RegisterClassW);
+        else if (funcName == "RegisterClassExW") result = w32arity::hpFn(&win_RegisterClassExW);
+        else if (funcName == "UnregisterClassW") result = w32arity::hpFn(&win_UnregisterClassW);
+        else if (funcName == "DestroyWindow") result = w32arity::hpFn(&win_DestroyWindow);
+        else if (funcName == "SetTimer") result = w32arity::hpFn(&win_SetTimer);
+        else if (funcName == "KillTimer") result = w32arity::hpFn(&win_KillTimer);
+        else if (funcName == "SystemParametersInfoW") result = w32arity::hpFn(&win_SystemParametersInfoW);
+        else if (funcName == "GetCursorPos") result = w32arity::hpFn(&win_GetCursorPos);
+        else if (funcName == "SetCursorPos") result = w32arity::hpFn(&win_SetCursorPos);
+        else if (funcName == "ClipCursor") result = w32arity::hpFn(&win_ClipCursor);
+        else if (funcName == "GetClipCursor") result = w32arity::hpFn(&hp_GetClipCursor);
+        else if (funcName == "ClientToScreen") result = w32arity::hpFn(&win_ClientToScreen);
+        else if (funcName == "ScreenToClient") result = w32arity::hpFn(&win_ScreenToClient);
+        else if (funcName == "AllowSetForegroundWindow") result = w32arity::hpFn(&win_AllowSetForegroundWindow);
 
         // Desktop & Window Station
-        else if (funcName == "GetThreadDesktop") result = reinterpret_cast<void*>(&win_GetThreadDesktop);
-        else if (funcName == "GetProcessWindowStation") result = reinterpret_cast<void*>(&win_GetProcessWindowStation);
-        else if (funcName == "SetThreadDesktop") result = reinterpret_cast<void*>(&win_SetThreadDesktop);
-        else if (funcName == "SetProcessWindowStation") result = reinterpret_cast<void*>(&win_SetProcessWindowStation);
-        else if (funcName == "GetUserObjectInformationA") result = reinterpret_cast<void*>(&win_GetUserObjectInformationA);
-        else if (funcName == "GetUserObjectInformationW") result = reinterpret_cast<void*>(&win_GetUserObjectInformationW);
+        else if (funcName == "GetThreadDesktop") result = w32arity::hpFn(&win_GetThreadDesktop);
+        else if (funcName == "GetProcessWindowStation") result = w32arity::hpFn(&win_GetProcessWindowStation);
+        else if (funcName == "SetThreadDesktop") result = w32arity::hpFn(&win_SetThreadDesktop);
+        else if (funcName == "SetProcessWindowStation") result = w32arity::hpFn(&win_SetProcessWindowStation);
+        else if (funcName == "GetUserObjectInformationA") result = w32arity::hpFn(&win_GetUserObjectInformationA);
+        else if (funcName == "GetUserObjectInformationW") result = w32arity::hpFn(&win_GetUserObjectInformationW);
 
         // Message Wait & Pump
-        else if (funcName == "MsgWaitForMultipleObjects") result = reinterpret_cast<void*>(&win_MsgWaitForMultipleObjects);
-        else if (funcName == "MsgWaitForMultipleObjectsEx") result = reinterpret_cast<void*>(&win_MsgWaitForMultipleObjectsEx);
-        else if (funcName == "TranslateMessage") result = reinterpret_cast<void*>(&win_TranslateMessage);
-        else if (funcName == "GetMessageW") result = reinterpret_cast<void*>(&win_GetMessageW);
-        else if (funcName == "GetMessageA") result = reinterpret_cast<void*>(&win_GetMessageA);
-        else if (funcName == "PeekMessageA") result = reinterpret_cast<void*>(&win_PeekMessageA);
-        else if (funcName == "DispatchMessageA") result = reinterpret_cast<void*>(&win_DispatchMessageA);
-        else if (funcName == "SendMessageW") result = reinterpret_cast<void*>(&win_SendMessageW);
-        else if (funcName == "SendMessageA") result = reinterpret_cast<void*>(&win_SendMessageA);
-        else if (funcName == "PostMessageA") result = reinterpret_cast<void*>(&win_PostMessageA);
-        else if (funcName == "SendMessageTimeoutA") result = reinterpret_cast<void*>(&win_SendMessageTimeoutA);
+        else if (funcName == "MsgWaitForMultipleObjects") result = w32arity::hpFn(&win_MsgWaitForMultipleObjects);
+        else if (funcName == "MsgWaitForMultipleObjectsEx") result = w32arity::hpFn(&win_MsgWaitForMultipleObjectsEx);
+        else if (funcName == "TranslateMessage") result = w32arity::hpFn(&win_TranslateMessage);
+        else if (funcName == "GetMessageW") result = w32arity::hpFn(&win_GetMessageW);
+        else if (funcName == "GetMessageA") result = w32arity::hpFn(&win_GetMessageA);
+        else if (funcName == "PeekMessageA") result = w32arity::hpFn(&win_PeekMessageA);
+        else if (funcName == "DispatchMessageA") result = w32arity::hpFn(&win_DispatchMessageA);
+        else if (funcName == "SendMessageW") result = w32arity::hpFn(&win_SendMessageW);
+        else if (funcName == "SendMessageA") result = w32arity::hpFn(&win_SendMessageA);
+        else if (funcName == "PostMessageA") result = w32arity::hpFn(&win_PostMessageA);
+        else if (funcName == "SendMessageTimeoutA") result = w32arity::hpFn(&win_SendMessageTimeoutA);
 
         // Displays & Monitors
-        else if (funcName == "EnumDisplayDevicesA") result = reinterpret_cast<void*>(&win_EnumDisplayDevicesA);
-        else if (funcName == "EnumDisplayDevicesW") result = reinterpret_cast<void*>(&win_EnumDisplayDevicesW);
-        else if (funcName == "EnumWindows") result = reinterpret_cast<void*>(&win_EnumWindows);
+        else if (funcName == "EnumDisplayDevicesA") result = w32arity::hpFn(&win_EnumDisplayDevicesA);
+        else if (funcName == "EnumDisplayDevicesW") result = w32arity::hpFn(&win_EnumDisplayDevicesW);
+        else if (funcName == "EnumWindows") result = w32arity::hpFn(&win_EnumWindows);
 
         // Raw Input & Keyboard & Mouse
-        else if (funcName == "GetRawInputDeviceList") result = reinterpret_cast<void*>(&win_GetRawInputDeviceList);
-        else if (funcName == "RegisterRawInputDevices") result = reinterpret_cast<void*>(&win_RegisterRawInputDevices);
-        else if (funcName == "GetRawInputDeviceInfoW") result = reinterpret_cast<void*>(&win_GetRawInputDeviceInfoW);
-        else if (funcName == "GetRawInputData") result = reinterpret_cast<void*>(&win_GetRawInputData);
-        else if (funcName == "GetRawInputBuffer") result = reinterpret_cast<void*>(&win_GetRawInputBuffer);
-        else if (funcName == "GetKeyState") result = reinterpret_cast<void*>(&win_GetKeyState);
-        else if (funcName == "GetAsyncKeyState") result = reinterpret_cast<void*>(&win_GetAsyncKeyState);
-        else if (funcName == "MapVirtualKeyW") result = reinterpret_cast<void*>(&win_MapVirtualKeyW);
-        else if (funcName == "MapVirtualKeyA") result = reinterpret_cast<void*>(&win_MapVirtualKeyA);
-        else if (funcName == "MapVirtualKeyExA") result = reinterpret_cast<void*>(&win_MapVirtualKeyExA);
-        else if (funcName == "GetKeyNameTextW") result = reinterpret_cast<void*>(&win_GetKeyNameTextW);
-        else if (funcName == "ToUnicode") result = reinterpret_cast<void*>(&win_ToUnicode);
-        else if (funcName == "GetKeyboardLayout") result = reinterpret_cast<void*>(&win_GetKeyboardLayout);
-        else if (funcName == "GetKeyboardLayoutNameW") result = reinterpret_cast<void*>(&win_GetKeyboardLayoutNameW);
+        else if (funcName == "GetRawInputDeviceList") result = w32arity::hpFn(&win_GetRawInputDeviceList);
+        else if (funcName == "RegisterRawInputDevices") result = w32arity::hpFn(&win_RegisterRawInputDevices);
+        else if (funcName == "GetRawInputDeviceInfoW") result = w32arity::hpFn(&win_GetRawInputDeviceInfoW);
+        else if (funcName == "GetRawInputData") result = w32arity::hpFn(&win_GetRawInputData);
+        else if (funcName == "GetRawInputBuffer") result = w32arity::hpFn(&win_GetRawInputBuffer);
+        else if (funcName == "GetKeyState") result = w32arity::hpFn(&win_GetKeyState);
+        else if (funcName == "GetAsyncKeyState") result = w32arity::hpFn(&win_GetAsyncKeyState);
+        else if (funcName == "MapVirtualKeyW") result = w32arity::hpFn(&win_MapVirtualKeyW);
+        else if (funcName == "MapVirtualKeyA") result = w32arity::hpFn(&win_MapVirtualKeyA);
+        else if (funcName == "MapVirtualKeyExA") result = w32arity::hpFn(&win_MapVirtualKeyExA);
+        else if (funcName == "GetKeyNameTextW") result = w32arity::hpFn(&win_GetKeyNameTextW);
+        else if (funcName == "ToUnicode") result = w32arity::hpFn(&win_ToUnicode);
+        else if (funcName == "GetKeyboardLayout") result = w32arity::hpFn(&win_GetKeyboardLayout);
+        else if (funcName == "GetKeyboardLayoutNameW") result = w32arity::hpFn(&win_GetKeyboardLayoutNameW);
 
         // Mouse & Cursor & Capture
-        else if (funcName == "SetCapture") result = reinterpret_cast<void*>(&win_SetCapture);
-        else if (funcName == "ReleaseCapture") result = reinterpret_cast<void*>(&win_ReleaseCapture);
-        else if (funcName == "LoadCursorA") result = reinterpret_cast<void*>(&win_LoadCursorA);
-        else if (funcName == "LoadCursorW") result = reinterpret_cast<void*>(&win_LoadCursorW);
-        else if (funcName == "DestroyCursor") result = reinterpret_cast<void*>(&win_DestroyCursor);
-        else if (funcName == "LoadIconA") result = reinterpret_cast<void*>(&win_LoadIconA);
-        else if (funcName == "LoadIconW") result = reinterpret_cast<void*>(&win_LoadIconW);
-        else if (funcName == "DestroyIcon") result = reinterpret_cast<void*>(&win_DestroyIcon);
-        else if (funcName == "LoadImageW") result = reinterpret_cast<void*>(&win_LoadImageW);
-        else if (funcName == "LoadImageA") result = reinterpret_cast<void*>(&win_LoadImageA);
-        else if (funcName == "TrackMouseEvent") result = reinterpret_cast<void*>(&win_TrackMouseEvent);
-        else if (funcName == "EnableMouseInPointer") result = reinterpret_cast<void*>(&win_EnableMouseInPointer);
-        else if (funcName == "IsMouseInPointerEnabled") result = reinterpret_cast<void*>(&win_IsMouseInPointerEnabled);
+        else if (funcName == "SetCapture") result = w32arity::hpFn(&win_SetCapture);
+        else if (funcName == "ReleaseCapture") result = w32arity::hpFn(&win_ReleaseCapture);
+        else if (funcName == "LoadCursorA") result = w32arity::hpFn(&win_LoadCursorA);
+        else if (funcName == "LoadCursorW") result = w32arity::hpFn(&win_LoadCursorW);
+        else if (funcName == "DestroyCursor") result = w32arity::hpFn(&win_DestroyCursor);
+        else if (funcName == "LoadIconA") result = w32arity::hpFn(&win_LoadIconA);
+        else if (funcName == "LoadIconW") result = w32arity::hpFn(&win_LoadIconW);
+        else if (funcName == "DestroyIcon") result = w32arity::hpFn(&win_DestroyIcon);
+        else if (funcName == "LoadImageW") result = w32arity::hpFn(&win_LoadImageW);
+        else if (funcName == "LoadImageA") result = w32arity::hpFn(&win_LoadImageA);
+        else if (funcName == "TrackMouseEvent") result = w32arity::hpFn(&win_TrackMouseEvent);
+        else if (funcName == "EnableMouseInPointer") result = w32arity::hpFn(&win_EnableMouseInPointer);
+        else if (funcName == "IsMouseInPointerEnabled") result = w32arity::hpFn(&win_IsMouseInPointerEnabled);
 
         // Window State & Geometry
-        else if (funcName == "GetWindowPlacement") result = reinterpret_cast<void*>(&win_GetWindowPlacement);
-        else if (funcName == "SetWindowPlacement") result = reinterpret_cast<void*>(&win_SetWindowPlacement);
-        else if (funcName == "AdjustWindowRectExForDpi") result = reinterpret_cast<void*>(&win_AdjustWindowRectExForDpi);
-        else if (funcName == "IsWindowVisible") result = reinterpret_cast<void*>(&win_IsWindowVisible);
-        else if (funcName == "IsIconic") result = reinterpret_cast<void*>(&win_IsIconic);
-        else if (funcName == "MoveWindow") result = reinterpret_cast<void*>(&win_MoveWindow);
-        else if (funcName == "PtInRect") result = reinterpret_cast<void*>(&win_PtInRect);
-        else if (funcName == "OffsetRect") result = reinterpret_cast<void*>(&win_OffsetRect);
-        else if (funcName == "CopyRect") result = reinterpret_cast<void*>(&win_CopyRect);
+        else if (funcName == "GetWindowPlacement") result = w32arity::hpFn(&win_GetWindowPlacement);
+        else if (funcName == "SetWindowPlacement") result = w32arity::hpFn(&win_SetWindowPlacement);
+        else if (funcName == "AdjustWindowRectExForDpi") result = w32arity::hpFn(&win_AdjustWindowRectExForDpi);
+        else if (funcName == "IsWindowVisible") result = w32arity::hpFn(&win_IsWindowVisible);
+        else if (funcName == "IsIconic") result = w32arity::hpFn(&win_IsIconic);
+        else if (funcName == "MoveWindow") result = w32arity::hpFn(&win_MoveWindow);
+        else if (funcName == "PtInRect") result = w32arity::hpFn(&win_PtInRect);
+        else if (funcName == "OffsetRect") result = w32arity::hpFn(&win_OffsetRect);
+        else if (funcName == "CopyRect") result = w32arity::hpFn(&win_CopyRect);
 
         // Misc User32
-        else if (funcName == "GetMessageExtraInfo") result = reinterpret_cast<void*>(&win_GetMessageExtraInfo);
-        else if (funcName == "GetDoubleClickTime") result = reinterpret_cast<void*>(&win_GetDoubleClickTime);
-        else if (funcName == "GetCaretBlinkTime") result = reinterpret_cast<void*>(&win_GetCaretBlinkTime);
-        else if (funcName == "OpenClipboard") result = reinterpret_cast<void*>(&win_OpenClipboard);
-        else if (funcName == "CloseClipboard") result = reinterpret_cast<void*>(&win_CloseClipboard);
-        else if (funcName == "EmptyClipboard") result = reinterpret_cast<void*>(&win_EmptyClipboard);
-        else if (funcName == "GetClipboardData") result = reinterpret_cast<void*>(&win_GetClipboardData);
-        else if (funcName == "SetClipboardData") result = reinterpret_cast<void*>(&win_SetClipboardData);
-        else if (funcName == "IsClipboardFormatAvailable") result = reinterpret_cast<void*>(&win_IsClipboardFormatAvailable);
-        else if (funcName == "MessageBoxA") result = reinterpret_cast<void*>(&win_MessageBoxA);
-        else if (funcName == "MessageBoxW") result = reinterpret_cast<void*>(&win_MessageBoxW);
-        else if (funcName == "DialogBoxParamW") result = reinterpret_cast<void*>(&win_DialogBoxParamW);
-        else if (funcName == "EndDialog") result = reinterpret_cast<void*>(&win_EndDialog);
-        else if (funcName == "SetDlgItemTextW") result = reinterpret_cast<void*>(&win_SetDlgItemTextW);
-        else if (funcName == "SetDlgItemTextA") result = reinterpret_cast<void*>(&win_SetDlgItemTextA);
-        else if (funcName == "SendDlgItemMessageW") result = reinterpret_cast<void*>(&win_SendDlgItemMessageW);
-        else if (funcName == "RegisterDeviceNotificationW") result = reinterpret_cast<void*>(&win_RegisterDeviceNotificationW);
-        else if (funcName == "UnregisterDeviceNotification") result = reinterpret_cast<void*>(&win_UnregisterDeviceNotification);
+        else if (funcName == "GetMessageExtraInfo") result = w32arity::hpFn(&win_GetMessageExtraInfo);
+        else if (funcName == "GetDoubleClickTime") result = w32arity::hpFn(&win_GetDoubleClickTime);
+        else if (funcName == "GetCaretBlinkTime") result = w32arity::hpFn(&win_GetCaretBlinkTime);
+        else if (funcName == "OpenClipboard") result = w32arity::hpFn(&win_OpenClipboard);
+        else if (funcName == "CloseClipboard") result = w32arity::hpFn(&win_CloseClipboard);
+        else if (funcName == "EmptyClipboard") result = w32arity::hpFn(&win_EmptyClipboard);
+        else if (funcName == "GetClipboardData") result = w32arity::hpFn(&win_GetClipboardData);
+        else if (funcName == "SetClipboardData") result = w32arity::hpFn(&win_SetClipboardData);
+        else if (funcName == "IsClipboardFormatAvailable") result = w32arity::hpFn(&win_IsClipboardFormatAvailable);
+        else if (funcName == "MessageBoxA") result = w32arity::hpFn(&win_MessageBoxA);
+        else if (funcName == "MessageBoxW") result = w32arity::hpFn(&win_MessageBoxW);
+        else if (funcName == "DialogBoxParamW") result = w32arity::hpFn(&win_DialogBoxParamW);
+        else if (funcName == "EndDialog") result = w32arity::hpFn(&win_EndDialog);
+        else if (funcName == "SetDlgItemTextW") result = w32arity::hpFn(&win_SetDlgItemTextW);
+        else if (funcName == "SetDlgItemTextA") result = w32arity::hpFn(&win_SetDlgItemTextA);
+        else if (funcName == "SendDlgItemMessageW") result = w32arity::hpFn(&win_SendDlgItemMessageW);
+        else if (funcName == "RegisterDeviceNotificationW") result = w32arity::hpFn(&win_RegisterDeviceNotificationW);
+        else if (funcName == "UnregisterDeviceNotification") result = w32arity::hpFn(&win_UnregisterDeviceNotification);
         else if (funcName == "SetWindowsHookExW" || funcName == "SetWindowsHookExA" || funcName == "SetWindowsHookEx") {
-            result = reinterpret_cast<void*>(&win_SetWindowsHookExW);
+            result = w32arity::hpFn(&win_SetWindowsHookExW);
         }
-        else if (funcName == "UnhookWindowsHookEx") result = reinterpret_cast<void*>(&win_UnhookWindowsHookEx);
-        else if (funcName == "CallNextHookEx") result = reinterpret_cast<void*>(&win_CallNextHookEx);
-        else if (funcName == "RegisterTouchWindow") result = reinterpret_cast<void*>(&win_RegisterTouchWindow);
-        else if (funcName == "GetDisplayConfigBufferSizes") result = reinterpret_cast<void*>(&win_GetDisplayConfigBufferSizes);
-        else if (funcName == "QueryDisplayConfig") result = reinterpret_cast<void*>(&win_QueryDisplayConfig);
-        else if (funcName == "DisplayConfigGetDeviceInfo") result = reinterpret_cast<void*>(&win_DisplayConfigGetDeviceInfo);
+        else if (funcName == "UnhookWindowsHookEx") result = w32arity::hpFn(&win_UnhookWindowsHookEx);
+        else if (funcName == "CallNextHookEx") result = w32arity::hpFn(&win_CallNextHookEx);
+        else if (funcName == "RegisterTouchWindow") result = w32arity::hpFn(&win_RegisterTouchWindow);
+        else if (funcName == "GetDisplayConfigBufferSizes") result = w32arity::hpFn(&win_GetDisplayConfigBufferSizes);
+        else if (funcName == "QueryDisplayConfig") result = w32arity::hpFn(&win_QueryDisplayConfig);
+        else if (funcName == "DisplayConfigGetDeviceInfo") result = w32arity::hpFn(&win_DisplayConfigGetDeviceInfo);
     }
 
     // 4b. GDI32
@@ -3577,83 +3754,83 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         s_otherCalls.fetch_add(1);
         ensureGuestGl();
         if (void* p = guestgl::gdiProcAddr(funcName.c_str())) result = p;  // formatos de píxel, DC, mapas de bits
-        else if (funcName == "ChoosePixelFormat") result = reinterpret_cast<void*>(&win_ChoosePixelFormat);
-        else if (funcName == "SetPixelFormat") result = reinterpret_cast<void*>(&win_SetPixelFormat);
-        else if (funcName == "GetDeviceCaps") result = reinterpret_cast<void*>(&win_GetDeviceCaps);
-        else if (funcName == "SwapBuffers") result = reinterpret_cast<void*>(&win_SwapBuffers);
+        else if (funcName == "ChoosePixelFormat") result = w32arity::hpFn(&win_ChoosePixelFormat);
+        else if (funcName == "SetPixelFormat") result = w32arity::hpFn(&win_SetPixelFormat);
+        else if (funcName == "GetDeviceCaps") result = w32arity::hpFn(&win_GetDeviceCaps);
+        else if (funcName == "SwapBuffers") result = w32arity::hpFn(&win_SwapBuffers);
     }
 
     // 4b. Shell32 / ShFolder
     if (!result && (dll == "shell32.dll" || dll == "shfolder.dll")) {
         s_otherCalls.fetch_add(1);
-        if (funcName == "CommandLineToArgvW") result = reinterpret_cast<void*>(&win_CommandLineToArgvW);
-        else if (funcName == "ShellExecuteExW") result = reinterpret_cast<void*>(&hp_ShellExecuteExW);
-        else if (funcName == "DllGetVersion") result = reinterpret_cast<void*>(&win_DllGetVersion);
-        else if (funcName == "SHGetKnownFolderPath") result = reinterpret_cast<void*>(&win_SHGetKnownFolderPath);
-        else if (funcName == "SHGetFolderPathW") result = reinterpret_cast<void*>(&win_SHGetFolderPathW);
-        else if (funcName == "SHGetFolderPathA") result = reinterpret_cast<void*>(&win_SHGetFolderPathA);
-        else if (funcName == "SHGetSpecialFolderPathW") result = reinterpret_cast<void*>(&win_SHGetSpecialFolderPathW);
-        else if (funcName == "SHGetSpecialFolderPathA") result = reinterpret_cast<void*>(&win_SHGetSpecialFolderPathA);
-        else if (funcName == "ShellExecuteW") result = reinterpret_cast<void*>(&win_ShellExecuteW);
-        else if (funcName == "ShellExecuteA") result = reinterpret_cast<void*>(&win_ShellExecuteA);
+        if (funcName == "CommandLineToArgvW") result = w32arity::hpFn(&win_CommandLineToArgvW);
+        else if (funcName == "ShellExecuteExW") result = w32arity::hpFn(&hp_ShellExecuteExW);
+        else if (funcName == "DllGetVersion") result = w32arity::hpFn(&win_DllGetVersion);
+        else if (funcName == "SHGetKnownFolderPath") result = w32arity::hpFn(&win_SHGetKnownFolderPath);
+        else if (funcName == "SHGetFolderPathW") result = w32arity::hpFn(&win_SHGetFolderPathW);
+        else if (funcName == "SHGetFolderPathA") result = w32arity::hpFn(&win_SHGetFolderPathA);
+        else if (funcName == "SHGetSpecialFolderPathW") result = w32arity::hpFn(&win_SHGetSpecialFolderPathW);
+        else if (funcName == "SHGetSpecialFolderPathA") result = w32arity::hpFn(&win_SHGetSpecialFolderPathA);
+        else if (funcName == "ShellExecuteW") result = w32arity::hpFn(&win_ShellExecuteW);
+        else if (funcName == "ShellExecuteA") result = w32arity::hpFn(&win_ShellExecuteA);
     }
 
     // 4b'. SHLWAPI (también expuesto vía api-ms-win-core-path / shcore)
     if (!result && (dll == "shlwapi.dll" || dll == "shcore.dll" ||
                     dll.rfind("api-ms-win-core-shlwapi", 0) == 0)) {
-        if (funcName == "PathCanonicalizeW") result = reinterpret_cast<void*>(&win_PathCanonicalizeW);
-        else if (funcName == "PathCanonicalizeA") result = reinterpret_cast<void*>(&win_PathCanonicalizeA);
-        else if (funcName == "PathCombineW") result = reinterpret_cast<void*>(&win_PathCombineW);
-        else if (funcName == "PathCombineA") result = reinterpret_cast<void*>(&win_PathCombineA);
-        else if (funcName == "PathAppendW") result = reinterpret_cast<void*>(&win_PathAppendW);
-        else if (funcName == "PathAppendA") result = reinterpret_cast<void*>(&win_PathAppendA);
-        else if (funcName == "PathRemoveFileSpecW") result = reinterpret_cast<void*>(&win_PathRemoveFileSpecW);
-        else if (funcName == "PathRemoveFileSpecA") result = reinterpret_cast<void*>(&win_PathRemoveFileSpecA);
-        else if (funcName == "PathFindFileNameW") result = reinterpret_cast<void*>(&win_PathFindFileNameW);
-        else if (funcName == "PathFindFileNameA") result = reinterpret_cast<void*>(&win_PathFindFileNameA);
-        else if (funcName == "PathFindExtensionW") result = reinterpret_cast<void*>(&win_PathFindExtensionW);
-        else if (funcName == "PathFindExtensionA") result = reinterpret_cast<void*>(&win_PathFindExtensionA);
-        else if (funcName == "PathFileExistsW") result = reinterpret_cast<void*>(&win_PathFileExistsW);
-        else if (funcName == "PathFileExistsA") result = reinterpret_cast<void*>(&win_PathFileExistsA);
-        else if (funcName == "PathIsRelativeW") result = reinterpret_cast<void*>(&win_PathIsRelativeW);
-        else if (funcName == "PathIsRelativeA") result = reinterpret_cast<void*>(&win_PathIsRelativeA);
+        if (funcName == "PathCanonicalizeW") result = w32arity::hpFn(&win_PathCanonicalizeW);
+        else if (funcName == "PathCanonicalizeA") result = w32arity::hpFn(&win_PathCanonicalizeA);
+        else if (funcName == "PathCombineW") result = w32arity::hpFn(&win_PathCombineW);
+        else if (funcName == "PathCombineA") result = w32arity::hpFn(&win_PathCombineA);
+        else if (funcName == "PathAppendW") result = w32arity::hpFn(&win_PathAppendW);
+        else if (funcName == "PathAppendA") result = w32arity::hpFn(&win_PathAppendA);
+        else if (funcName == "PathRemoveFileSpecW") result = w32arity::hpFn(&win_PathRemoveFileSpecW);
+        else if (funcName == "PathRemoveFileSpecA") result = w32arity::hpFn(&win_PathRemoveFileSpecA);
+        else if (funcName == "PathFindFileNameW") result = w32arity::hpFn(&win_PathFindFileNameW);
+        else if (funcName == "PathFindFileNameA") result = w32arity::hpFn(&win_PathFindFileNameA);
+        else if (funcName == "PathFindExtensionW") result = w32arity::hpFn(&win_PathFindExtensionW);
+        else if (funcName == "PathFindExtensionA") result = w32arity::hpFn(&win_PathFindExtensionA);
+        else if (funcName == "PathFileExistsW") result = w32arity::hpFn(&win_PathFileExistsW);
+        else if (funcName == "PathFileExistsA") result = w32arity::hpFn(&win_PathFileExistsA);
+        else if (funcName == "PathIsRelativeW") result = w32arity::hpFn(&win_PathIsRelativeW);
+        else if (funcName == "PathIsRelativeA") result = w32arity::hpFn(&win_PathIsRelativeA);
     }
 
     // 4c. WinRT / Ole32 / ComBase / ApiSet
     if (!result && (dll.find("winrt") != std::string::npos || dll == "ole32.dll" || dll == "combase.dll" || dll.find("com-l1") != std::string::npos)) {
         s_otherCalls.fetch_add(1);
-        if (funcName == "RoInitialize") result = reinterpret_cast<void*>(&win_RoInitialize);
-        else if (funcName == "CoInitialize") result = reinterpret_cast<void*>(&win_CoInitialize);
-        else if (funcName == "CoInitializeEx") result = reinterpret_cast<void*>(&win_CoInitializeEx);
-        else if (funcName == "CoUninitialize") result = reinterpret_cast<void*>(&win_CoUninitialize);
-        else if (funcName == "CoCreateInstance") result = reinterpret_cast<void*>(&win_CoCreateInstance);
-        else if (funcName == "CoTaskMemAlloc") result = reinterpret_cast<void*>(&win_CoTaskMemAlloc);
-        else if (funcName == "CoTaskMemFree") result = reinterpret_cast<void*>(&win_CoTaskMemFree);
-        else if (funcName == "CoTaskMemRealloc") result = reinterpret_cast<void*>(&win_CoTaskMemRealloc);
-        else if (funcName == "CoCreateGuid") result = reinterpret_cast<void*>(&win_CoCreateGuid);
-        else if (funcName == "PropVariantClear") result = reinterpret_cast<void*>(&win_PropVariantClear);
+        if (funcName == "RoInitialize") result = w32arity::hpFn(&win_RoInitialize);
+        else if (funcName == "CoInitialize") result = w32arity::hpFn(&win_CoInitialize);
+        else if (funcName == "CoInitializeEx") result = w32arity::hpFn(&win_CoInitializeEx);
+        else if (funcName == "CoUninitialize") result = w32arity::hpFn(&win_CoUninitialize);
+        else if (funcName == "CoCreateInstance") result = w32arity::hpFn(&win_CoCreateInstance);
+        else if (funcName == "CoTaskMemAlloc") result = w32arity::hpFn(&win_CoTaskMemAlloc);
+        else if (funcName == "CoTaskMemFree") result = w32arity::hpFn(&win_CoTaskMemFree);
+        else if (funcName == "CoTaskMemRealloc") result = w32arity::hpFn(&win_CoTaskMemRealloc);
+        else if (funcName == "CoCreateGuid") result = w32arity::hpFn(&win_CoCreateGuid);
+        else if (funcName == "PropVariantClear") result = w32arity::hpFn(&win_PropVariantClear);
     }
 
     // 4d. BCrypt
     if (!result && dll.find("bcrypt") != std::string::npos) {
         s_otherCalls.fetch_add(1);
-        if (funcName == "BCryptGenRandom") result = reinterpret_cast<void*>(&win_BCryptGenRandom);
-        else if (funcName == "BCryptOpenAlgorithmProvider") result = reinterpret_cast<void*>(&win_BCryptOpenAlgorithmProvider);
-        else if (funcName == "BCryptCloseAlgorithmProvider") result = reinterpret_cast<void*>(&win_BCryptCloseAlgorithmProvider);
-        else if (funcName == "SystemFunction036") result = reinterpret_cast<void*>(&win_SystemFunction036);
-        else if (funcName == "RtlGenRandom") result = reinterpret_cast<void*>(&win_SystemFunction036);
+        if (funcName == "BCryptGenRandom") result = w32arity::hpFn(&win_BCryptGenRandom);
+        else if (funcName == "BCryptOpenAlgorithmProvider") result = w32arity::hpFn(&win_BCryptOpenAlgorithmProvider);
+        else if (funcName == "BCryptCloseAlgorithmProvider") result = w32arity::hpFn(&win_BCryptCloseAlgorithmProvider);
+        else if (funcName == "SystemFunction036") result = w32arity::hpFn(&win_SystemFunction036);
+        else if (funcName == "RtlGenRandom") result = w32arity::hpFn(&win_SystemFunction036);
     }
 
     // 4e. Advapi32 Crypto & Security
     if (!result && (dll.find("advapi32") != std::string::npos || dll.find("crypt") != std::string::npos)) {
         s_otherCalls.fetch_add(1);
-        if (funcName == "CryptAcquireContextW") result = reinterpret_cast<void*>(&win_CryptAcquireContextW);
-        else if (funcName == "CryptAcquireContextA") result = reinterpret_cast<void*>(&win_CryptAcquireContextA);
-        else if (funcName == "CryptReleaseContext") result = reinterpret_cast<void*>(&win_CryptReleaseContext);
-        else if (funcName == "CryptGenRandom") result = reinterpret_cast<void*>(&win_CryptGenRandom);
-        else if (funcName == "SystemFunction036") result = reinterpret_cast<void*>(&win_SystemFunction036);
-        else if (funcName == "RtlGenRandom") result = reinterpret_cast<void*>(&win_SystemFunction036);
-        else if (funcName == "OpenProcessToken") result = reinterpret_cast<void*>(&win_OpenProcessToken);
+        if (funcName == "CryptAcquireContextW") result = w32arity::hpFn(&win_CryptAcquireContextW);
+        else if (funcName == "CryptAcquireContextA") result = w32arity::hpFn(&win_CryptAcquireContextA);
+        else if (funcName == "CryptReleaseContext") result = w32arity::hpFn(&win_CryptReleaseContext);
+        else if (funcName == "CryptGenRandom") result = w32arity::hpFn(&win_CryptGenRandom);
+        else if (funcName == "SystemFunction036") result = w32arity::hpFn(&win_SystemFunction036);
+        else if (funcName == "RtlGenRandom") result = w32arity::hpFn(&win_SystemFunction036);
+        else if (funcName == "OpenProcessToken") result = w32arity::hpFn(&win_OpenProcessToken);
         else if (funcName.compare(0, 3, "Reg") == 0 || funcName.compare(0, 5, "Event") == 0 ||
                  funcName == "DeregisterEventSource" || funcName == "ReportEventW")
             result = resolveRegistryExport(funcName);
@@ -3669,28 +3846,28 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     // 4f. VERSION.dll (metadatos de versión del PE)
     if (!result && (dll == "version.dll" || dll.find("version-l1") != std::string::npos)) {
         s_otherCalls.fetch_add(1);
-        if (funcName == "GetFileVersionInfoSizeW") result = reinterpret_cast<void*>(&win_GetFileVersionInfoSizeW);
-        else if (funcName == "GetFileVersionInfoSizeA") result = reinterpret_cast<void*>(&win_GetFileVersionInfoSizeA);
-        else if (funcName == "GetFileVersionInfoSizeExW") result = reinterpret_cast<void*>(&win_GetFileVersionInfoSizeW);
-        else if (funcName == "GetFileVersionInfoSizeExA") result = reinterpret_cast<void*>(&win_GetFileVersionInfoSizeA);
-        else if (funcName == "GetFileVersionInfoW") result = reinterpret_cast<void*>(&win_GetFileVersionInfoW);
-        else if (funcName == "GetFileVersionInfoA") result = reinterpret_cast<void*>(&win_GetFileVersionInfoA);
-        else if (funcName == "VerQueryValueW") result = reinterpret_cast<void*>(&win_VerQueryValueW);
-        else if (funcName == "VerQueryValueA") result = reinterpret_cast<void*>(&win_VerQueryValueA);
+        if (funcName == "GetFileVersionInfoSizeW") result = w32arity::hpFn(&win_GetFileVersionInfoSizeW);
+        else if (funcName == "GetFileVersionInfoSizeA") result = w32arity::hpFn(&win_GetFileVersionInfoSizeA);
+        else if (funcName == "GetFileVersionInfoSizeExW") result = w32arity::hpFn(&win_GetFileVersionInfoSizeW);
+        else if (funcName == "GetFileVersionInfoSizeExA") result = w32arity::hpFn(&win_GetFileVersionInfoSizeA);
+        else if (funcName == "GetFileVersionInfoW") result = w32arity::hpFn(&win_GetFileVersionInfoW);
+        else if (funcName == "GetFileVersionInfoA") result = w32arity::hpFn(&win_GetFileVersionInfoA);
+        else if (funcName == "VerQueryValueW") result = w32arity::hpFn(&win_VerQueryValueW);
+        else if (funcName == "VerQueryValueA") result = w32arity::hpFn(&win_VerQueryValueA);
     }
 
     // 5. Direct3D / DirectX Graphics
     if (!result && (dll == "d3d11.dll" || dll == "dxgi.dll")) {
         s_d3dCalls.fetch_add(1);
-        if (funcName == "D3D11CreateDeviceAndSwapChain") result = reinterpret_cast<void*>(&win_D3D11CreateDeviceAndSwapChain);
-        else if (funcName == "D3D11CreateDevice") result = reinterpret_cast<void*>(&win_D3D11CreateDevice);
-        else if (funcName == "CreateDXGIFactory") result = reinterpret_cast<void*>(&win_CreateDXGIFactory);
-        else if (funcName == "CreateDXGIFactory1") result = reinterpret_cast<void*>(&win_CreateDXGIFactory1);
-        else if (funcName == "CreateDXGIFactory2") result = reinterpret_cast<void*>(&win_CreateDXGIFactory2);
+        if (funcName == "D3D11CreateDeviceAndSwapChain") result = w32arity::hpFn(&win_D3D11CreateDeviceAndSwapChain);
+        else if (funcName == "D3D11CreateDevice") result = w32arity::hpFn(&win_D3D11CreateDevice);
+        else if (funcName == "CreateDXGIFactory") result = w32arity::hpFn(&win_CreateDXGIFactory);
+        else if (funcName == "CreateDXGIFactory1") result = w32arity::hpFn(&win_CreateDXGIFactory1);
+        else if (funcName == "CreateDXGIFactory2") result = w32arity::hpFn(&win_CreateDXGIFactory2);
     }
     if (!result && dll == "d3d9.dll") {
         s_d3dCalls.fetch_add(1);
-        if (funcName == "Direct3DCreate9") result = reinterpret_cast<void*>(&win_Direct3DCreate9);
+        if (funcName == "Direct3DCreate9") result = w32arity::hpFn(&win_Direct3DCreate9);
     }
     if (!result && dll == "opengl32.dll") {
         ensureGuestGl();
@@ -3719,6 +3896,11 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         const std::string localName = guestCrtDll(dll) ? std::string("ucrtbase.dll") : dllName;
         struct stat st{};
         bool existsOnDisk = stat((s_activeImage->gameDir + "/" + localName).c_str(), &st) == 0;
+        // Runtimes redistribuibles comunes (BionicPeLoader::loadLocalDll también los busca ahí).
+        if (!existsOnDisk) {
+            existsOnDisk = stat((std::string("/sdcard/HyperPlay/redist/") + (s_activeImage->is32Bit ? "x86/" : "x64/") +
+                                 toLower(localName)).c_str(), &st) == 0;
+        }
         if (!existsOnDisk && managed::active()) {
             const std::string user = managed::userOverride(toLower(localName));
             existsOnDisk = stat((managed::g_runtimeDir + "/bin/" + localName).c_str(), &st) == 0 ||
@@ -5437,20 +5619,20 @@ void NoOp() {}
 
 static void* resolveSteamOffline(const char* name) {
     const std::string n = name;
-    if (n == "SteamAPI_Init") return reinterpret_cast<void*>(&steamoffline::Init);
-    if (n == "SteamAPI_InitFlat") return reinterpret_cast<void*>(&steamoffline::InitFlat);
-    if (n == "SteamInternal_SteamAPI_Init") return reinterpret_cast<void*>(&steamoffline::InternalInit);
+    if (n == "SteamAPI_Init") return w32arity::hpFn(&steamoffline::Init);
+    if (n == "SteamAPI_InitFlat") return w32arity::hpFn(&steamoffline::InitFlat);
+    if (n == "SteamInternal_SteamAPI_Init") return w32arity::hpFn(&steamoffline::InternalInit);
     if (n == "SteamAPI_RestartAppIfNecessary" || n == "SteamAPI_IsSteamRunning" ||
         n == "SteamAPI_GetHSteamPipe" || n == "SteamAPI_GetHSteamUser" ||
         n == "SteamGameServer_GetHSteamPipe" || n == "SteamGameServer_GetHSteamUser") {
-        return reinterpret_cast<void*>(&steamoffline::ReturnFalse);
+        return w32arity::hpFn(&steamoffline::ReturnFalse);
     }
     if (n == "SteamAPI_Shutdown" || n == "SteamAPI_RunCallbacks" || n == "SteamAPI_ReleaseCurrentThreadMemory" ||
         n == "SteamAPI_ManualDispatch_Init" || n == "SteamAPI_ManualDispatch_RunFrame" ||
         n == "SteamAPI_RegisterCallback" || n == "SteamAPI_UnregisterCallback" ||
         n == "SteamAPI_RegisterCallResult" || n == "SteamAPI_UnregisterCallResult" ||
         n == "SteamClient_SetWarningMessageHook" || n == "SteamAPI_ISteamClient_SetWarningMessageHook") {
-        return reinterpret_cast<void*>(&steamoffline::NoOp);
+        return w32arity::hpFn(&steamoffline::NoOp);
     }
     return nullptr;
 }
@@ -5658,6 +5840,18 @@ uint8_t hp_alIsExtensionPresent(const char* name) {
 }  // namespace
 
 void* NativeDllInterceptor::win_GetProcAddress(void* hModule, const char* lpProcName) {
+    void* p = win_GetProcAddressCore(hModule, lpProcName);
+    // Invitado de 32 bits: un puntero nativo (>4 GB) no cabe en sus variables; se da el alias bajo.
+    if (p != nullptr && s_activeImage != nullptr && s_activeImage->is32Bit &&
+        reinterpret_cast<uintptr_t>(p) > 0xFFFFFFFFull) {
+        const bool byOrdinal = (reinterpret_cast<uintptr_t>(lpProcName) >> 16) == 0;
+        const uintptr_t low = w32alias::lowFor(p, byOrdinal ? std::string() : std::string(lpProcName));
+        return low != 0 ? reinterpret_cast<void*>(low) : nullptr;
+    }
+    return p;
+}
+
+void* NativeDllInterceptor::win_GetProcAddressCore(void* hModule, const char* lpProcName) {
     s_kernel32Calls.fetch_add(1);
     if (lpProcName == nullptr || hModule == nullptr) {
         win_SetLastError(127); // ERROR_PROC_NOT_FOUND
@@ -5703,7 +5897,7 @@ void* NativeDllInterceptor::win_GetProcAddress(void* hModule, const char* lpProc
                     char v[PROP_VALUE_MAX] = {};
                     if (__system_property_get("debug.hyperplay.alnoadpcm", v) > 0 && v[0] == '1') {
                         s_alIsExtensionPresentReal = reinterpret_cast<uint64_t>(p);
-                        void* w = reinterpret_cast<void*>(&hp_alIsExtensionPresent);
+                        void* w = w32arity::hpFn(&hp_alIsExtensionPresent);
                         registerTrampolineAddress(w, "soft_oal.dll!alIsExtensionPresent");
                         LOGI("OpenAL: alIsExtensionPresent envuelto (sin AL_SOFT_MSADPCM)");
                         return w;
@@ -5721,7 +5915,7 @@ void* NativeDllInterceptor::win_GetProcAddress(void* hModule, const char* lpProc
     if (byOrdinal) {  // ordinal sobre módulo de sistema sintético: no hay tabla de ordinales
         // XInput: el ordinal 100 es XInputGetStateEx (incluye el botón Guide); mismo estado.
         if (hModule == kHModXInput && reinterpret_cast<uintptr_t>(lpProcName) == 100) {
-            void* p = reinterpret_cast<void*>(&DirectXInputBridge::XInputGetState);
+            void* p = w32arity::hpFn(&DirectXInputBridge::XInputGetState);
             registerTrampolineAddress(p, "xinput1_4.dll!XInputGetStateEx");
             return p;
         }

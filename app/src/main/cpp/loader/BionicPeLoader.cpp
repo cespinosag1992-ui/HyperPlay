@@ -553,6 +553,9 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
         candidatePaths.push_back(image.gameDir + "/" + stem + "_Data/Plugins/" + baseName);
         candidatePaths.push_back(image.gameDir + "/" + stem + "_Data/Managed/" + baseName);
     }
+    // 5. Runtimes redistribuibles comunes a todos los juegos (Visual C++ 2010 de 32 bits para DmC...),
+    //    extraídos de los instaladores que traen los propios juegos: /sdcard/HyperPlay/redist/<arq>/.
+    candidatePaths.push_back(std::string("/sdcard/HyperPlay/redist/") + (image.is32Bit ? "x86/" : "x64/") + lowerBase);
 
     std::string resolvedPath;
     int fd = -1;

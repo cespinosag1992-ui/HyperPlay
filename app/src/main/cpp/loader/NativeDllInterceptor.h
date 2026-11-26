@@ -202,6 +202,7 @@ public:
     static void* win_GetModuleHandleW(const wchar_t* lpModuleName);
     static void* win_GetModuleHandleA(const char* lpModuleName);
     static void* win_GetProcAddress(void* hModule, const char* lpProcName);
+    static void* win_GetProcAddressCore(void* hModule, const char* lpProcName);
     static void* win_LoadLibraryW(const wchar_t* lpLibFileName);
     static void* win_LoadLibraryA(const char* lpLibFileName);
 
