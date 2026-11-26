@@ -377,7 +377,9 @@ PeInfo inspectPe(const PeReader& read, uint64_t fileSize) {
                 if (rvaToOffset(info.sections, addrFunctionsRva, funcTableOffset) &&
                     rvaToOffset(info.sections, addrNamesRva, nameTableOffset) &&
                     rvaToOffset(info.sections, addrNameOrdinalsRva, ordTableOffset)) {
-                    const size_t parseCount = std::min<size_t>(numNames, 4096u);
+                    // DLLs grandes de C++ (wxWidgets de UE3 en DmC: >4096 exports) superaban el tope
+                    // anterior de 4096 y sus imports quedaban sin resolver.
+                    const size_t parseCount = std::min<size_t>(numNames, kMaxTotalImportedFunctions);
                     info.exports.reserve(parseCount);
                     for (size_t i = 0; i < parseCount; ++i) {
                         uint8_t nameRvaBuf[4] = {0};

@@ -2535,6 +2535,10 @@ IatHijackStats NativeDllInterceptor::hijackIatChecked(LoadedPeImage& image) {
 
     LOGI("IAT: %zu entradas, %zu resueltas, %zu sin resolver, %zu fuera de imagen", stats.total, stats.hijacked,
          stats.unresolved, stats.outOfImage);
+    // 32 bits (en desarrollo): la lista completa de lo que falta, una línea por import.
+    if (image.is32Bit) {
+        for (const auto& u : stats.unresolvedImports) LOGW("IAT32 sin resolver: %s", u.c_str());
+    }
     return stats;
 }
 
