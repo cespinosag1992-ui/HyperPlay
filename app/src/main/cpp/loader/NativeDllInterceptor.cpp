@@ -2174,6 +2174,17 @@ static void logTopThunks(uint64_t elapsedMs) {
         line += buf;
     }
     if (!line.empty()) LOGI("[Thunks/s]%s", line.c_str());
+    // Entrada y ventana aparte (no suelen entrar en el top 12): diagnostica mandos/ratón que no responden.
+    std::string input;
+    for (const auto& [n, info] : top) {
+        const std::string& nm = info->name;
+        if (nm.find("XInput") == std::string::npos && nm.find("PeekMessage") == std::string::npos &&
+            nm.find("Cursor") == std::string::npos && nm.find("KeyState") == std::string::npos) continue;
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), " %s=%llu/s", nm.c_str(), static_cast<unsigned long long>(n * 1000 / elapsedMs));
+        input += buf;
+    }
+    if (!input.empty()) LOGI("[Entrada/s]%s", input.c_str());
     logThunkCallers();
 }
 
@@ -2853,7 +2864,18 @@ static void* removeProp(void* hwnd, const void* name, bool wide) {
     s_windowProps.erase(it);
     return v;
 }
-static int32_t hp_SetPropW(void* h, const void* n, void* d) { return setProp(h, n, d, true); }
+// La cola de mensajes (wndq, más abajo) espera a esto: SDL guarda sus datos de ventana con SetPropW y
+// su WndProc ignora los mensajes que llegan antes.
+// Cada SetPropW nuevo vuelve a armar la activación: las ventanas auxiliares de SDL ponen props antes que
+// la principal (que es la única cuyos datos encuentra el WndProc).
+static std::atomic<bool> s_wndPropSet{false};
+static std::atomic<int> s_wndPropGen{0};
+static int32_t hp_SetPropW(void* h, const void* n, void* d) {
+    const int32_t r = setProp(h, n, d, true);
+    s_wndPropSet.store(true);
+    s_wndPropGen.fetch_add(1);
+    return r;
+}
 static void* hp_GetPropW(void* h, const void* n) { return getProp(h, n, true); }
 static void* hp_RemovePropW(void* h, const void* n) { return removeProp(h, n, true); }
 static int32_t hp_SetPropA(void* h, const void* n, void* d) { return setProp(h, n, d, false); }
@@ -6069,9 +6091,68 @@ static void* createMainWindow(const char* api, uint32_t dwExStyle, uint32_t dwSt
     return reinterpret_cast<void*>(0xCAFE1000);
 }
 
-void* NativeDllInterceptor::win_CreateWindowExW(uint32_t dwExStyle, const wchar_t*, const wchar_t*,
+// --- Cola de mensajes mínima de la ventana principal ---------------------------------------------
+// Solo lleva lo que los juegos SDL2 (MonoGame/FNA) necesitan para saberse activos: al primer ShowWindow
+// se encolan WM_ACTIVATEAPP, WM_ACTIVATE y WM_SETFOCUS, y PeekMessageW/DispatchMessageW los entregan al
+// WndProc del invitado (el de su clase o el que puso con SetWindowLongPtrW(GWLP_WNDPROC)). Sin esto SDL
+// nunca da el foco a la ventana y MonoGame deja Game.IsActive en false: Stardew ignora el mando.
+namespace wndq {
+struct Msg { uint32_t message; uint64_t wParam; int64_t lParam; };
+std::mutex s_mtx;
+std::deque<Msg> s_queue;
+std::unordered_map<std::u16string, uint64_t> s_classProcs;  // nombre de clase (minúsculas) -> WndProc
+std::atomic<uint64_t> s_wndProc{0};
+std::atomic<int64_t> s_userData{0};
+std::atomic<bool> s_activated{false};
+std::atomic<int> s_activatedGen{-1};  // generación de props para la que ya se encoló la activación
+
+std::u16string classKey(const void* name) {
+    const auto v = reinterpret_cast<uintptr_t>(name);
+    if (v == 0) return {};
+    if (v <= 0xFFFF) return u"#" + std::u16string(1, static_cast<char16_t>(v));  // átomo
+    std::u16string s;
+    for (const auto* p = static_cast<const char16_t*>(name); *p != 0 && s.size() < 256; ++p)
+        s.push_back(*p < 0x80 ? static_cast<char16_t>(std::tolower(*p)) : *p);
+    return s;
+}
+
+void registerClass(const void* wndClass) {
+    if (wndClass == nullptr) return;
+    const auto* b = static_cast<const uint8_t*>(wndClass);
+    uint64_t proc = 0;
+    const void* name = nullptr;
+    std::memcpy(&proc, b + 8, 8);   // lpfnWndProc (mismo desplazamiento en WNDCLASSW y WNDCLASSEXW)
+    std::memcpy(&name, b + 64, 8);  // lpszClassName
+    const std::u16string key = classKey(name);
+    if (proc == 0 || key.empty()) return;
+    std::lock_guard<std::mutex> lk(s_mtx);
+    s_classProcs[key] = proc;
+}
+
+void bindWindow(const void* className) {
+    const std::u16string key = classKey(className);
+    std::lock_guard<std::mutex> lk(s_mtx);
+    const auto it = s_classProcs.find(key);
+    if (it != s_classProcs.end()) s_wndProc.store(it->second);
+}
+
+void activate() {
+    const int gen = s_wndPropGen.load();
+    if (s_activatedGen.exchange(gen) == gen) return;
+    std::lock_guard<std::mutex> lk(s_mtx);
+    s_queue.push_back({0x001C, 1, 0});  // WM_ACTIVATEAPP(TRUE)
+    s_queue.push_back({0x0006, 1, 0});  // WM_ACTIVATE(WA_ACTIVE)
+    s_queue.push_back({0x0007, 0, 0});  // WM_SETFOCUS
+    s_activated.store(true);
+}
+}  // namespace wndq
+
+void* NativeDllInterceptor::win_CreateWindowExW(uint32_t dwExStyle, const wchar_t* lpClassName, const wchar_t*,
                                                uint32_t dwStyle, int32_t x, int32_t y, int32_t nWidth, int32_t nHeight,
                                                void* hWndParent, void*, void*, void*) {
+    // Todas las ventanas son 0xCAFE1000: solo la principal (sin padre, ni HWND_MESSAGE, ni WS_DISABLED)
+    // fija el WndProc. Las auxiliares de SDL (IME 10x10 deshabilitada, ventana de mensajes) no.
+    if (hWndParent == nullptr && (dwStyle & 0x08000000u) == 0) wndq::bindWindow(lpClassName);
     return createMainWindow("CreateWindowExW", dwExStyle, dwStyle, x, y, nWidth, nHeight, hWndParent);
 }
 
@@ -6081,19 +6162,58 @@ void* NativeDllInterceptor::win_CreateWindowExA(uint32_t dwExStyle, const char*,
     return createMainWindow("CreateWindowExA", dwExStyle, dwStyle, x, y, nWidth, nHeight, hWndParent);
 }
 
-int32_t NativeDllInterceptor::win_ShowWindow(void*, int32_t) {
+int32_t NativeDllInterceptor::win_ShowWindow(void*, int32_t nCmdShow) {
     s_otherCalls.fetch_add(1);
+    // Solo con un WndProc conocido: los juegos sin clase registrada siguen como antes.
+    // Mostrar la ventana (MonoGame lo hace al entrar en su bucle) vuelve a activarla, como en Windows.
+    if (nCmdShow != 0 && wndq::s_wndProc.load() != 0 && s_wndPropSet.load()) {
+        s_wndPropGen.fetch_add(1);
+        wndq::activate();
+    }
     return 1;
 }
 
-int32_t NativeDllInterceptor::win_PeekMessageW(void*, void*, uint32_t, uint32_t, uint32_t) {
+int32_t NativeDllInterceptor::win_PeekMessageW(void* lpMsg, void*, uint32_t wMsgFilterMin, uint32_t wMsgFilterMax,
+                                               uint32_t wRemoveMsg) {
     s_otherCalls.fetch_add(1);
-    return 0;
+    if (lpMsg == nullptr) return 0;
+    // La ventana principal ya existe (WndProc conocido) y el juego bombea mensajes: está "en primer plano".
+    if (wndq::s_wndProc.load() != 0 && s_wndPropSet.load()) wndq::activate();
+    wndq::Msg m{};
+    {
+        std::lock_guard<std::mutex> lk(wndq::s_mtx);
+        if (wndq::s_queue.empty()) return 0;
+        m = wndq::s_queue.front();
+        if ((wMsgFilterMin != 0 || wMsgFilterMax != 0) && (m.message < wMsgFilterMin || m.message > wMsgFilterMax))
+            return 0;
+        if (wRemoveMsg & 1u) wndq::s_queue.pop_front();  // PM_REMOVE
+    }
+    auto* b = static_cast<uint8_t*>(lpMsg);
+    const uint64_t hwnd = 0xCAFE1000;
+    std::memset(b, 0, 48);  // MSG x64: hwnd, message, wParam, lParam, time, pt
+    std::memcpy(b, &hwnd, 8);
+    std::memcpy(b + 8, &m.message, 4);
+    std::memcpy(b + 16, &m.wParam, 8);
+    std::memcpy(b + 24, &m.lParam, 8);
+    const uint32_t t = static_cast<uint32_t>(win_GetTickCount());
+    std::memcpy(b + 32, &t, 4);
+    return 1;
 }
 
-int32_t NativeDllInterceptor::win_DispatchMessageW(const void*) {
+int32_t NativeDllInterceptor::win_DispatchMessageW(const void* lpMsg) {
     s_otherCalls.fetch_add(1);
-    return 0;
+    const uint64_t proc = wndq::s_wndProc.load();
+    if (lpMsg == nullptr || proc == 0) return 0;
+    const auto* b = static_cast<const uint8_t*>(lpMsg);
+    uint64_t args[4] = {};
+    uint32_t message = 0;
+    std::memcpy(&args[0], b, 8);
+    std::memcpy(&message, b + 8, 4);
+    args[1] = message;
+    std::memcpy(&args[2], b + 16, 8);
+    std::memcpy(&args[3], b + 24, 8);
+    LOGI("DispatchMessageW: msg=0x%x -> WndProc %p", message, reinterpret_cast<void*>(proc));
+    return static_cast<int32_t>(sehimpl::callGuest(proc, args, 4));
 }
 
 void* NativeDllInterceptor::win_GetForegroundWindow() {
@@ -6128,7 +6248,7 @@ void* NativeDllInterceptor::win_SetActiveWindow(void*) {
 
 void* NativeDllInterceptor::win_GetFocus() {
     s_otherCalls.fetch_add(1);
-    return reinterpret_cast<void*>(1);
+    return reinterpret_cast<void*>(wndq::s_activated.load() ? 0xCAFE1000 : 1);
 }
 
 void* NativeDllInterceptor::win_SetFocus(void*) {
@@ -6321,6 +6441,8 @@ int32_t NativeDllInterceptor::win_GetWindowLongA(void* hWnd, int32_t nIndex) {
 int64_t NativeDllInterceptor::win_GetWindowLongPtrW(void*, int32_t nIndex) {
     s_otherCalls.fetch_add(1);
     if (nIndex == -16) return 0x10000000 | 0x00C00000;
+    if (nIndex == -4) return static_cast<int64_t>(wndq::s_wndProc.load());   // GWLP_WNDPROC
+    if (nIndex == -21) return wndq::s_userData.load();                       // GWLP_USERDATA
     return 0;
 }
 
@@ -6338,8 +6460,10 @@ int32_t NativeDllInterceptor::win_SetWindowLongA(void*, int32_t, int32_t) {
     return 0;
 }
 
-int64_t NativeDllInterceptor::win_SetWindowLongPtrW(void*, int32_t, int64_t) {
+int64_t NativeDllInterceptor::win_SetWindowLongPtrW(void*, int32_t nIndex, int64_t value) {
     s_otherCalls.fetch_add(1);
+    if (nIndex == -4) return static_cast<int64_t>(wndq::s_wndProc.exchange(static_cast<uint64_t>(value)));
+    if (nIndex == -21) return wndq::s_userData.exchange(value);
     return 0;
 }
 
@@ -6348,13 +6472,15 @@ int64_t NativeDllInterceptor::win_SetWindowLongPtrA(void*, int32_t, int64_t) {
     return 0;
 }
 
-uint16_t NativeDllInterceptor::win_RegisterClassW(const void*) {
+uint16_t NativeDllInterceptor::win_RegisterClassW(const void* wc) {
     s_otherCalls.fetch_add(1);
+    wndq::registerClass(wc);
     return 0x100;
 }
 
-uint16_t NativeDllInterceptor::win_RegisterClassExW(const void*) {
+uint16_t NativeDllInterceptor::win_RegisterClassExW(const void* wc) {
     s_otherCalls.fetch_add(1);
+    wndq::registerClass(wc);
     return 0x100;
 }
 
@@ -10024,6 +10150,11 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableW(const wchar_t* lpName
         // GC sin hilo de fondo concurrente: su marcado concurrente depende del orden de memoria
         // fuerte de x86 (TSO), que el código traducido a ARM no garantiza en todos los casos.
         else if (upper == "DOTNET_GCCONCURRENT") { val = "0"; found = true; }
+        // SDL2 (MonoGame/FNA): sin cola de mensajes real la ventana nunca recibe WM_ACTIVATE/WM_SETFOCUS,
+        // SDL no le da el foco y descarta el mando. Con esta pista acepta el mando sin foco. HIDAPI y
+        // RawInput fuera: el mando llega por XInput y así no busca hid.dll decenas de veces por segundo.
+        else if (upper == "SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS") { val = "1"; found = true; }
+        else if (upper == "SDL_JOYSTICK_HIDAPI" || upper == "SDL_JOYSTICK_RAWINPUT") { val = "0"; found = true; }
         // Experimento (setprop debug.hyperplay.r2r 0): sin código ReadyToRun, todo por el JIT.
         else if (upper == "DOTNET_READYTORUN") {
             char v[PROP_VALUE_MAX] = {};
@@ -10105,6 +10236,11 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableA(const char* lpName, c
         // GC sin hilo de fondo concurrente: su marcado concurrente depende del orden de memoria
         // fuerte de x86 (TSO), que el código traducido a ARM no garantiza en todos los casos.
         else if (upper == "DOTNET_GCCONCURRENT") { val = "0"; found = true; }
+        // SDL2 (MonoGame/FNA): sin cola de mensajes real la ventana nunca recibe WM_ACTIVATE/WM_SETFOCUS,
+        // SDL no le da el foco y descarta el mando. Con esta pista acepta el mando sin foco. HIDAPI y
+        // RawInput fuera: el mando llega por XInput y así no busca hid.dll decenas de veces por segundo.
+        else if (upper == "SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS") { val = "1"; found = true; }
+        else if (upper == "SDL_JOYSTICK_HIDAPI" || upper == "SDL_JOYSTICK_RAWINPUT") { val = "0"; found = true; }
         // Experimento (setprop debug.hyperplay.r2r 0): sin código ReadyToRun, todo por el JIT.
         else if (upper == "DOTNET_READYTORUN") {
             char v[PROP_VALUE_MAX] = {};

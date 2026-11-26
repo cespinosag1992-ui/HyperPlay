@@ -1,5 +1,8 @@
 #include "DirectXInputBridge.h"
 
+#include <android/log.h>
+
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <mutex>
@@ -173,6 +176,14 @@ uint32_t DirectXInputBridge::XInputGetState(uint32_t userIndex, void* pState) {
         if (d & (1u << 19)) winState->Gamepad.sThumbLY = -32767;
         if (d & (1u << 20)) winState->Gamepad.bLeftTrigger = 255;
         if (d & (1u << 21)) winState->Gamepad.bRightTrigger = 255;
+    }
+    // Diagnóstico: cada cambio de botones que se entrega al juego (los 50 primeros).
+    static std::atomic<uint32_t> s_lastLogged{0};
+    static std::atomic<int> s_logs{0};
+    const uint32_t key = winState->Gamepad.wButtons | (winState->Gamepad.sThumbLX != 0 ? 0x10000u : 0u);
+    if (s_lastLogged.exchange(key) != key && s_logs.fetch_add(1) < 50) {
+        __android_log_print(ANDROID_LOG_INFO, "HyperPlay.XInput", "XInputGetState: botones=0x%04x LX=%d paquete=%u",
+                            winState->Gamepad.wButtons, winState->Gamepad.sThumbLX, winState->dwPacketNumber);
     }
     return ERROR_SUCCESS;
 }
