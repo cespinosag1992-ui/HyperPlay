@@ -6509,18 +6509,29 @@ int32_t NativeDllInterceptor::win_SystemParametersInfoW(uint32_t, uint32_t, void
     return 1;
 }
 
+// Cursor del sistema: SetCursorPos lo mueve y GetCursorPos lo devuelve. Stardew (MonoGame) maneja el
+// cursor con el mando moviéndolo con Mouse.SetPosition -> SDL_WarpMouse -> SetCursorPos y lo vuelve a
+// leer cada frame; con una posición fija el cursor no se movía y A pulsaba siempre en el mismo sitio.
+namespace {
+std::atomic<int64_t> s_cursorPos{(static_cast<int64_t>(640) << 32) | 360u};
+}
+
 int32_t NativeDllInterceptor::win_GetCursorPos(void* lpPoint) {
     s_otherCalls.fetch_add(1);
     if (lpPoint) {
+        const int64_t v = s_cursorPos.load(std::memory_order_relaxed);
         auto* pt = static_cast<int32_t*>(lpPoint);
-        pt[0] = 640;
-        pt[1] = 360;
+        pt[0] = static_cast<int32_t>(v >> 32);
+        pt[1] = static_cast<int32_t>(static_cast<uint32_t>(v));
     }
     return 1;
 }
 
-int32_t NativeDllInterceptor::win_SetCursorPos(int32_t, int32_t) {
+int32_t NativeDllInterceptor::win_SetCursorPos(int32_t x, int32_t y) {
     s_otherCalls.fetch_add(1);
+    x = std::clamp(x, 0, win32::screenWidth() - 1);
+    y = std::clamp(y, 0, win32::screenHeight() - 1);
+    s_cursorPos.store((static_cast<int64_t>(x) << 32) | static_cast<uint32_t>(y), std::memory_order_relaxed);
     return 1;
 }
 
