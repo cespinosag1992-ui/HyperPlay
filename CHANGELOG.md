@@ -41,6 +41,14 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   did nothing and returned failure). New diagnostics for .NET games: exception codes and runtime
   exception texts in the log, and an optional EventPipe trace (`debug.hyperplay.dotnettrace 1`).
   Stardew Valley still stops at startup (a type lookup by name fails inside XmlSerializer).
+- **.NET runtime messages now show:** `LoadStringW` reads string resources from PE files (CoreCLR
+  takes its error texts from `mscorrc.dll`) and `GetUserDefaultLocaleName` returns `en-US` (it was a
+  stub returning failure). Before, every .NET runtime error had an empty message.
+- Engine: the safe string functions of the C runtime (`strcpy_s`, `strncpy_s`, `strcat_s`,
+  `wcsncpy_s`...) and the static `memcpy` inside native DLLs such as `coreclr.dll` and
+  `UnityPlayer.dll` now run as native ARM code instead of translated x86 (exact Windows behavior,
+  faster). .NET games run without the concurrent background garbage collector.
+- Tested: Celeste, Cuphead, Hollow Knight and Silksong still at 120 FPS.
 - **Display settings now live in each game.** The quick menu no longer has Screen (Stretch / Zoom /
   aspect) or the render-resolution percentage: games always run at the screen's native resolution,
   full screen and undistorted. The game's own video menu now lists real resolutions (720p, 900p,
@@ -95,6 +103,15 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   excepciones del runtime en el registro, y una traza EventPipe opcional
   (`debug.hyperplay.dotnettrace 1`). Stardew Valley sigue parándose al arrancar (falla la búsqueda de
   un tipo por nombre dentro de XmlSerializer).
+- **Los mensajes del runtime de .NET ya se ven:** `LoadStringW` lee los recursos de texto de los
+  archivos PE (CoreCLR saca sus textos de error de `mscorrc.dll`) y `GetUserDefaultLocaleName`
+  devuelve `en-US` (era un stub que devolvía fallo). Antes todos los errores del runtime de .NET
+  salían sin mensaje.
+- Motor: las funciones seguras de cadenas del CRT (`strcpy_s`, `strncpy_s`, `strcat_s`,
+  `wcsncpy_s`...) y el `memcpy` estático de DLL nativas como `coreclr.dll` y `UnityPlayer.dll` se
+  ejecutan ahora como código ARM nativo en vez de x86 traducido (comportamiento exacto de Windows y
+  más rápido). Los juegos .NET van sin el recolector de basura concurrente en segundo plano.
+- Probado: Celeste, Cuphead, Hollow Knight y Silksong siguen a 120 FPS.
 - **Los ajustes de pantalla están ahora en cada juego.** El menú rápido ya no tiene Pantalla
   (Estirar / Ampliar / aspecto) ni la resolución en porcentaje: los juegos van siempre a la
   resolución nativa de la pantalla, a pantalla completa y sin deformarse. El menú de vídeo del

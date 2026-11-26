@@ -114,6 +114,8 @@ public:
     static uint32_t win_RemoveVectoredExceptionHandler(void* handle);
     static int32_t win_SetThreadStackGuarantee(uint32_t* stackSizeInBytes);
     static uint32_t win_GetUserDefaultLCID();
+    static int32_t win_GetUserDefaultLocaleName(char16_t* lpLocaleName, int32_t cchLocaleName);
+    static int32_t win_LoadStringW(void* hInstance, uint32_t uID, char16_t* lpBuffer, int32_t cchBufferMax);
     static int32_t win_EnumSystemLocalesW(void* lpLocaleEnumProc, uint32_t dwFlags);
     static int32_t win_IsValidLocale(uint32_t locale, uint32_t dwFlags);
     static int32_t win_CompareStringW(uint32_t locale, uint32_t dwCmpFlags, const wchar_t* lpString1, int32_t cchCount1,

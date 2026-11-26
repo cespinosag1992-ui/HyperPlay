@@ -2527,9 +2527,58 @@ IatHijackStats NativeDllInterceptor::hijackIatChecked(LoadedPeImage& image) {
     return stats;
 }
 
+namespace {
+void* hostMemmove(void* d, const void* s, size_t n) { return std::memmove(d, s, n); }
+
+// memcpy/memmove estáticos del CRT de MSVC x64 (dentro de coreclr.dll y otras DLL nativas):
+//   mov rax, rcx ; lea r10, [rip -> ImageBase] ; cmp r8, 0Fh ; ja ...
+// La entrada se cambia por `mov rax, imm64 ; jmp rax` hacia un memmove nativo registrado como
+// trampolín (mismo contrato: devuelve el destino, admite solapamiento). El memcpy traducido dejaba
+// a veces nombres de tipo sin su 0 final en CoreCLR (Stardew Valley: TypeLoad de tipos válidos).
+// `setprop debug.hyperplay.hostmemcpy 0` lo desactiva.
+void patchStaticMsvcMemcpy(LoadedPeImage& image) {
+    if (image.is32Bit) return;
+    char v[PROP_VALUE_MAX] = {};
+    if (__system_property_get("debug.hyperplay.hostmemcpy", v) > 0 && v[0] == '0') return;
+    static const bool s_reg = [] {
+        registerTrampolineAddress(reinterpret_cast<void*>(&hostMemmove), "hostcrt!memmove");
+        return true;
+    }();
+    (void)s_reg;
+    auto* base = static_cast<uint8_t*>(image.baseAddress);
+    const size_t ps = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    int patched = 0;
+    for (const auto& sec : image.sections) {
+        if ((sec.characteristics & 0x20000000u) == 0) continue;  // IMAGE_SCN_MEM_EXECUTE
+        auto* p = static_cast<uint8_t*>(sec.virtualAddress);
+        if (p == nullptr || sec.size < 32) continue;
+        for (size_t i = 0; i + 20 <= sec.size; ++i) {
+            const uint8_t* q = p + i;
+            if (q[0] != 0x48 || q[1] != 0x8B || q[2] != 0xC1 || q[3] != 0x4C || q[4] != 0x8D || q[5] != 0x15) continue;
+            if (q[10] != 0x49 || q[11] != 0x83 || q[12] != 0xF8 || q[13] != 0x0F || q[14] != 0x0F || q[15] != 0x87) continue;
+            int32_t disp = 0;
+            std::memcpy(&disp, q + 6, 4);
+            if (q + 10 + disp != base) continue;  // el lea apunta a la base de la imagen
+            const uintptr_t page = reinterpret_cast<uintptr_t>(q) & ~(ps - 1);
+            const size_t len = ((reinterpret_cast<uintptr_t>(q) + 12 - page) + ps - 1) & ~(ps - 1);
+            if (mprotect(reinterpret_cast<void*>(page), len, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) continue;
+            uint8_t stub[12] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0};
+            const auto target = reinterpret_cast<uint64_t>(&hostMemmove);
+            std::memcpy(stub + 2, &target, 8);
+            std::memcpy(p + i, stub, sizeof(stub));
+            mprotect(reinterpret_cast<void*>(page), len, PROT_READ | PROT_EXEC);
+            ++patched;
+            i += 12;
+        }
+    }
+    if (patched > 0) LOGI("memcpy estático del CRT -> memmove nativo: %d sitio(s)", patched);
+}
+}  // namespace
+
 IatHijackStats NativeDllInterceptor::hijackLocalDllIat(LoadedPeImage& image) {
     IatHijackStats stats;
     if (image.baseAddress == nullptr || image.totalMappedSize == 0) return stats;
+    patchStaticMsvcMemcpy(image);
     struct LocalImportsScope {
         bool prev = t_resolvingLocalDllImports;
         LocalImportsScope() { t_resolvingLocalDllImports = true; }
@@ -2877,6 +2926,104 @@ static void* msvcrtOnlyExport(const std::string& fn) {
     return nullptr;
 }
 
+// Funciones "seguras" de cadenas del UCRT, nativas y con la semántica exacta de Windows (errno_t,
+// _TRUNCATE, STRUNCATE, destino vaciado si no cabe). CoreCLR parte y une los nombres de tipo con
+// ellas; las versiones SSE del ucrtbase.dll traducido dejaban a veces nombres sin terminar.
+namespace hostcrt {
+constexpr size_t kTruncate = static_cast<size_t>(-1);
+constexpr int kEinval = 22, kErange = 34, kStruncate = 80;
+
+template <typename C>
+size_t lenN(const C* s, size_t max) {
+    size_t n = 0;
+    while (n < max && s[n] != 0) ++n;
+    return n;
+}
+template <typename C>
+int cpyS(C* dst, size_t size, const C* src) {
+    if (dst == nullptr || size == 0) return kEinval;
+    if (src == nullptr) { dst[0] = 0; return kEinval; }
+    const size_t n = lenN(src, size);
+    if (n >= size) { dst[0] = 0; return kErange; }
+    std::memcpy(dst, src, n * sizeof(C));
+    dst[n] = 0;
+    return 0;
+}
+template <typename C>
+int ncpyS(C* dst, size_t size, const C* src, size_t count) {
+    if (count == 0 && dst == nullptr && size == 0) return 0;
+    if (dst == nullptr || size == 0) return kEinval;
+    if (count == 0) { dst[0] = 0; return 0; }
+    if (src == nullptr) { dst[0] = 0; return kEinval; }
+    if (count == kTruncate) {
+        const size_t n = lenN(src, size);
+        if (n == size) {
+            std::memcpy(dst, src, (size - 1) * sizeof(C));
+            dst[size - 1] = 0;
+            return kStruncate;
+        }
+        std::memcpy(dst, src, n * sizeof(C));
+        dst[n] = 0;
+        return 0;
+    }
+    const size_t n = lenN(src, count);
+    if (n >= size) { dst[0] = 0; return kErange; }
+    std::memcpy(dst, src, n * sizeof(C));
+    dst[n] = 0;
+    return 0;
+}
+template <typename C>
+int ncatS(C* dst, size_t size, const C* src, size_t count) {
+    if (count == 0 && dst == nullptr && size == 0) return 0;
+    if (dst == nullptr || size == 0) return kEinval;
+    if (src == nullptr && count != 0) { dst[0] = 0; return kEinval; }
+    const size_t dlen = lenN(dst, size);
+    if (dlen == size) { dst[0] = 0; return kEinval; }
+    const size_t room = size - dlen;  // incluye el terminador
+    if (count == kTruncate) {
+        const size_t n = lenN(src, room);
+        if (n == room) {
+            std::memcpy(dst + dlen, src, (room - 1) * sizeof(C));
+            dst[size - 1] = 0;
+            return kStruncate;
+        }
+        std::memcpy(dst + dlen, src, n * sizeof(C));
+        dst[dlen + n] = 0;
+        return 0;
+    }
+    const size_t n = count == 0 ? 0 : lenN(src, count);
+    if (n >= room) { dst[0] = 0; return kErange; }
+    std::memcpy(dst + dlen, src, n * sizeof(C));
+    dst[dlen + n] = 0;
+    return 0;
+}
+
+int strcpy_s(char* d, size_t z, const char* s) { return cpyS(d, z, s); }
+int strncpy_s(char* d, size_t z, const char* s, size_t c) { return ncpyS(d, z, s, c); }
+int strcat_s(char* d, size_t z, const char* s) { return ncatS(d, z, s, s == nullptr ? 0 : lenN(s, kTruncate - 1)); }
+int strncat_s(char* d, size_t z, const char* s, size_t c) { return ncatS(d, z, s, c); }
+int wcscpy_s(char16_t* d, size_t z, const char16_t* s) { return cpyS(d, z, s); }
+int wcsncpy_s(char16_t* d, size_t z, const char16_t* s, size_t c) { return ncpyS(d, z, s, c); }
+int wcscat_s(char16_t* d, size_t z, const char16_t* s) { return ncatS(d, z, s, s == nullptr ? 0 : lenN(s, kTruncate - 1)); }
+int wcsncat_s(char16_t* d, size_t z, const char16_t* s, size_t c) { return ncatS(d, z, s, c); }
+size_t strnlen(const char* s, size_t m) { return s == nullptr ? 0 : lenN(s, m); }
+size_t wcsnlen(const char16_t* s, size_t m) { return s == nullptr ? 0 : lenN(s, m); }
+
+void* resolve(const std::string& fn) {
+    if (fn == "strcpy_s") return reinterpret_cast<void*>(&strcpy_s);
+    if (fn == "strncpy_s") return reinterpret_cast<void*>(&strncpy_s);
+    if (fn == "strcat_s") return reinterpret_cast<void*>(&strcat_s);
+    if (fn == "strncat_s") return reinterpret_cast<void*>(&strncat_s);
+    if (fn == "wcscpy_s") return reinterpret_cast<void*>(&wcscpy_s);
+    if (fn == "wcsncpy_s") return reinterpret_cast<void*>(&wcsncpy_s);
+    if (fn == "wcscat_s") return reinterpret_cast<void*>(&wcscat_s);
+    if (fn == "wcsncat_s") return reinterpret_cast<void*>(&wcsncat_s);
+    if (fn == "strnlen") return reinterpret_cast<void*>(&strnlen);
+    if (fn == "wcsnlen") return reinterpret_cast<void*>(&wcsnlen);
+    return nullptr;
+}
+}  // namespace hostcrt
+
 static void* resolvePeExport(void* base, const PeInfo& pe, const char* lpProcName, int depth);
 static void ensureGuestGl();
 
@@ -2915,6 +3062,11 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     }
 
     if (!result && dll == "msvcrt.dll" && guestCrtDll(dll)) result = msvcrtOnlyExport(funcName);
+    if (!result && guestCrtDll(dll)) {
+        char v[PROP_VALUE_MAX] = {};
+        const bool guestOnly = __system_property_get("debug.hyperplay.guestcrtstr", v) > 0 && v[0] == '1';
+        if (!guestOnly) result = hostcrt::resolve(funcName);
+    }
 
     // 3. Kernel32 & Ntdll & ApiSet (el CRT de un juego .NET lo pone ucrtbase.dll, paso 6)
     if (!result && !guestCrtDll(dll) &&
@@ -3187,6 +3339,8 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "GetStringTypeW") result = reinterpret_cast<void*>(&win_GetStringTypeW);
         else if (funcName == "LCMapStringW") result = reinterpret_cast<void*>(&win_LCMapStringW);
         else if (funcName == "GetUserDefaultLCID") result = reinterpret_cast<void*>(&win_GetUserDefaultLCID);
+        else if (funcName == "GetUserDefaultLocaleName") result = reinterpret_cast<void*>(&win_GetUserDefaultLocaleName);
+        else if (funcName == "LoadStringW") result = reinterpret_cast<void*>(&win_LoadStringW);
         else if (funcName == "EnumSystemLocalesW") result = reinterpret_cast<void*>(&win_EnumSystemLocalesW);
         else if (funcName == "IsValidLocale") result = reinterpret_cast<void*>(&win_IsValidLocale);
         else if (funcName == "CompareStringW") result = reinterpret_cast<void*>(&win_CompareStringW);
@@ -3211,6 +3365,7 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     if (!result && dll == "user32.dll") {
         s_otherCalls.fetch_add(1);
         if (funcName == "CreateWindowExW") result = reinterpret_cast<void*>(&win_CreateWindowExW);
+        else if (funcName == "LoadStringW") result = reinterpret_cast<void*>(&win_LoadStringW);
         else if (funcName == "CreateWindowExA") result = reinterpret_cast<void*>(&win_CreateWindowExA);
         else if (funcName == "ShowWindow") result = reinterpret_cast<void*>(&win_ShowWindow);
         else if (funcName == "SetPropW") result = reinterpret_cast<void*>(&hp_SetPropW);
@@ -5378,6 +5533,15 @@ static void* resolvePeExport(void* base, const PeInfo& pe, const char* lpProcNam
     const std::string dll = fwd.substr(0, dot) + ".dll";
     const std::string func = fwd.substr(dot + 1);
     LOGI("GetProcAddress: export reenviado '%s'", fwd.c_str());
+    // api-ms-win-crt-string-* -> ucrtbase: las funciones seguras de cadenas van nativas (hostcrt).
+    if (toLower(dll) == "ucrtbase.dll") {
+        char v[PROP_VALUE_MAX] = {};
+        const bool guestOnly = __system_property_get("debug.hyperplay.guestcrtstr", v) > 0 && v[0] == '1';
+        if (void* host = guestOnly ? nullptr : hostcrt::resolve(func); host != nullptr) {
+            registerTrampolineAddress(host, "ucrtbase.dll!" + func);
+            return host;
+        }
+    }
     void* mod = NativeDllInterceptor::win_LoadLibraryA(dll.c_str());
     if (mod == nullptr) return nullptr;
     if (!func.empty() && func[0] == '#') {
@@ -7023,7 +7187,7 @@ const void* NativeDllInterceptor::win_GetEnvironmentStringsW() {
     static std::u16string s_block = [] {
         std::vector<std::string> vars = {"=::=::\\", "PATH=D:\\", "SYSTEMROOT=C:\\Windows", "TEMP=D:\\Temp",
                                          "DOTNET_EnableDiagnostics=0", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1",
-                                         "DOTNET_EnableHWIntrinsic=0"};
+                                         "DOTNET_EnableHWIntrinsic=0", "DOTNET_gcConcurrent=0"};
         char v[PROP_VALUE_MAX] = {};
         if (__system_property_get("debug.hyperplay.r2r", v) > 0 && v[0] == '0') vars.push_back("DOTNET_ReadyToRun=0");
         // Diagnóstico: EventPipe a archivo con los eventos de excepción del runtime (tipo y
@@ -9853,6 +10017,9 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableW(const wchar_t* lpName
         else if (upper == "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") { val = "1"; found = true; }
         // RyuJIT: solo la base x64 (SSE2), sin AVX/BMI/FMA, que son lo menos probado del traductor.
         else if (upper == "DOTNET_ENABLEHWINTRINSIC") { val = "0"; found = true; }
+        // GC sin hilo de fondo concurrente: su marcado concurrente depende del orden de memoria
+        // fuerte de x86 (TSO), que el código traducido a ARM no garantiza en todos los casos.
+        else if (upper == "DOTNET_GCCONCURRENT") { val = "0"; found = true; }
         // Experimento (setprop debug.hyperplay.r2r 0): sin código ReadyToRun, todo por el JIT.
         else if (upper == "DOTNET_READYTORUN") {
             char v[PROP_VALUE_MAX] = {};
@@ -9931,6 +10098,9 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableA(const char* lpName, c
         else if (upper == "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") { val = "1"; found = true; }
         // RyuJIT: solo la base x64 (SSE2), sin AVX/BMI/FMA, que son lo menos probado del traductor.
         else if (upper == "DOTNET_ENABLEHWINTRINSIC") { val = "0"; found = true; }
+        // GC sin hilo de fondo concurrente: su marcado concurrente depende del orden de memoria
+        // fuerte de x86 (TSO), que el código traducido a ARM no garantiza en todos los casos.
+        else if (upper == "DOTNET_GCCONCURRENT") { val = "0"; found = true; }
         // Experimento (setprop debug.hyperplay.r2r 0): sin código ReadyToRun, todo por el JIT.
         else if (upper == "DOTNET_READYTORUN") {
             char v[PROP_VALUE_MAX] = {};
@@ -10120,6 +10290,83 @@ int32_t NativeDllInterceptor::win_SetThreadStackGuarantee(uint32_t* stackSizeInB
 uint32_t NativeDllInterceptor::win_GetUserDefaultLCID() {
     s_kernel32Calls.fetch_add(1);
     return 0x0409; // en-US
+}
+
+// Nombre de la configuración regional del usuario: "en-US", como GetUserDefaultLCID. CoreCLR lo
+// usa para elegir el idioma de sus mensajes de error (antes era un stub que devolvía 0 y todas
+// las excepciones del runtime salían sin mensaje).
+int32_t NativeDllInterceptor::win_GetUserDefaultLocaleName(char16_t* lpLocaleName, int32_t cchLocaleName) {
+    s_kernel32Calls.fetch_add(1);
+    static constexpr char16_t kName[] = u"en-US";
+    constexpr int32_t kLen = static_cast<int32_t>(sizeof(kName) / sizeof(kName[0]));  // con el 0 final
+    if (lpLocaleName == nullptr || cchLocaleName < kLen) return 0;
+    std::memcpy(lpLocaleName, kName, sizeof(kName));
+    return kLen;
+}
+
+// LoadStringW: busca la cadena en los recursos RT_STRING del módulo (tablas de 16 cadenas
+// UTF-16 con longitud delante). Con cchBufferMax == 0 devuelve un puntero de solo lectura a la
+// cadena, como Windows. CoreCLR lee así sus mensajes de error de mscorrc.dll.
+int32_t NativeDllInterceptor::win_LoadStringW(void* hInstance, uint32_t uID, char16_t* lpBuffer, int32_t cchBufferMax) {
+    s_kernel32Calls.fetch_add(1);
+    if (s_activeImage == nullptr || lpBuffer == nullptr) return 0;
+    uID &= 0xFFFFu;  // como Windows: los id de recurso son de 16 bits (CoreCLR pasa HRESULT enteros)
+    const PeInfo* info = nullptr;
+    auto* base = static_cast<uint8_t*>(hInstance != nullptr ? hInstance : s_activeImage->baseAddress);
+    if (base == s_activeImage->baseAddress) {
+        info = &s_activeImage->peInfo;
+    } else {
+        for (const auto& [name, dll] : s_activeImage->localDlls) {
+            if (dll.base == base) { info = &dll.peInfo; break; }
+        }
+    }
+    if (info == nullptr || info->resourceRva == 0 || info->resourceSize < 16) return 0;
+    const uint8_t* root = base + info->resourceRva;
+    const uint32_t rsrcSize = info->resourceSize;
+    const auto rd16 = [](const uint8_t* p) { uint16_t v; std::memcpy(&v, p, 2); return v; };
+    const auto rd32 = [](const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v; };
+    // Entrada de un directorio con ese id (o la primera, con wantAny): offset relativo a root.
+    const auto findEntry = [&](uint32_t dirOff, uint32_t id, bool wantAny, uint32_t& out) {
+        if (dirOff + 16 > rsrcSize) return false;
+        const uint8_t* dir = root + dirOff;
+        const uint32_t count = static_cast<uint32_t>(rd16(dir + 12)) + rd16(dir + 14);
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t eOff = dirOff + 16 + i * 8;
+            if (eOff + 8 > rsrcSize) return false;
+            const uint32_t name = rd32(root + eOff);
+            if (!wantAny && ((name & 0x80000000u) != 0 || name != id)) continue;
+            out = rd32(root + eOff + 4);
+            return true;
+        }
+        return false;
+    };
+    uint32_t e = 0;
+    if (!findEntry(0, 6 /* RT_STRING */, false, e) || (e & 0x80000000u) == 0) return 0;
+    if (!findEntry(e & 0x7FFFFFFFu, (uID >> 4) + 1, false, e) || (e & 0x80000000u) == 0) return 0;
+    if (!findEntry(e & 0x7FFFFFFFu, 0, true, e) || (e & 0x80000000u) != 0) return 0;  // primer idioma
+    if (e + 16 > rsrcSize) return 0;
+    const uint32_t dataRva = rd32(root + e);
+    const uint32_t dataSize = rd32(root + e + 4);
+    if (dataRva == 0 || static_cast<uint64_t>(dataRva) + dataSize > info->imageSize) return 0;
+    const uint8_t* p = base + dataRva;
+    const uint8_t* end = p + dataSize;
+    for (uint32_t i = 0; i < (uID & 15u); ++i) {
+        if (p + 2 > end) return 0;
+        p += 2 + static_cast<size_t>(rd16(p)) * 2;
+    }
+    if (p + 2 > end) return 0;
+    const int32_t len = rd16(p);
+    const auto* str = reinterpret_cast<const char16_t*>(p + 2);
+    if (len == 0 || p + 2 + static_cast<size_t>(len) * 2 > end) return 0;
+    if (cchBufferMax == 0) {
+        const char16_t* ro = str;
+        std::memcpy(lpBuffer, &ro, sizeof(ro));
+        return len;
+    }
+    const int32_t n = std::min(len, cchBufferMax - 1);
+    std::memcpy(lpBuffer, str, static_cast<size_t>(n) * 2);
+    lpBuffer[n] = 0;
+    return n;
 }
 
 int32_t NativeDllInterceptor::win_EnumSystemLocalesW(void* /*lpLocaleEnumProc*/, uint32_t /*dwFlags*/) {

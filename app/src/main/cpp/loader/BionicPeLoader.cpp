@@ -7,6 +7,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/system_properties.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -629,6 +630,18 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
         close(fd);
         return nullptr;
     }
+#if defined(__ANDROID__)
+    // Experimento (setprop debug.hyperplay.nomanagedload 1): los ensamblados .NET no se cargan
+    // como DLL nativa; CoreCLR los mapea él mismo (CreateFileMapping SEC_IMAGE).
+    if (info.clrRva != 0) {
+        char v[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.nomanagedload", v) > 0 && v[0] == '1') {
+            LOGI("Ensamblado .NET no cargado como DLL nativa (experimento): %s", resolvedPath.c_str());
+            close(fd);
+            return nullptr;
+        }
+    }
+#endif
 
     const size_t ps = pageSize();
     (void)ps;

@@ -87,6 +87,9 @@ struct PeInfo {
     uint32_t exportSize = 0;
     uint32_t relocationRva = 0;  // Data directory 5 (base relocations).
     uint32_t relocationSize = 0;
+    uint32_t resourceRva = 0;    // Data directory 2 (recursos: LoadString, FindResource).
+    uint32_t resourceSize = 0;
+    uint32_t clrRva = 0;         // Data directory 14 (cabecera CLR: ensamblado .NET).
     uint32_t tlsRva = 0;         // Data directory 9 (TLS directory).
     uint32_t tlsSize = 0;
     uint32_t graphicsApis = 0;   // Máscara de GraphicsApi.

@@ -221,6 +221,15 @@ PeInfo inspectPe(const PeReader& read, uint64_t fileSize) {
         info.relocationRva = rd32(optBuf.data() + dataDirOffset + kRelocationDirIndex * 8);
         info.relocationSize = rd32(optBuf.data() + dataDirOffset + kRelocationDirIndex * 8 + 4);
     }
+    constexpr uint32_t kClrDirIndex = 14;
+    if (numRvaAndSizes > kClrDirIndex && optHeaderSize >= dataDirOffset + (kClrDirIndex + 1) * 8) {
+        info.clrRva = rd32(optBuf.data() + dataDirOffset + kClrDirIndex * 8);
+    }
+    constexpr uint32_t kResourceDirIndex = 2;
+    if (numRvaAndSizes > kResourceDirIndex && optHeaderSize >= dataDirOffset + (kResourceDirIndex + 1) * 8) {
+        info.resourceRva = rd32(optBuf.data() + dataDirOffset + kResourceDirIndex * 8);
+        info.resourceSize = rd32(optBuf.data() + dataDirOffset + kResourceDirIndex * 8 + 4);
+    }
     if (numRvaAndSizes > kTlsDirIndex && optHeaderSize >= dataDirOffset + (kTlsDirIndex + 1) * 8) {
         info.tlsRva = rd32(optBuf.data() + dataDirOffset + kTlsDirIndex * 8);
         info.tlsSize = rd32(optBuf.data() + dataDirOffset + kTlsDirIndex * 8 + 4);
