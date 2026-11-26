@@ -13208,6 +13208,29 @@ uint64_t wasapiDispatch(int iface, int slot, const ComArgs& args) {
                     const bool silent = (a2 & 0x2) != 0;  // AUDCLNT_BUFFERFLAGS_SILENT
                     const float gain = client->muted.load() ? 0.0f : client->masterVolume.load();
                     if (!silent && n != 0) convertToStereo16(client->fmt, client->staging.data(), n, tmp.data(), gain);
+                    // Diagnóstico: setprop debug.hyperplay.wasapidump N -> los primeros N s de audio del juego
+                    // (formato del cliente, sin convertir) en <juego>/_HyperPlaySaves/wasapi.raw.
+                    {
+                        static FILE* s_dump = [] {
+                            char v[PROP_VALUE_MAX] = {};
+                            if (__system_property_get("debug.hyperplay.wasapidump", v) <= 0 || std::atoi(v) <= 0) return (FILE*)nullptr;
+                            const std::string path = (s_activeImage ? s_activeImage->gameDir : std::string("/sdcard")) +
+                                                     "/_HyperPlaySaves/wasapi.raw";
+                            FILE* f = std::fopen(path.c_str(), "wb");
+                            LOGI("WASAPI: volcado de audio en %s (%s)", path.c_str(), f ? "abierto" : "error");
+                            return f;
+                        }();
+                        static std::atomic<uint64_t> s_dumped{0};
+                        static const uint64_t s_limit = [] {
+                            char v[PROP_VALUE_MAX] = {};
+                            __system_property_get("debug.hyperplay.wasapidump", v);
+                            return static_cast<uint64_t>(std::max(0, std::atoi(v))) * 48000u;
+                        }();
+                        if (s_dump != nullptr && n != 0 && s_dumped.load() < s_limit) {
+                            std::fwrite(client->staging.data(), client->fmt.blockAlign, n, s_dump);
+                            if (s_dumped.fetch_add(n) + n >= s_limit) std::fflush(s_dump);
+                        }
+                    }
                     uint32_t write = (client->ringRead + client->queued) % client->bufferFrames;
                     for (uint32_t i = 0; i < n; ++i) {
                         client->ring[write * 2] = tmp[i * 2];
