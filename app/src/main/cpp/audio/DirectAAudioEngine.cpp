@@ -22,7 +22,7 @@ DirectAAudioEngine::~DirectAAudioEngine() {
     stop();
 }
 
-bool DirectAAudioEngine::start(int32_t sampleRate, int32_t channelCount) {
+bool DirectAAudioEngine::start(int32_t sampleRate, int32_t channelCount, int32_t minBufferMs) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (isRunning_.load(std::memory_order_relaxed) && stream_ != nullptr) return true;
     if (sampleRate <= 0 || channelCount <= 0 || channelCount > 8) {
@@ -61,7 +61,13 @@ bool DirectAAudioEngine::start(int32_t sampleRate, int32_t channelCount) {
     const int32_t capacity = AAudioStream_getBufferCapacityInFrames(stream_);
     const int32_t burst = AAudioStream_getFramesPerBurst(stream_);
     if (capacity > 0 && burst > 0) {
-        const int32_t target = (burst * 2 < capacity) ? burst * 2 : capacity;
+        int32_t want = burst * 2;
+        if (minBufferMs > 0) {
+            const int32_t rate = AAudioStream_getSampleRate(stream_) > 0 ? AAudioStream_getSampleRate(stream_) : sampleRate;
+            const int32_t frames = rate * minBufferMs / 1000;
+            want = ((frames + burst - 1) / burst) * burst;  // múltiplo de ráfaga
+        }
+        const int32_t target = (want < capacity) ? want : capacity;
         const aaudio_result_t bufferResult = AAudioStream_setBufferSizeInFrames(stream_, target);
         if (bufferResult < 0) {
             LOGW("AAudioStream_setBufferSizeInFrames(%d) falló: %s", target,

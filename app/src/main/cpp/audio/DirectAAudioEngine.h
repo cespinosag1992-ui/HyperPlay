@@ -16,7 +16,9 @@ public:
     DirectAAudioEngine& operator=(const DirectAAudioEngine&) = delete;
 
     /// Inicia el stream directo de hardware AAudio en modo baja latencia.
-    bool start(int32_t sampleRate = 48000, int32_t channelCount = 2);
+    /// minBufferMs > 0: búfer de AAudio de al menos ese tiempo (más margen contra underruns cuando el
+    /// productor entrega bloques grandes); 0 = el mínimo de baja latencia (2 ráfagas).
+    bool start(int32_t sampleRate = 48000, int32_t channelCount = 2, int32_t minBufferMs = 0);
     void stop();
 
     /// Escribe muestras de audio PCM directamente al hardware con mínima latencia.

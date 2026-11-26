@@ -12785,7 +12785,10 @@ void convertToStereo16(const WasapiFormat& f, const uint8_t* src, uint32_t frame
 }
 
 void wasapiPumpLoop(WasapiClient* c) {
-    bool haveEngine = c->engine.start(static_cast<int32_t>(c->fmt.rate), 2);
+    // Margen de ~40 ms en AAudio: el bombeo entrega bloques de un periodo (10-20 ms) y con el buffer
+    // mínimo (2 ráfagas, ~4 ms) cualquier retraso del hilo era un underrun audible.
+    const int32_t kWasapiAaudioMs = 40;
+    bool haveEngine = c->engine.start(static_cast<int32_t>(c->fmt.rate), 2, kWasapiAaudioMs);
     bool stoppedForPause = false;
     LOGI("WASAPI: bombeo iniciado (%u Hz, %u canales %s%u, buffer %u frames, periodo %u, AAudio=%d)",
          c->fmt.rate, c->fmt.channels, c->fmt.isFloat ? "float" : "pcm", c->fmt.bits, c->bufferFrames,
@@ -12807,7 +12810,7 @@ void wasapiPumpLoop(WasapiClient* c) {
         }
         if (stoppedForPause) {
             stoppedForPause = false;
-            haveEngine = c->engine.start(static_cast<int32_t>(c->fmt.rate), 2);
+            haveEngine = c->engine.start(static_cast<int32_t>(c->fmt.rate), 2, kWasapiAaudioMs);
         }
         if (!c->running.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -12829,8 +12832,11 @@ void wasapiPumpLoop(WasapiClient* c) {
         }
         bool wrote = false;
         if (haveEngine && c->engine.isRunning()) {
+            // Todo el periodo entra en AAudio (cada intento espera hasta 10 ms): soltar frames ya sacados
+            // del anillo era un salto audible (chasquidos/distorsión en Stardew Valley).
             uint32_t done = 0;
-            for (int tries = 0; tries < 4 && done < c->periodFrames; ++tries) {
+            for (int tries = 0; tries < 30 && done < c->periodFrames && !c->quit.load(std::memory_order_relaxed);
+                 ++tries) {
                 const int32_t n = c->engine.writePcm(chunk.data() + done * 2,
                                                      static_cast<int32_t>(c->periodFrames - done));
                 if (n > 0) done += static_cast<uint32_t>(n);
@@ -13188,13 +13194,14 @@ uint64_t wasapiDispatch(int iface, int slot, const ComArgs& args) {
                         else if (now - t0 >= 10000 && s_t0.compare_exchange_strong(t0, now)) {
                             const uint64_t gb = std::max<uint64_t>(1, client->diagGetBuf.exchange(0));
                             LOGI("WASAPI ritmo: %.0f frames/s en %.0f ReleaseBuffer/s (formato %u Hz) | GetBuffer "
-                                 "med %.0f max %u, padding med %.0f, silencio %.0f frames/s, padding/s %.0f, eventos/s %.0f",
+                                 "med %.0f max %u, padding med %.0f, silencio %.0f frames/s, padding/s %.0f, eventos/s %.0f, "
+                                 "xruns AAudio %d",
                                  s_frames.exchange(0) * 1000.0 / (now - t0), s_calls.exchange(0) * 1000.0 / (now - t0),
                                  client->fmt.rate, static_cast<double>(client->diagWantSum.exchange(0)) / gb,
                                  client->diagWantMax.exchange(0), static_cast<double>(client->diagPadSum.exchange(0)) / gb,
                                  client->diagSilence.exchange(0) * 1000.0 / (now - t0),
                                  client->diagPadCalls.exchange(0) * 1000.0 / (now - t0),
-                                 client->diagEvents.exchange(0) * 1000.0 / (now - t0));
+                                 client->diagEvents.exchange(0) * 1000.0 / (now - t0), client->engine.underrunCount());
                         }
                     }
                     std::vector<int16_t> tmp(static_cast<size_t>(n) * 2, 0);
