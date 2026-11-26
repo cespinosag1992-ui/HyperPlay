@@ -2864,6 +2864,9 @@ static void* removeProp(void* hwnd, const void* name, bool wide) {
     s_windowProps.erase(it);
     return v;
 }
+static int32_t hp_GetClipCursor(void* lpRect);                        // definidas más abajo
+static int32_t hp_GetThreadIOPendingFlag(void* hThread, int32_t* lpIOIsPending);
+
 // La cola de mensajes (wndq, más abajo) espera a esto: SDL guarda sus datos de ventana con SetPropW y
 // su WndProc ignora los mensajes que llegan antes.
 // Cada SetPropW nuevo vuelve a armar la activación: las ventanas auxiliares de SDL ponen props antes que
@@ -3225,6 +3228,7 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "SubmitThreadpoolWork") result = reinterpret_cast<void*>(&win_SubmitThreadpoolWork);
         else if (funcName == "WaitForThreadpoolWorkCallbacks") result = reinterpret_cast<void*>(&win_WaitForThreadpoolWorkCallbacks);
         else if (funcName == "CloseThreadpoolWork") result = reinterpret_cast<void*>(&win_CloseThreadpoolWork);
+        else if (funcName == "GetThreadIOPendingFlag") result = reinterpret_cast<void*>(&hp_GetThreadIOPendingFlag);
         else if (funcName == "CreateIoCompletionPort") result = reinterpret_cast<void*>(&win_CreateIoCompletionPort);
         else if (funcName == "GetQueuedCompletionStatus") result = reinterpret_cast<void*>(&win_GetQueuedCompletionStatus);
         else if (funcName == "GetQueuedCompletionStatusEx") result = reinterpret_cast<void*>(&win_GetQueuedCompletionStatusEx);
@@ -3461,6 +3465,7 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "GetCursorPos") result = reinterpret_cast<void*>(&win_GetCursorPos);
         else if (funcName == "SetCursorPos") result = reinterpret_cast<void*>(&win_SetCursorPos);
         else if (funcName == "ClipCursor") result = reinterpret_cast<void*>(&win_ClipCursor);
+        else if (funcName == "GetClipCursor") result = reinterpret_cast<void*>(&hp_GetClipCursor);
         else if (funcName == "ClientToScreen") result = reinterpret_cast<void*>(&win_ClientToScreen);
         else if (funcName == "ScreenToClient") result = reinterpret_cast<void*>(&win_ScreenToClient);
         else if (funcName == "AllowSetForegroundWindow") result = reinterpret_cast<void*>(&win_AllowSetForegroundWindow);
@@ -6536,6 +6541,21 @@ int32_t NativeDllInterceptor::win_SetCursorPos(int32_t x, int32_t y) {
     x = std::clamp(x, 0, win32::screenWidth() - 1);
     y = std::clamp(y, 0, win32::screenHeight() - 1);
     s_cursorPos.store((static_cast<int64_t>(x) << 32) | static_cast<uint32_t>(y), std::memory_order_relaxed);
+    return 1;
+}
+
+// Sin recorte del cursor: el rectángulo es la pantalla entera (SDL lo consulta en cada frame).
+static int32_t hp_GetClipCursor(void* lpRect) {
+    if (lpRect == nullptr) return 0;
+    const int32_t r[4] = {0, 0, win32::screenWidth(), win32::screenHeight()};
+    std::memcpy(lpRect, r, sizeof(r));
+    return 1;
+}
+
+// El pool de hilos de .NET pregunta si un hilo tiene E/S pendiente antes de retirarlo: aquí nunca.
+static int32_t hp_GetThreadIOPendingFlag(void*, int32_t* lpIOIsPending) {
+    if (lpIOIsPending == nullptr) return 0;
+    *lpIOIsPending = 0;
     return 1;
 }
 
