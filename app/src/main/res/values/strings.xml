@@ -100,6 +100,17 @@
     <string name="update_err_failed">Couldn\'t update: %1$s</string>
     <string name="update_err_install">Installation failed: %1$s</string>
     <string name="update_err_code">code %1$d</string>
+    <string name="update_confirming">Confirm the installation of %1$s in the system dialog…</string>
+    <string name="update_err_confirm">Couldn\'t open the system install dialog. Press Install again.</string>
+    <string name="update_err_aborted">installation cancelled</string>
+    <string name="update_err_blocked">the system blocked the installation</string>
+    <string name="update_err_conflict">conflicts with the installed app (different signature or a newer build is installed). Uninstall HyperPlay and install the APK from GitHub</string>
+    <string name="update_err_incompatible">the update is not compatible with this device</string>
+    <string name="update_err_invalid">the downloaded APK is invalid or damaged</string>
+    <string name="update_err_storage">not enough free storage</string>
+    <string name="update_err_timeout">the installation timed out</string>
+    <string name="update_err_unknown">unknown error</string>
+    <string name="update_err_checksum">the downloaded file doesn\'t match its SHA-256</string>
 
     <!-- Error reports -->
     <string name="consent_title">Help improve HyperPlay?</string>

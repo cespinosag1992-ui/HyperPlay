@@ -26,6 +26,7 @@ import com.murdoc820.hyperplay.art.GameArtRepository
 import com.murdoc820.hyperplay.audio.ConsoleUiSoundEngine
 import com.murdoc820.hyperplay.diag.Diagnostics
 import com.murdoc820.hyperplay.update.AppUpdater
+import com.murdoc820.hyperplay.update.UpdateState
 import com.murdoc820.hyperplay.model.PortableGame
 import com.murdoc820.hyperplay.session.GameProcess
 import androidx.lifecycle.lifecycleScope
@@ -100,6 +101,10 @@ class MainActivity : ComponentActivity() {
             val update by AppUpdater.state.collectAsStateWithLifecycle()
             val pendingReports by Diagnostics.pending.collectAsStateWithLifecycle()
             LaunchedEffect(library.games) { GameArtRepository.ensure(library.games) }
+            // El diálogo "¿Instalar la actualización?" lo abre la actividad visible (no el receptor).
+            LaunchedEffect(update) {
+                if (update is UpdateState.AwaitingConfirmation) AppUpdater.launchPendingConfirmation(this@MainActivity)
+            }
             val system = SystemUi(
                 update = update,
                 currentVersion = AppUpdater.currentVersion,
@@ -136,6 +141,7 @@ class MainActivity : ComponentActivity() {
         hasStorage = Environment.isExternalStorageManager()
         if (hasStorage && !LibraryRepository.state.value.scannedOnce) LibraryRepository.scan(folders)
         reportsEnabled = Diagnostics.reportsEnabled
+        AppUpdater.launchPendingConfirmation(this)
         AppUpdater.checkIfDue(this)
         Diagnostics.uploadPending()
     }
