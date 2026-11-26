@@ -110,6 +110,11 @@ public:
     static void win_GetCurrentProcessorNumberEx(void* procNumber);
     static void win_FlushProcessWriteBuffers();
     static int32_t win_FlushInstructionCache(void* process, const void* address, size_t size);
+    // Pool de hilos (trabajos): cada Submit lanza un hilo invitado que llama callback(instancia, ctx, trabajo).
+    static void* win_CreateThreadpoolWork(void* pfnwk, void* pv, void* pcbe);
+    static void win_SubmitThreadpoolWork(void* pwk);
+    static void win_WaitForThreadpoolWorkCallbacks(void* pwk, int32_t fCancelPendingCallbacks);
+    static void win_CloseThreadpoolWork(void* pwk);
     static void* win_AddVectoredExceptionHandler(uint32_t first, void* handler);
     static uint32_t win_RemoveVectoredExceptionHandler(void* handle);
     static int32_t win_SetThreadStackGuarantee(uint32_t* stackSizeInBytes);

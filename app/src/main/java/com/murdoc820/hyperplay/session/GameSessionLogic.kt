@@ -111,7 +111,9 @@ object GameSessionLogic {
      * lleva [CONTENT_DRAWS] draws reales, o bien pasó [CONTENT_TIMEOUT_MS] (red de seguridad).
      */
     fun contentStarted(telemetry: LongArray?, draws: Long, elapsedMs: Long): Boolean =
-        graphicsStarted(telemetry) && (draws >= CONTENT_DRAWS || elapsedMs >= CONTENT_TIMEOUT_MS)
+        // draws > 0 también cuenta como gráficos iniciados: los juegos OpenGL (MonoGame: Stardew) no
+        // hacen llamadas D3D ni Vulkan, pero sus SwapBuffers suman en draws.
+        (graphicsStarted(telemetry) || draws > 0) && (draws >= CONTENT_DRAWS || elapsedMs >= CONTENT_TIMEOUT_MS)
 
     /** Cada cuánto cambia la frase de la pantalla de carga. */
     const val QUIP_PERIOD_MS = 3_500L

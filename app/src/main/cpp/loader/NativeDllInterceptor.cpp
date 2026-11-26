@@ -3199,6 +3199,10 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "GetCurrentProcessorNumberEx") result = reinterpret_cast<void*>(&win_GetCurrentProcessorNumberEx);
         else if (funcName == "FlushProcessWriteBuffers") result = reinterpret_cast<void*>(&win_FlushProcessWriteBuffers);
         else if (funcName == "FlushInstructionCache") result = reinterpret_cast<void*>(&win_FlushInstructionCache);
+        else if (funcName == "CreateThreadpoolWork") result = reinterpret_cast<void*>(&win_CreateThreadpoolWork);
+        else if (funcName == "SubmitThreadpoolWork") result = reinterpret_cast<void*>(&win_SubmitThreadpoolWork);
+        else if (funcName == "WaitForThreadpoolWorkCallbacks") result = reinterpret_cast<void*>(&win_WaitForThreadpoolWorkCallbacks);
+        else if (funcName == "CloseThreadpoolWork") result = reinterpret_cast<void*>(&win_CloseThreadpoolWork);
         else if (funcName == "GetProcessTimes") result = reinterpret_cast<void*>(&win_GetProcessTimes);
         else if (funcName == "GetSystemTimes") result = reinterpret_cast<void*>(&win_GetSystemTimes);
         else if (funcName == "FormatMessageW") result = reinterpret_cast<void*>(&win_FormatMessageW);
@@ -10244,6 +10248,89 @@ int32_t NativeDllInterceptor::win_FlushInstructionCache(void* /*process*/, const
         OryonEmitterBackend::invalidateCodeRangeAll(reinterpret_cast<uintptr_t>(address), size);
     }
     return 1;
+}
+
+namespace {
+// Trabajo del pool. 'stub' es código x86-64 del huésped (memoria ejecutable de VirtualAlloc):
+//   xor ecx,ecx; mov rdx,ctx; mov r8,trabajo; mov rax,callback; jmp rax
+// Sirve de punto de entrada de CreateThread: el callback recibe (instancia=NULL, ctx, trabajo) y su
+// RET vuelve a la salida normal del hilo.
+struct TpWork {
+    uint8_t* stub = nullptr;
+    std::mutex mtx;
+    std::vector<void*> threads;  // hilos lanzados y aún sin esperar
+};
+
+void tpWaitAll(TpWork* w) {
+    std::vector<void*> pending;
+    {
+        std::lock_guard<std::mutex> lk(w->mtx);
+        pending.swap(w->threads);
+    }
+    for (void* h : pending) {
+        NativeDllInterceptor::win_WaitForSingleObject(h, 0xFFFFFFFFu);
+        NativeDllInterceptor::win_CloseHandle(h);
+    }
+}
+}  // namespace
+
+void* NativeDllInterceptor::win_CreateThreadpoolWork(void* pfnwk, void* pv, void* /*pcbe*/) {
+    s_kernel32Calls.fetch_add(1);
+    if (pfnwk == nullptr) {
+        win_SetLastError(87);
+        return nullptr;
+    }
+    auto* w = new TpWork();
+    w->stub = static_cast<uint8_t*>(win_VirtualAlloc(nullptr, 64, 0x3000, 0x40));  // RWX
+    if (w->stub == nullptr) {
+        delete w;
+        win_SetLastError(8);
+        return nullptr;
+    }
+    uint8_t* p = w->stub;
+    const auto put64 = [&p](uint64_t v) { std::memcpy(p, &v, 8); p += 8; };
+    *p++ = 0x31; *p++ = 0xC9;                                                    // xor ecx, ecx
+    *p++ = 0x48; *p++ = 0xBA; put64(reinterpret_cast<uint64_t>(pv));            // mov rdx, ctx
+    *p++ = 0x49; *p++ = 0xB8; put64(reinterpret_cast<uint64_t>(w));             // mov r8, trabajo
+    *p++ = 0x48; *p++ = 0xB8; put64(reinterpret_cast<uint64_t>(pfnwk));         // mov rax, callback
+    *p++ = 0xFF; *p++ = 0xE0;                                                    // jmp rax
+    OryonEmitterBackend::invalidateCodeRangeAll(reinterpret_cast<uintptr_t>(w->stub), 64);
+    LOGI("CreateThreadpoolWork(callback=%p, ctx=%p) -> %p", pfnwk, pv, static_cast<void*>(w));
+    return w;
+}
+
+void NativeDllInterceptor::win_SubmitThreadpoolWork(void* pwk) {
+    s_kernel32Calls.fetch_add(1);
+    auto* w = static_cast<TpWork*>(pwk);
+    if (w == nullptr) return;
+    void* h = win_CreateThread(nullptr, 0, w->stub, nullptr, 0, nullptr);
+    if (h == nullptr) {
+        LOGE("SubmitThreadpoolWork(%p): no se pudo crear el hilo", pwk);
+        return;
+    }
+    std::lock_guard<std::mutex> lk(w->mtx);
+    w->threads.push_back(h);
+}
+
+void NativeDllInterceptor::win_WaitForThreadpoolWorkCallbacks(void* pwk, int32_t /*fCancelPendingCallbacks*/) {
+    s_kernel32Calls.fetch_add(1);
+    // Cada envío arranca su hilo enseguida: no hay cola que cancelar, solo esperar.
+    if (pwk != nullptr) tpWaitAll(static_cast<TpWork*>(pwk));
+}
+
+void NativeDllInterceptor::win_CloseThreadpoolWork(void* pwk) {
+    s_kernel32Calls.fetch_add(1);
+    auto* w = static_cast<TpWork*>(pwk);
+    if (w == nullptr) return;
+    // Windows NO espera: libera el objeto de forma asíncrona cuando acaban los callbacks pendientes
+    // (OpenAL Soft cierra el trabajo mientras su hilo sigue vivo). Se sueltan los handles sin esperar y el
+    // objeto (y su stub de 64 bytes) se queda: un callback aún en marcha recibió su puntero.
+    std::vector<void*> pending;
+    {
+        std::lock_guard<std::mutex> lk(w->mtx);
+        pending.swap(w->threads);
+    }
+    for (void* h : pending) win_CloseHandle(h);
 }
 
 void NativeDllInterceptor::win_FlushProcessWriteBuffers() {

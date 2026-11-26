@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sched.h>
+#include <sys/system_properties.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -49,6 +50,18 @@ bool applyMask(pid_t tid, const cpu_set_t& mask, const char* label) noexcept {
     if (target <= 0) {
         LOGW("Afinidad %s: tid inválido (%d)", label, static_cast<int>(tid));
         return false;
+    }
+    // Diagnóstico: setprop debug.hyperplay.onecpu N fuerza todo a la CPU N (los hilos nuevos la heredan).
+    // Sirve para distinguir carreras / orden de memoria de fallos deterministas.
+    static const int s_oneCpu = [] {
+        char b[PROP_VALUE_MAX] = {};
+        return __system_property_get("debug.hyperplay.onecpu", b) > 0 ? std::atoi(b) : -1;
+    }();
+    if (s_oneCpu >= 0 && s_oneCpu < CPU_SETSIZE) {
+        cpu_set_t one;
+        CPU_ZERO(&one);
+        CPU_SET(s_oneCpu, &one);
+        return sched_setaffinity(target, sizeof(one), &one) == 0;
     }
     if (sched_setaffinity(target, sizeof(mask), &mask) != 0) {
         LOGW("sched_setaffinity(%s) falló para tid %d: errno=%d (%s)", label,

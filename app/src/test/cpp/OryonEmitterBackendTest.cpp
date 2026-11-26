@@ -3883,6 +3883,42 @@ void testPcmpistriAndWcsstr() {
 
         CHECK_EQ(runCode(code), 2);
     }
+
+    // 3. Equal Any, índice más significativo (imm 0x40, como strrchr de ucrtbase): un '.' DESPUÉS del
+    //    NUL (datos viejos) no cuenta. "ab.cd\0x.y" -> último '.' válido en el índice 2.
+    {
+        alignas(16) char needle[16] = {'.', 0};
+        alignas(16) char haystack[16] = {'a', 'b', '.', 'c', 'd', 0, 'x', '.', 'y', '.', 0};
+
+        Bytes code;
+        movRegImm64(code, 8, reinterpret_cast<uintptr_t>(needle));
+        movRegImm64(code, 9, reinterpret_cast<uintptr_t>(haystack));
+        append(code, {0xF3, 0x41, 0x0F, 0x6F, 0x00}); // movdqu xmm0, [r8]
+        append(code, {0x66, 0x41, 0x0F, 0x3A, 0x63, 0x01, 0x40}); // pcmpistri $0x40, (r9), xmm0
+        append(code, {0x48, 0x89, 0xC8}); // mov rax, rcx
+        append(code, {0xC3});
+
+        CHECK_EQ(runCode(code), 2);
+    }
+
+    // 4. Sin coincidencias válidas: el único '.' está tras el NUL -> CF=0, RCX=16.
+    {
+        alignas(16) char needle[16] = {'.', 0};
+        alignas(16) char haystack[16] = {'a', 'b', 0, '.', '.', 0};
+
+        Bytes code;
+        movRegImm64(code, 8, reinterpret_cast<uintptr_t>(needle));
+        movRegImm64(code, 9, reinterpret_cast<uintptr_t>(haystack));
+        append(code, {0xF3, 0x41, 0x0F, 0x6F, 0x00}); // movdqu xmm0, [r8]
+        append(code, {0x66, 0x41, 0x0F, 0x3A, 0x63, 0x01, 0x40}); // pcmpistri $0x40, (r9), xmm0
+        append(code, {0x72, 0x04}); // jc +4 (coincidencia: error)
+        append(code, {0x48, 0x89, 0xC8}); // mov rax, rcx
+        append(code, {0xC3});
+        movRegImm32(code, 0, 777);
+        append(code, {0xC3});
+
+        CHECK_EQ(runCode(code), 16);
+    }
 }
 
 void testCmppsCmpPd() {

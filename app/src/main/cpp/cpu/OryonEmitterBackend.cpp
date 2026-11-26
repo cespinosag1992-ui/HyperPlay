@@ -202,6 +202,22 @@ void executePcmpistri(CpuContext* ctx, uint8_t reg, uint8_t rm, bool isMem, uint
         }
     }
 
+    // Elementos inválidos (tras el terminador implícito), Intel SDM "Valid/Invalid Override":
+    //  - Equal Any / Ranges: elemento de SRC2 inválido -> falso (nunca coincide más allá del NUL).
+    //  - Equal Each: ambos inválidos -> verdadero; solo uno -> falso.
+    //  - Equal Ordered: ya lo resuelven los límites lenA/lenB del bucle.
+    // Sin esto, strrchr/strchr de ucrtbase (ruta SSE4.2) encontraban caracteres de datos viejos tras el
+    // NUL: coreclr partía "StardewValley.Mods.ModDataDictionary" mal y el TypeLoad de Stardew fallaba.
+    if (agg == 0 || agg == 1) {
+        for (int i = lenB; i < maxElems; ++i) intRes1 &= ~(1u << i);
+    } else if (agg == 2) {
+        for (int i = 0; i < maxElems; ++i) {
+            const bool va = i < lenA, vb = i < lenB;
+            if (!va && !vb) intRes1 |= (1u << i);
+            else if (va != vb) intRes1 &= ~(1u << i);
+        }
+    }
+
     uint32_t intRes2 = 0;
     const uint32_t maskAll = (1u << maxElems) - 1u;
     switch (polarity) {
@@ -211,14 +227,13 @@ void executePcmpistri(CpuContext* ctx, uint8_t reg, uint8_t rm, bool isMem, uint
         case 1:
             intRes2 = (~intRes1) & maskAll;
             break;
-        case 2:
-            for (int i = 0; i < maxElems; ++i) {
-                if (i < lenB && (intRes1 & (1u << i))) intRes2 |= (1u << i);
-            }
+        case 2:  // Masked(+): igual que positivo.
+            intRes2 = intRes1 & maskAll;
             break;
-        case 3:
+        case 3:  // Masked(-): niega solo los elementos válidos de SRC2.
             for (int i = 0; i < maxElems; ++i) {
-                if (i < lenB && !(intRes1 & (1u << i))) intRes2 |= (1u << i);
+                const bool bit = (intRes1 & (1u << i)) != 0;
+                if (i < lenB ? !bit : bit) intRes2 |= (1u << i);
             }
             break;
     }
@@ -2799,13 +2814,13 @@ const std::vector<uint64_t>& probeRvas() {
 }
 
 bool probeReadable(uintptr_t addr, size_t len) {
-    if (addr < 0x10000) return false;
-    const uintptr_t ps = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE));
-    const uintptr_t first = addr & ~(ps - 1);
-    const size_t span = static_cast<size_t>((addr + len - 1 - first) / ps) + 1;
-    unsigned char vec[8] = {};
-    if (span > sizeof(vec)) return false;
-    return mincore(reinterpret_cast<void*>(first), span * ps, vec) == 0;
+    // process_vm_readv sobre el propio proceso: falla con EFAULT (sin señal) si alguna página no es
+    // legible. mincore no basta: acepta páginas de guarda PROT_NONE.
+    if (addr < 0x10000 || len > 256) return false;
+    unsigned char scratch[256];
+    struct iovec local{scratch, len};
+    struct iovec remote{reinterpret_cast<void*>(addr), len};
+    return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(len);
 }
 
 std::atomic<uint64_t (*)(uint64_t)> s_moduleBaseOf{nullptr};
@@ -2815,6 +2830,19 @@ bool probeMatches(uintptr_t rip) {
     if (baseOf == nullptr) return false;
     const uint64_t base = baseOf(rip);
     if (base == 0) return false;
+    // Filtro opcional: solo el módulo cuyo SizeOfImage coincide (debug.hyperplay.probesize, hex). Evita que la
+    // misma RVA de otro módulo agote las capturas.
+    static const uint32_t s_size = [] {
+        char b[PROP_VALUE_MAX] = {};
+        return __system_property_get("debug.hyperplay.probesize", b) > 0
+                   ? static_cast<uint32_t>(std::strtoul(b, nullptr, 16)) : 0u;
+    }();
+    if (s_size != 0) {
+        if (!probeReadable(base, 0x40)) return false;
+        const uint32_t lfanew = *reinterpret_cast<const uint32_t*>(base + 0x3C);
+        if (lfanew > 0x1000 || !probeReadable(base + lfanew + 0x50, 4)) return false;
+        if (*reinterpret_cast<const uint32_t*>(base + lfanew + 0x50) != s_size) return false;
+    }
     for (const uint64_t rva : probeRvas()) {
         if (rip - base == rva) return true;
     }
@@ -2822,12 +2850,18 @@ bool probeMatches(uintptr_t rip) {
 }
 
 std::string probeText(uint64_t p) {
-    if (!probeReadable(p, 64)) return {};
+    constexpr size_t kMax = 160;
+    if (!probeReadable(p, kMax)) return {};
     const auto* b = reinterpret_cast<const uint8_t*>(p);
     std::string a, w;
-    for (size_t i = 0; i < 64 && b[i] >= 0x20 && b[i] < 0x7F; ++i) a.push_back(static_cast<char>(b[i]));
-    for (size_t i = 0; i + 1 < 64 && b[i] >= 0x20 && b[i] < 0x7F && b[i + 1] == 0; i += 2) w.push_back(static_cast<char>(b[i]));
-    if (w.size() >= 3) return " u\"" + w + "\"";
+    for (size_t i = 0; i < kMax && b[i] >= 0x20 && b[i] < 0x7F; ++i) a.push_back(static_cast<char>(b[i]));
+    size_t wi = 0;
+    for (; wi + 1 < kMax && b[wi] >= 0x20 && b[wi] < 0x7F && b[wi + 1] == 0; wi += 2) w.push_back(static_cast<char>(b[wi]));
+    if (w.size() >= 3) {
+        char tail[40];
+        std::snprintf(tail, sizeof(tail), "\" len=%zu fin=%02x%02x%02x%02x", w.size(), b[wi], b[wi + 1], b[wi + 2], b[wi + 3]);
+        return " u\"" + w + tail;
+    }
     if (a.size() >= 3) return " \"" + a + "\"";
     return {};
 }
@@ -2846,8 +2880,9 @@ static void probeLog(CpuContext* c, uint64_t rip) {
     if (s_hits.fetch_add(1) >= s_max) return;
     uint64_t ret = 0;
     if (probeReadable(c->gpr[4], 8)) ret = *reinterpret_cast<const uint64_t*>(c->gpr[4]);
-    LOGI("[Sonda] rip=%llx rax=%llx rcx=%llx%s rdx=%llx%s r8=%llx%s r9=%llx%s ret=%llx",
+    LOGI("[Sonda] rip=%llx rax=%llx%s rcx=%llx%s rdx=%llx%s r8=%llx%s r9=%llx%s ret=%llx",
          static_cast<unsigned long long>(rip), static_cast<unsigned long long>(c->gpr[0]),
+         probeText(c->gpr[0]).c_str(),
          static_cast<unsigned long long>(c->gpr[1]), probeText(c->gpr[1]).c_str(),
          static_cast<unsigned long long>(c->gpr[2]), probeText(c->gpr[2]).c_str(),
          static_cast<unsigned long long>(c->gpr[8]), probeText(c->gpr[8]).c_str(),
@@ -2860,6 +2895,17 @@ static void probeLog(CpuContext* c, uint64_t rip) {
              static_cast<unsigned long long>(q[1]), probeText(q[1]).c_str(),
              static_cast<unsigned long long>(q[2]), static_cast<unsigned long long>(q[3]),
              static_cast<unsigned long long>(probeReadable(c->gpr[8] + 32, 8) ? q[4] : 0));
+        if (probeReadable(c->gpr[8], 0x50)) {
+            LOGI("[Sonda]   [r8+28]=%llx [r8+30]=%llx [r8+38]=%llx [r8+40]=%llx [r8+48]=%llx",
+                 static_cast<unsigned long long>(q[5]), static_cast<unsigned long long>(q[6]),
+                 static_cast<unsigned long long>(q[7]), static_cast<unsigned long long>(q[8]),
+                 static_cast<unsigned long long>(q[9]));
+        }
+    }
+    if (probeReadable(c->gpr[0], 16)) {
+        const auto* q = reinterpret_cast<const uint64_t*>(c->gpr[0]);
+        LOGI("[Sonda]   [rax]=%llx [rax+8]=%llx", static_cast<unsigned long long>(q[0]),
+             static_cast<unsigned long long>(q[1]));
     }
     if (probeReadable(c->gpr[1], 32)) {
         const auto* q = reinterpret_cast<const uint64_t*>(c->gpr[1]);

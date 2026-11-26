@@ -21,6 +21,17 @@ class GameSessionLogicTest {
     }
 
     @Test
+    fun openGlPresentsEndLoadingWithoutD3dOrVulkan() {
+        val noGpuCalls = LongArray(8)  // juego OpenGL: sin llamadas D3D (2) ni Vulkan (3)
+        assertFalse(GameSessionLogic.contentStarted(noGpuCalls, 0, 60_000))
+        assertFalse(GameSessionLogic.contentStarted(noGpuCalls, 5, 1_000))
+        assertTrue(GameSessionLogic.contentStarted(noGpuCalls, GameSessionLogic.CONTENT_DRAWS, 1_000))
+        assertTrue(GameSessionLogic.contentStarted(noGpuCalls, 5, GameSessionLogic.CONTENT_TIMEOUT_MS))
+        val vulkan = LongArray(8).also { it[3] = 10 }
+        assertTrue(GameSessionLogic.contentStarted(vulkan, 0, GameSessionLogic.CONTENT_TIMEOUT_MS))
+    }
+
+    @Test
     fun menuFocusWrapsBothWays() {
         assertEquals(3, GameSessionLogic.moveFocus(0, -1, 4))
         assertEquals(0, GameSessionLogic.moveFocus(3, 1, 4))
