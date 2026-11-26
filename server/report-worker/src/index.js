@@ -4,9 +4,16 @@
 // (secreto GITHUB_TOKEN), nunca dentro de la APK.
 //
 // Variables (wrangler.toml / secretos):
-//   GITHUB_REPO   "propietario/repositorio"
+//   REPORTS_REPO  "propietario/repositorio" donde se crean los Issues. Debe ser PRIVADO
+//                 (p. ej. HyperPlay-Reports): los informes son logs de teléfonos de usuarios.
+//   GITHUB_REPO   (antiguo) se usa solo si falta REPORTS_REPO
 //   GITHUB_TOKEN  token fine-grained con permiso Issues: Read and write SOLO en ese repo
 //   REPORTS_KV    (opcional) espacio KV para limitar envíos por IP y evitar duplicados
+//
+// Antes de crear el Issue se quitan IPs, correos, rutas de usuario, identificadores del
+// dispositivo, cuentas y tokens (src/redact.js), aunque la app ya lo hace.
+
+import { redactReport } from "./redact.js";
 
 const MAX_BODY = 256 * 1024;          // tamaño máximo del JSON recibido
 const MAX_ISSUE = 60000;              // GitHub admite 65 536 caracteres por cuerpo
@@ -31,7 +38,11 @@ export default {
     } catch {
       return text("bad json", 400);
     }
-    if (!report || typeof report.id !== "string" || !KINDS.has(report.kind)) return text("bad report", 400);
+    if (!report || typeof report !== "object" || typeof report.id !== "string" || !KINDS.has(report.kind)) {
+      return text("bad report", 400);
+    }
+    const repo = reportsRepo(env);
+    if (!repo) return text("server not configured", 500);
 
     // Límite por IP y deduplicado por id (si hay KV configurado).
     if (env.REPORTS_KV) {
@@ -45,11 +56,12 @@ export default {
       await env.REPORTS_KV.put(`id:${report.id}`, "1", { expirationTtl: 60 * 60 * 24 * 30 });
     }
 
-    const title = `[${report.kind}] ${clean(report.title, 150)} (v${clean(report.appVersion, 20)})`;
-    const body = issueBody(report);
-    const labels = ["auto-report", `kind:${report.kind}`];
+    const safe = redactReport(report);
+    const title = `[${safe.kind}] ${clean(safe.title, 150)} (v${clean(safe.appVersion, 20)})`;
+    const body = issueBody(safe);
+    const labels = ["auto-report", `kind:${safe.kind}`];
 
-    const gh = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues`, {
+    const gh = await fetch(`https://api.github.com/repos/${repo}/issues`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
@@ -71,6 +83,12 @@ export default {
     });
   },
 };
+
+// "propietario/repositorio" de destino; REPORTS_REPO manda sobre el antiguo GITHUB_REPO.
+export function reportsRepo(env) {
+  const repo = String(env.REPORTS_REPO || env.GITHUB_REPO || "").trim();
+  return /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(repo) ? repo : "";
+}
 
 function text(s, status = 200) {
   return new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });

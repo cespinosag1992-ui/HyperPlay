@@ -10,6 +10,12 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **Privacy: error reports are scrubbed before they leave the phone.** IP and MAC addresses,
+  emails, user folders (`/storage/emulated/0/...`, `/sdcard/...`, `C:\Users\<name>`), device
+  serials, Android ID, IMEI-like numbers, SteamIDs, account names and tokens are replaced with
+  placeholders; of storage paths only the game folder and file name are kept. The report server
+  applies the same rules again and can send reports to a separate private repository
+  (`REPORTS_REPO`).
 - **Engine: real Windows x64 exception handling (SEH).** C++ and .NET exceptions are now
   dispatched like on Windows: vectored handlers, then each frame's handler from the module's
   `.pdata` (and the JIT tables of Mono/CoreCLR), then the unhandled filter; `RtlUnwindEx`,
@@ -69,6 +75,12 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Privacidad: los informes de errores se limpian antes de salir del teléfono.** Direcciones IP
+  y MAC, correos, carpetas de usuario (`/storage/emulated/0/...`, `/sdcard/...`,
+  `C:\Users\<nombre>`), números de serie, Android ID, números tipo IMEI, SteamID, nombres de cuenta
+  y tokens se sustituyen por marcadores; de las rutas de almacenamiento solo se conservan la
+  carpeta del juego y el nombre del archivo. El servidor de informes vuelve a aplicar las mismas
+  reglas y puede enviar los informes a un repositorio privado aparte (`REPORTS_REPO`).
 - **Motor: manejo real de excepciones de Windows x64 (SEH).** Las excepciones de C++ y .NET se
   despachan como en Windows: manejadores vectoriales, después el manejador de cada marco según el
   `.pdata` del módulo (y las tablas del JIT de Mono/CoreCLR), y por último el filtro de no
