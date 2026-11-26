@@ -61,3 +61,7 @@ third_party/proot*.cmake
 server/report-worker/.dev.vars
 server/report-worker/node_modules/
 server/report-worker/.wrangler/
+
+# --- Notas internas de desarrollo (no son contenido público)
+progreso.md
+logs.md
