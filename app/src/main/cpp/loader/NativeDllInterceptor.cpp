@@ -5637,6 +5637,22 @@ static bool isHyperPlayFmodShim(const std::string& hostPath) {
     return true;
 }
 
+namespace {
+std::string lowerAscii(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+std::atomic<uint64_t> s_alIsExtensionPresentReal{0};
+// ALboolean alIsExtensionPresent(const ALchar*): AL_SOFT_MSADPCM -> falso; lo demás, el de OpenAL Soft.
+uint8_t hp_alIsExtensionPresent(const char* name) {
+    if (name != nullptr && lowerAscii(name) == "al_soft_msadpcm") return 0;
+    const uint64_t real = s_alIsExtensionPresentReal.load();
+    if (real == 0) return 0;
+    const uint64_t args[1] = {reinterpret_cast<uint64_t>(name)};
+    return static_cast<uint8_t>(sehimpl::callGuest(real, args, 1));
+}
+}  // namespace
+
 void* NativeDllInterceptor::win_GetProcAddress(void* hModule, const char* lpProcName) {
     s_kernel32Calls.fetch_add(1);
     if (lpProcName == nullptr || hModule == nullptr) {
@@ -5675,7 +5691,21 @@ void* NativeDllInterceptor::win_GetProcAddress(void* hModule, const char* lpProc
                         LOGW("FMOD nativo: %s sin implementar (se usa el shim)", lpProcName);
                     }
                 }
-                if (void* p = resolvePeExport(hModule, kv.second.peInfo, lpProcName, 0)) return p;
+                void* p = resolvePeExport(hModule, kv.second.peInfo, lpProcName, 0);
+                // OpenAL Soft: setprop debug.hyperplay.alnoadpcm 1 oculta AL_SOFT_MSADPCM, así MonoGame
+                // decodifica el ADPCM de los efectos él mismo (diagnóstico del audio distorsionado).
+                if (p != nullptr && !byOrdinal && std::strcmp(lpProcName, "alIsExtensionPresent") == 0 &&
+                    lowerAscii(kv.second.hostPath).find("soft_oal") != std::string::npos) {
+                    char v[PROP_VALUE_MAX] = {};
+                    if (__system_property_get("debug.hyperplay.alnoadpcm", v) > 0 && v[0] == '1') {
+                        s_alIsExtensionPresentReal = reinterpret_cast<uint64_t>(p);
+                        void* w = reinterpret_cast<void*>(&hp_alIsExtensionPresent);
+                        registerTrampolineAddress(w, "soft_oal.dll!alIsExtensionPresent");
+                        LOGI("OpenAL: alIsExtensionPresent envuelto (sin AL_SOFT_MSADPCM)");
+                        return w;
+                    }
+                }
+                if (p) return p;
                 if (byOrdinal) {
                     win_SetLastError(127);
                     return nullptr;
@@ -12682,6 +12712,7 @@ struct WasapiClient {
     std::atomic<uint64_t> played{0};
     std::atomic<float> masterVolume{1.0f};
     std::atomic<bool> muted{false};
+    float limiterGain = 1.0f;  // limitador de salida (solo ReleaseBuffer, bajo mtx)
     std::thread pump;
     DirectAAudioEngine engine;
     // Diagnóstico (línea "WASAPI ritmo" cada 10 s).
@@ -12746,8 +12777,13 @@ void* allocMixFormat() {
     return p;
 }
 
-// Convierte frames del formato del cliente a PCM16 estéreo.
-void convertToStereo16(const WasapiFormat& f, const uint8_t* src, uint32_t frames, int16_t* dst, float gain) {
+// Convierte frames del formato del cliente a PCM16 estéreo. 'limiter' es la ganancia del limitador del
+// cliente (estado entre bloques): el motor de audio de Windows (modo compartido) tiene un limitador y los
+// juegos que mezclan en float (OpenAL Soft en Stardew Valley) superan 1.0 sin preocuparse; cortar en seco
+// a 16 bits sonaba distorsionado. Ataque inmediato al pico del bloque, rampa dentro del bloque (sin
+// chasquidos) y recuperación lenta (~0.3 s).
+void convertToStereo16(const WasapiFormat& f, const uint8_t* src, uint32_t frames, int16_t* dst, float gain,
+                       float* limiter = nullptr) {
     auto sampleAt = [&](const uint8_t* frame, uint32_t ch) -> float {
         const uint8_t* s = frame + ch * (f.bits / 8);
         if (f.isFloat) {
@@ -12769,10 +12805,28 @@ void convertToStereo16(const WasapiFormat& f, const uint8_t* src, uint32_t frame
         std::memcpy(&v, s, 4);
         return static_cast<float>(v) / 2147483648.0f;
     };
+    float g0 = 1.0f, g1 = 1.0f;
+    if (limiter != nullptr && frames != 0) {
+        float peak = 0.0f;
+        for (uint32_t i = 0; i < frames; ++i) {
+            const uint8_t* frame = src + static_cast<size_t>(i) * f.blockAlign;
+            peak = std::max(peak, std::fabs(sampleAt(frame, 0) * gain));
+            if (f.channels >= 2) peak = std::max(peak, std::fabs(sampleAt(frame, 1) * gain));
+        }
+        constexpr float kCeiling = 0.98f;
+        const float need = peak > kCeiling ? kCeiling / peak : 1.0f;
+        // Recuperación: ~0.3 s de 0 dB de reducción a 1.0 con bloques de 10-20 ms.
+        const float released = std::min(1.0f, *limiter + (1.0f - *limiter) * 0.06f + 0.002f);
+        g0 = *limiter;
+        g1 = std::min(released, need);
+        if (need < g0) g0 = need;  // ataque: el bloque entero ya baja lo necesario (sin cortar el pico)
+        *limiter = g1;
+    }
     for (uint32_t i = 0; i < frames; ++i) {
         const uint8_t* frame = src + static_cast<size_t>(i) * f.blockAlign;
-        const float l = sampleAt(frame, 0);
-        const float r = f.channels >= 2 ? sampleAt(frame, 1) : l;
+        const float lg = g0 + (g1 - g0) * (static_cast<float>(i) / static_cast<float>(frames));
+        const float l = sampleAt(frame, 0) * lg;
+        const float r = (f.channels >= 2 ? sampleAt(frame, 1) : sampleAt(frame, 0)) * lg;
         auto clamp16 = [gain](float v) {
             v *= gain * 32767.0f;
             if (v > 32767.0f) v = 32767.0f;
@@ -13207,9 +13261,10 @@ uint64_t wasapiDispatch(int iface, int slot, const ComArgs& args) {
                     std::vector<int16_t> tmp(static_cast<size_t>(n) * 2, 0);
                     const bool silent = (a2 & 0x2) != 0;  // AUDCLNT_BUFFERFLAGS_SILENT
                     const float gain = client->muted.load() ? 0.0f : client->masterVolume.load();
-                    if (!silent && n != 0) convertToStereo16(client->fmt, client->staging.data(), n, tmp.data(), gain);
+                    if (!silent && n != 0)
+                        convertToStereo16(client->fmt, client->staging.data(), n, tmp.data(), gain, &client->limiterGain);
                     // Diagnóstico: setprop debug.hyperplay.wasapidump N -> los primeros N s de audio del juego
-                    // (formato del cliente, sin convertir) en <juego>/_HyperPlaySaves/wasapi.raw.
+                    // ya convertidos a PCM16 estéreo (lo que suena) en <juego>/_HyperPlaySaves/wasapi.raw.
                     {
                         static FILE* s_dump = [] {
                             char v[PROP_VALUE_MAX] = {};
@@ -13227,7 +13282,7 @@ uint64_t wasapiDispatch(int iface, int slot, const ComArgs& args) {
                             return static_cast<uint64_t>(std::max(0, std::atoi(v))) * 48000u;
                         }();
                         if (s_dump != nullptr && n != 0 && s_dumped.load() < s_limit) {
-                            std::fwrite(client->staging.data(), client->fmt.blockAlign, n, s_dump);
+                            std::fwrite(tmp.data(), 4, n, s_dump);
                             if (s_dumped.fetch_add(n) + n >= s_limit) std::fflush(s_dump);
                         }
                     }
