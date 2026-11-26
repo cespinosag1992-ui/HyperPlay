@@ -3948,7 +3948,9 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         // Runtimes redistribuibles comunes (BionicPeLoader::loadLocalDll también los busca ahí).
         if (!existsOnDisk) {
             existsOnDisk = stat((std::string("/sdcard/HyperPlay/redist/") + (s_activeImage->is32Bit ? "x86/" : "x64/") +
-                                 toLower(localName)).c_str(), &st) == 0;
+                                 toLower(localName)).c_str(), &st) == 0 ||
+                           stat((std::string("/sdcard/HyperPlay/redist/") + (s_activeImage->is32Bit ? "x86" : "x64") +
+                                 "/netfx/Windows/System32/" + toLower(localName)).c_str(), &st) == 0;
         }
         if (!existsOnDisk && managed::active()) {
             const std::string user = managed::userOverride(toLower(localName));

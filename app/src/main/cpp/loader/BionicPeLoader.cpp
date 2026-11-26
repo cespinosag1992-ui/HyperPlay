@@ -556,6 +556,9 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
     // 5. Runtimes redistribuibles comunes a todos los juegos (Visual C++ 2010 de 32 bits para DmC...),
     //    extraídos de los instaladores que traen los propios juegos: /sdcard/HyperPlay/redist/<arq>/.
     candidatePaths.push_back(std::string("/sdcard/HyperPlay/redist/") + (image.is32Bit ? "x86/" : "x64/") + lowerBase);
+    // 6. System32 de los componentes de Windows descargados (.NET Framework: mscoree.dll).
+    candidatePaths.push_back(std::string("/sdcard/HyperPlay/redist/") + (image.is32Bit ? "x86" : "x64") +
+                             "/netfx/Windows/System32/" + lowerBase);
 
     std::string resolvedPath;
     int fd = -1;
@@ -798,6 +801,13 @@ std::string BionicPeLoader::resolveVirtualPath(const LoadedPeImage& image, const
     // de forma coherente (CreateDirectory/GetFileAttributes recorren la ruta componente a componente).
     std::string lower = safe;
     for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    // C:\Windows\... -> componentes de Windows descargados de Microsoft (.NET Framework de 32 bits para
+    // DmC...) en /sdcard/HyperPlay/redist/<arq>/netfx/Windows/..., si están instalados.
+    if (lower == "windows" || lower.rfind("windows/", 0) == 0) {
+        const std::string root = std::string("/sdcard/HyperPlay/redist/") + (image.is32Bit ? "x86" : "x64") + "/netfx";
+        struct stat st{};
+        if (stat((root + "/Windows").c_str(), &st) == 0) return root + "/" + safe;
+    }
     const bool profileTree = lower == "users" || lower.rfind("users/", 0) == 0 ||
                              lower == "programdata" || lower.rfind("programdata/", 0) == 0;
     const bool saveLike = profileTree ||

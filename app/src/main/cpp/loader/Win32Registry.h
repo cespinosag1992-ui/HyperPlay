@@ -371,6 +371,20 @@ private:
         addMachine(nt, u"CurrentMajorVersionNumber", kRegDword, dword(10));
         addMachine(nt, u"CurrentMinorVersionNumber", kRegDword, dword(0));
         addMachine(nt, u"ReleaseId", kRegSz, sz(u"2009"));
+
+        // .NET Framework 4.8 (el que HyperPlay descarga de Microsoft para juegos C++/CLI de 32 bits
+        // como DmC). mscoreei.dll localiza el runtime con InstallRoot y Policy\v4.0; los instaladores
+        // y lanzadores comprueban NDP\v4\Full (Release 528040 = 4.8).
+        const std::u16string netfx = u"hklm\\SOFTWARE\\Microsoft\\.NETFramework";
+        addMachine(netfx, u"InstallRoot", kRegSz, sz(u"C:\\Windows\\Microsoft.NET\\Framework\\"));
+        addMachine(netfx + u"\\Policy\\v4.0", u"30319", kRegSz, sz(u"30319-30319"));
+        for (const char16_t* flavor : {u"Full", u"Client"}) {
+            const std::u16string ndp = std::u16string(u"hklm\\SOFTWARE\\Microsoft\\NET Framework Setup\\NDP\\v4\\") + flavor;
+            addMachine(ndp, u"Install", kRegDword, dword(1));
+            addMachine(ndp, u"Release", kRegDword, dword(528040));
+            addMachine(ndp, u"Version", kRegSz, sz(u"4.8.03761"));
+            addMachine(ndp, u"InstallPath", kRegSz, sz(u"C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\"));
+        }
     }
 
     // Formato: "HPREG1\0" + por clave persistente: u32 len + ruta UTF-16, u32 nValores,
