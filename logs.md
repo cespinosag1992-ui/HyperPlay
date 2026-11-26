@@ -783,3 +783,9 @@ Suite nativa: `591 comprobaciones, 0 fallos`, `EXIT:0`. Gate Gradle: `BUILD SUCC
 - GuestSwapchain: swapchain real a tamaño nativo; si el juego usa otra extensión, limpia a negro + blit LINEAR centrado. Celeste 126 FPS (HyperFG), 16:9 con bandas.
 - Cruceta: DPAD_RIGHT en "Reanudar" -> salta a ajustes (primer habilitado: Generación de fotogramas); DOWN -> Protección térmica (una fila).
 - Las teclas de `adb input keyevent` no llegan al juego (sin dispositivo); usar los botones del mando táctil con `input swipe x y x y 200` (A 2325,998; abajo 750,1024; izquierda 640,915).
+## 2026-11-25 18:00 — Silksong/Cuphead a resolución menor, limitador, launcher
+- Silksong 1920x1080: la 1ª vez ~5 s con FPS 0 y GPU 0 % (compilación), luego 16:9 con bandas a 63 FPS. Unity en "Sin bordes" mantiene el backbuffer nativo (ResizeBuffers 2688x1216) y escala él.
+- Silksong límite 30: HyperFG 240 reales / 8,35 s = 28,7 FPS reales, 60 presentados. Restaurado a Desactivada + VSync.
+- Cuphead 2016x912 aplicado al instante (GPU 44 %); restaurado a nativa. Cuphead repite pulsaciones con swipe de 200 ms: usar 80 ms.
+- `log.tag=S` tras reiniciar el teléfono: `setprop log.tag.HyperPlay.* V` (ver progreso).
+- Launcher: TabLabel y "volver" (clickable sin indicación) atrapaban el foco invisible al pulsar arriba; ahora `focusProperties { canFocus = false }`.

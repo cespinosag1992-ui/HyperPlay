@@ -49,6 +49,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   to another row; from the action buttons, right jumps to the settings column; LB/RB switch
   columns; the D-pad no longer counts twice (key + hat) and the stick uses only its main direction.
   The upscaler's automatic choice is now just called "Automatic".
+- **Launcher with a controller:** "up" from the game covers no longer leaves the focus on the
+  Home/Settings tabs, where it was invisible (tabs switch with LB/RB); the same for "back" on the
+  game page (B). The update notice shows a frame when focused and opens with A.
+- Also tested: Silksong and Cuphead at a lower resolution (16:9 with black bars or full screen,
+  undistorted) and Silksong's own frame limit (30 real FPS, doubled to 60 by HyperFG).
 
 ### Español
 
@@ -95,6 +100,12 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
   saltan a otra fila; desde los botones de acción, derecha salta a la columna de ajustes; LB/RB
   cambian de columna; la cruceta ya no cuenta doble (tecla + hat) y el stick solo usa su dirección
   principal. La opción automática del reescalado se llama ahora "Automático".
+- **Launcher con mando:** "arriba" desde las portadas ya no deja el foco en las pestañas
+  Inicio/Ajustes, donde era invisible (se cambian con LB/RB); lo mismo con "volver" en la ficha del
+  juego (B). El aviso de actualización muestra un marco al enfocarlo y se abre con A.
+- Probado también: Silksong y Cuphead a una resolución menor (16:9 con bandas negras o pantalla
+  completa, sin deformar) y el límite de fotogramas del propio Silksong (30 FPS reales, que HyperFG
+  duplica a 60).
 
 ## 1.1.0
 

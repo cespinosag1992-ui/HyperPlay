@@ -61,6 +61,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -457,8 +458,12 @@ private fun TopBar(current: Page, onTab: (Page) -> Unit) {
 
 @Composable
 private fun TabLabel(text: String, active: Boolean, onClick: () -> Unit) {
+    // Solo táctil: con el mando las pestañas se cambian con LB/RB. Si la cruceta pudiera
+    // enfocarlas, "arriba" desde las portadas dejaría el foco en un sitio que no se ve.
     Column(horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.clickable(remember { MutableInteractionSource() }, indication = null, onClick = onClick)) {
+        modifier = Modifier
+            .focusProperties { canFocus = false }
+            .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onClick)) {
         Text(text, color = if (active) Deck.Text else Deck.Dim, fontSize = 16.sp,
             fontWeight = if (active) FontWeight.Bold else FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
@@ -500,8 +505,12 @@ private fun HomePage(
     Column(Modifier.fillMaxSize()) {
         TopBar(Page.HOME, onTab)
         (update as? UpdateState.Available)?.let { av ->
+            var bannerFocused by remember { mutableStateOf(false) }
             Row(
                 Modifier.padding(horizontal = 40.dp).background(Color(0xCC1D2438), Deck.Pill)
+                    .border(2.dp, if (bannerFocused) Deck.Text else Color.Transparent, Deck.Pill)
+                    .onFocusChanged { bannerFocused = it.isFocused }
+                    .gamepadActivate(onUpdateBanner)
                     .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onUpdateBanner)
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -778,7 +787,9 @@ private fun GamePage(
 private fun TopBarCompact(onBack: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(stringResource(R.string.back_to_library_short), color = Deck.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.clickable(remember { MutableInteractionSource() }, indication = null, onClick = onBack))
+            // Solo táctil (con el mando, B): enfocable con la cruceta sería un foco invisible.
+            modifier = Modifier.focusProperties { canFocus = false }
+                .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onBack))
         Spacer(Modifier.weight(1f))
         ClockAndBattery()
     }
