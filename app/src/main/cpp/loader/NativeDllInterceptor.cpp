@@ -3087,6 +3087,50 @@ static int32_t hp_GetVersionExA(uint8_t* info) {
     return 1;
 }
 
+// GetVersionExW: igual que la A con cadenas UTF-16 (OSVERSIONINFOW 276 bytes, EXW 284).
+static int32_t hp_GetVersionExW(uint8_t* info) {
+    if (info == nullptr) return 0;
+    uint32_t size = 0;
+    std::memcpy(&size, info, 4);
+    if (size != 276 && size != 284) return 0;
+    const uint32_t v[4] = {6, 2, 9200, 2};
+    std::memcpy(info + 4, v, sizeof(v));
+    std::memset(info + 20, 0, 256);  // szCSDVersion[128] WCHAR
+    if (size == 284) {
+        std::memset(info + 276, 0, 8);
+        info[282] = 1;  // wProductType = VER_NT_WORKSTATION
+    }
+    return 1;
+}
+
+// GetStartupInfoA: STARTUPINFOA mide 68 bytes en 32 bits y 104 en 64; sin datos de arranque.
+static void hp_GetStartupInfoA(uint8_t* si) {
+    if (si == nullptr) return;
+    const uint32_t cb = lowmem::enabled() ? 68u : 104u;
+    std::memset(si, 0, cb);
+    std::memcpy(si, &cb, 4);
+}
+
+// GetThreadTimes: creación/salida a 0 y tiempo de CPU del hilo actual como usuario (msvcr100 lo usa
+// en clock()). FILETIME en unidades de 100 ns.
+static int32_t hp_GetThreadTimes(void*, uint64_t* creation, uint64_t* exitTime, uint64_t* kernel, uint64_t* user) {
+    struct timespec ts{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    const uint64_t t100 = static_cast<uint64_t>(ts.tv_sec) * 10000000ull + static_cast<uint64_t>(ts.tv_nsec) / 100u;
+    auto put = [](uint64_t* p, uint64_t v) { if (p) std::memcpy(p, &v, 8); };
+    put(creation, 0);
+    put(exitTime, 0);
+    put(kernel, 0);
+    put(user, t100);
+    return 1;
+}
+
+// GetVersion: compilación << 16 | menor << 8 | mayor (6.2.9200, como GetVersionEx sin manifiesto).
+static uint32_t hp_GetVersion() { return (9200u << 16) | (2u << 8) | 6u; }
+
+// SetHandleCount (Win16, solo 32 bits): devuelve el número pedido.
+static uint32_t hp_SetHandleCount(uint32_t n) { return n; }
+
 static int32_t hp_GetClipCursor(void* lpRect);                        // definidas más abajo
 static int32_t hp_GetThreadIOPendingFlag(void* hThread, int32_t* lpIOIsPending);
 
@@ -3453,6 +3497,11 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "CloseThreadpoolWork") result = w32arity::hpFn(&win_CloseThreadpoolWork);
         else if (funcName == "GetThreadIOPendingFlag") result = w32arity::hpFn(&hp_GetThreadIOPendingFlag);
         else if (funcName == "GetVersionExA") result = w32arity::hpFn(&hp_GetVersionExA);
+        else if (funcName == "GetVersionExW") result = w32arity::hpFn(&hp_GetVersionExW);
+        else if (funcName == "GetStartupInfoA") result = w32arity::hpFn(&hp_GetStartupInfoA);
+        else if (funcName == "SetHandleCount") result = w32arity::hpFn(&hp_SetHandleCount);
+        else if (funcName == "GetThreadTimes") result = w32arity::hpFn(&hp_GetThreadTimes);
+        else if (funcName == "GetVersion") result = w32arity::hpFn(&hp_GetVersion);
         else if (funcName == "InterlockedIncrement") result = w32arity::hpFn(&hp_InterlockedIncrement);
         else if (funcName == "InterlockedDecrement") result = w32arity::hpFn(&hp_InterlockedDecrement);
         else if (funcName == "InterlockedExchange") result = w32arity::hpFn(&hp_InterlockedExchange);
@@ -3942,7 +3991,10 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     //    (api-ms-win-crt-* -> ucrtbase.dll del runtime, traducido como cualquier DLL).
     bool isGuestExport = false;
     if (!result && s_activeImage != nullptr) {
-        const std::string localName = guestCrtDll(dll) ? std::string("ucrtbase.dll") : dllName;
+        std::string localName = guestCrtDll(dll) ? std::string("ucrtbase.dll") : dllName;
+        // 32 bits: msvcrt.dll (CRT del sistema, p. ej. dbghelp.dll de DmC) -> msvcr100.dll de los runtimes
+        // comunes: mismo CRT de Microsoft con las mismas funciones (antes eran stubs: malloc devolvía 0).
+        if (s_activeImage->is32Bit && dll == "msvcrt.dll") localName = "MSVCR100.dll";
         struct stat st{};
         bool existsOnDisk = stat((s_activeImage->gameDir + "/" + localName).c_str(), &st) == 0;
         // Runtimes redistribuibles comunes (BionicPeLoader::loadLocalDll también los busca ahí).
@@ -6130,6 +6182,29 @@ void NativeDllInterceptor::win_GetSystemInfo(void* lpSystemInfo) {
         uint16_t wProcessorLevel;
         uint16_t wProcessorRevision;
     };
+    if (s_activeImage && s_activeImage->is32Bit) {
+        // SYSTEM_INFO de 32 bits (36 bytes, punteros de 4): el de x64 (48) desbordaba el del invitado.
+        struct SystemInfo32 {
+            uint16_t wProcessorArchitecture, wReserved;
+            uint32_t dwPageSize, lpMinimumApplicationAddress, lpMaximumApplicationAddress, dwActiveProcessorMask;
+            uint32_t dwNumberOfProcessors, dwProcessorType, dwAllocationGranularity;
+            uint16_t wProcessorLevel, wProcessorRevision;
+        };
+        static_assert(sizeof(SystemInfo32) == 36, "SYSTEM_INFO de 32 bits");
+        SystemInfo32 s{};
+        s.wProcessorArchitecture = 0;  // PROCESSOR_ARCHITECTURE_INTEL
+        s.dwPageSize = 4096;
+        s.lpMinimumApplicationAddress = 0x10000;
+        // Proceso de 32 bits en Windows x64 con LARGE_ADDRESS_AWARE: 4 GB; si no, 2 GB.
+        s.lpMaximumApplicationAddress = s_activeImage->peInfo.largeAddressAware ? 0xFFFEFFFFu : 0x7FFEFFFFu;
+        s.dwActiveProcessorMask = 0xFF;
+        s.dwNumberOfProcessors = 8;
+        s.dwProcessorType = 586;  // PROCESSOR_INTEL_PENTIUM
+        s.dwAllocationGranularity = 65536;
+        s.wProcessorLevel = 6;
+        std::memcpy(lpSystemInfo, &s, sizeof(s));
+        return;
+    }
     auto* si = reinterpret_cast<SystemInfoLayout*>(lpSystemInfo);
     si->wProcessorArchitecture = (s_activeImage && s_activeImage->is32Bit) ? 0 : 9;
     si->wReserved = 0;
@@ -7612,10 +7687,11 @@ void NativeDllInterceptor::win_GetStartupInfoW(void* lpStartupInfo) {
         uint8_t* lpReserved2;
         void* hStdInput, *hStdOutput, *hStdError;
     };
-    auto* si = static_cast<WinStartupInfoW*>(lpStartupInfo);
-    const uint32_t cb = sizeof(WinStartupInfoW);
-    std::memset(si, 0, cb);
-    si->cb = cb;
+    // 32 bits: STARTUPINFOW mide 68 bytes (punteros de 4); escribir los 104 de x64 pisaba la pila del
+    // llamador (mscoree.dll de .NET Framework en DmC).
+    const uint32_t cb = lowmem::enabled() ? 68u : static_cast<uint32_t>(sizeof(WinStartupInfoW));
+    std::memset(lpStartupInfo, 0, cb);
+    std::memcpy(lpStartupInfo, &cb, 4);
 }
 
 static std::string getActiveExeName() {
@@ -9029,9 +9105,9 @@ int32_t NativeDllInterceptor::win_InitializeCriticalSectionEx(void* lpCriticalSe
 // SRWLOCK (puntero, SRWLOCK_INIT = 0): bit 63 = exclusivo, bits bajos = lectores compartidos.
 // Antes el modo compartido era exclusivo: dos lectores se excluían y una adquisición compartida
 // recursiva (permitida en Windows) bloqueaba al propio hilo.
+// El SRWLOCK es un puntero: 8 bytes en x64 (bit 63 = exclusivo) y 4 en 32 bits (bit 31). Un atómico
+// de 8 bytes sobre el de 32 bits pisaba el campo vecino (y en ARM falla si no está alineado a 8).
 namespace {
-constexpr uintptr_t kSrwExclusive = uintptr_t{1} << 63;
-
 void srwBackoff(unsigned& spins) {
     if (++spins < 64) {
         sched_yield();
@@ -9039,43 +9115,35 @@ void srwBackoff(unsigned& spins) {
         usleep(spins < 1024 ? 50 : 500);  // espera larga: no quemar un núcleo
     }
 }
-}  // namespace
 
-void NativeDllInterceptor::win_AcquireSRWLockExclusive(void* SRWLock) {
-    s_kernel32Calls.fetch_add(1);
-    if (!SRWLock) return;
-    auto* lock = reinterpret_cast<std::atomic<uintptr_t>*>(SRWLock);
+template <class T>
+constexpr T srwExclusive() { return T{1} << (sizeof(T) * 8 - 1); }
+
+template <class T>
+void srwAcquireExclusive(void* p) {
+    auto* lock = reinterpret_cast<std::atomic<T>*>(p);
     unsigned spins = 0;
-    uintptr_t expected = 0;
-    while (!lock->compare_exchange_weak(expected, kSrwExclusive, std::memory_order_acquire)) {
+    T expected = 0;
+    while (!lock->compare_exchange_weak(expected, srwExclusive<T>(), std::memory_order_acquire)) {
         expected = 0;
         srwBackoff(spins);
     }
 }
-
-void NativeDllInterceptor::win_ReleaseSRWLockExclusive(void* SRWLock) {
-    s_kernel32Calls.fetch_add(1);
-    if (!SRWLock) return;
-    auto* lock = reinterpret_cast<std::atomic<uintptr_t>*>(SRWLock);
-    lock->store(0, std::memory_order_release);
+template <class T>
+void srwReleaseExclusive(void* p) { reinterpret_cast<std::atomic<T>*>(p)->store(0, std::memory_order_release); }
+template <class T>
+int32_t srwTryExclusive(void* p) {
+    T expected = 0;
+    return reinterpret_cast<std::atomic<T>*>(p)->compare_exchange_strong(expected, srwExclusive<T>(),
+                                                                       std::memory_order_acquire) ? 1 : 0;
 }
-
-int32_t NativeDllInterceptor::win_TryAcquireSRWLockExclusive(void* SRWLock) {
-    s_kernel32Calls.fetch_add(1);
-    if (!SRWLock) return 0;
-    auto* lock = reinterpret_cast<std::atomic<uintptr_t>*>(SRWLock);
-    uintptr_t expected = 0;
-    return lock->compare_exchange_strong(expected, kSrwExclusive, std::memory_order_acquire) ? 1 : 0;
-}
-
-void NativeDllInterceptor::win_AcquireSRWLockShared(void* SRWLock) {
-    s_kernel32Calls.fetch_add(1);
-    if (!SRWLock) return;
-    auto* lock = reinterpret_cast<std::atomic<uintptr_t>*>(SRWLock);
+template <class T>
+void srwAcquireShared(void* p) {
+    auto* lock = reinterpret_cast<std::atomic<T>*>(p);
     unsigned spins = 0;
-    uintptr_t cur = lock->load(std::memory_order_relaxed);
+    T cur = lock->load(std::memory_order_relaxed);
     for (;;) {
-        if ((cur & kSrwExclusive) == 0) {
+        if ((cur & srwExclusive<T>()) == 0) {
             if (lock->compare_exchange_weak(cur, cur + 1, std::memory_order_acquire)) return;
             continue;  // cur actualizado por el CAS
         }
@@ -9083,26 +9151,59 @@ void NativeDllInterceptor::win_AcquireSRWLockShared(void* SRWLock) {
         cur = lock->load(std::memory_order_relaxed);
     }
 }
+template <class T>
+void srwReleaseShared(void* p) {
+    auto* lock = reinterpret_cast<std::atomic<T>*>(p);
+    T cur = lock->load(std::memory_order_relaxed);
+    while ((cur & ~srwExclusive<T>()) != 0 &&
+           !lock->compare_exchange_weak(cur, cur - 1, std::memory_order_release)) {
+    }
+}
+template <class T>
+int32_t srwTryShared(void* p) {
+    auto* lock = reinterpret_cast<std::atomic<T>*>(p);
+    T cur = lock->load(std::memory_order_relaxed);
+    while ((cur & srwExclusive<T>()) == 0) {
+        if (lock->compare_exchange_weak(cur, cur + 1, std::memory_order_acquire)) return 1;
+    }
+    return 0;
+}
+}  // namespace
+
+void NativeDllInterceptor::win_AcquireSRWLockExclusive(void* SRWLock) {
+    s_kernel32Calls.fetch_add(1);
+    if (!SRWLock) return;
+    lowmem::enabled() ? srwAcquireExclusive<uint32_t>(SRWLock) : srwAcquireExclusive<uint64_t>(SRWLock);
+}
+
+void NativeDllInterceptor::win_ReleaseSRWLockExclusive(void* SRWLock) {
+    s_kernel32Calls.fetch_add(1);
+    if (!SRWLock) return;
+    lowmem::enabled() ? srwReleaseExclusive<uint32_t>(SRWLock) : srwReleaseExclusive<uint64_t>(SRWLock);
+}
+
+int32_t NativeDllInterceptor::win_TryAcquireSRWLockExclusive(void* SRWLock) {
+    s_kernel32Calls.fetch_add(1);
+    if (!SRWLock) return 0;
+    return lowmem::enabled() ? srwTryExclusive<uint32_t>(SRWLock) : srwTryExclusive<uint64_t>(SRWLock);
+}
+
+void NativeDllInterceptor::win_AcquireSRWLockShared(void* SRWLock) {
+    s_kernel32Calls.fetch_add(1);
+    if (!SRWLock) return;
+    lowmem::enabled() ? srwAcquireShared<uint32_t>(SRWLock) : srwAcquireShared<uint64_t>(SRWLock);
+}
 
 void NativeDllInterceptor::win_ReleaseSRWLockShared(void* SRWLock) {
     s_kernel32Calls.fetch_add(1);
     if (!SRWLock) return;
-    auto* lock = reinterpret_cast<std::atomic<uintptr_t>*>(SRWLock);
-    uintptr_t cur = lock->load(std::memory_order_relaxed);
-    while ((cur & ~kSrwExclusive) != 0 &&
-           !lock->compare_exchange_weak(cur, cur - 1, std::memory_order_release)) {
-    }
+    lowmem::enabled() ? srwReleaseShared<uint32_t>(SRWLock) : srwReleaseShared<uint64_t>(SRWLock);
 }
 
 int32_t NativeDllInterceptor::win_TryAcquireSRWLockShared(void* SRWLock) {
     s_kernel32Calls.fetch_add(1);
     if (!SRWLock) return 0;
-    auto* lock = reinterpret_cast<std::atomic<uintptr_t>*>(SRWLock);
-    uintptr_t cur = lock->load(std::memory_order_relaxed);
-    while ((cur & kSrwExclusive) == 0) {
-        if (lock->compare_exchange_weak(cur, cur + 1, std::memory_order_acquire)) return 1;
-    }
-    return 0;
+    return lowmem::enabled() ? srwTryShared<uint32_t>(SRWLock) : srwTryShared<uint64_t>(SRWLock);
 }
 
 int32_t NativeDllInterceptor::win_SleepConditionVariableSRW(void* ConditionVariable, void* SRWLock, uint32_t dwMilliseconds, uint32_t Flags) {
@@ -10321,6 +10422,35 @@ bool guestImageRange(uint64_t addr, uint64_t& base, uint64_t& end) {
 }  // namespace
 
 size_t NativeDllInterceptor::win_VirtualQuery(const void* lpAddress, void* lpBuffer, size_t dwLength) {
+    // Invitado de 32 bits: MEMORY_BASIC_INFORMATION mide 28 bytes (campos de 4). Se calcula el de x64 en
+    // un búfer temporal y se copia campo a campo (escribir los 48 desbordaba el del invitado).
+    static thread_local bool t_inner = false;
+    if (lowmem::enabled() && !t_inner) {
+        if (lpBuffer == nullptr || dwLength < 28) {
+            win_SetLastError(24);
+            return 0;
+        }
+        uint8_t mbi64[48] = {};
+        t_inner = true;
+        const size_t r = win_VirtualQuery(lpAddress, mbi64, sizeof(mbi64));
+        t_inner = false;
+        if (r == 0) return 0;
+        auto field = [&](size_t off) {
+            uint64_t v = 0;
+            std::memcpy(&v, mbi64 + off, 8);
+            return static_cast<uint32_t>(std::min<uint64_t>(v, 0xFFFFFFFFull));
+        };
+        uint32_t mbi32[7];
+        mbi32[0] = field(0x00);                                   // BaseAddress
+        mbi32[1] = field(0x08);                                   // AllocationBase
+        std::memcpy(&mbi32[2], mbi64 + 0x10, 4);                  // AllocationProtect
+        mbi32[3] = field(0x18);                                   // RegionSize
+        std::memcpy(&mbi32[4], mbi64 + 0x20, 4);                  // State
+        std::memcpy(&mbi32[5], mbi64 + 0x24, 4);                  // Protect
+        std::memcpy(&mbi32[6], mbi64 + 0x28, 4);                  // Type
+        std::memcpy(lpBuffer, mbi32, sizeof(mbi32));
+        return sizeof(mbi32);
+    }
     s_kernel32Calls.fetch_add(1);
     constexpr size_t kMbiSize = 48;  // MEMORY_BASIC_INFORMATION (x64)
     constexpr uint64_t kMaxUser = 0x7FFFFFFEFFFFull;

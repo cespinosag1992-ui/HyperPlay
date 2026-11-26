@@ -22,7 +22,7 @@ object ManagedRuntime {
     const val RUNTIME_VERSION = 1
     const val RUNTIME_TAG = "runtime-mono-x64-1"
     const val RUNTIME_ZIP = "hyperplay-runtime-mono-x64-1.zip"
-    const val RUNTIME_URL = "https://github.com/cespinosag1992-ui/HyperPlay/releases/download/$RUNTIME_TAG/$RUNTIME_ZIP"
+    const val RUNTIME_URL = "https://github.com/murdoc820/HyperPlay/releases/download/$RUNTIME_TAG/$RUNTIME_ZIP"
     const val RUNTIME_SHA256 = "84fa30600a8b12942ace289746b42397ddb38085cf3c63b8b8462fff02f027b2"
 
     /** Copia manual (desarrollo) y carpeta para DLL x64 opcionales del usuario (FMOD real). */
