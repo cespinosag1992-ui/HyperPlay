@@ -258,6 +258,8 @@ public:
     static void addExecutableRangeAll(uintptr_t base, size_t size);
     static void removeExecutableRangeAll(uintptr_t base, size_t size);
     static void invalidateCodeRangeAll(uintptr_t base, size_t size);
+    /// Base del módulo PE que contiene una dirección (lo da el cargador; para la sonda de diagnóstico).
+    static void setModuleBaseResolver(uint64_t (*fn)(uint64_t));
     bool findCodeRange(uintptr_t rip, CodeRange& out) const;
 
     // Código automodificable: el interceptor indica la protección POSIX de una página del
@@ -563,6 +565,7 @@ private:
     bool lastExitDynamic_ = false;
     // call [IAT] hacia una función nativa de la lista rápida: BLR directo desde el bloque.
     void emitX87Call(uint8_t op, uint8_t modrm, bool hasEa);
+    void emitProbeCall(uintptr_t rip);
     void emitFastNativeCall(uintptr_t fn, bool blocking, uintptr_t nextRip, bool tailCall = false,
                             uintptr_t iatSlot = 0);
 

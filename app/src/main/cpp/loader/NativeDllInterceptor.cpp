@@ -8300,6 +8300,17 @@ void NativeDllInterceptor::win_RtlUnwindEx(void* TargetFrame, void* TargetIp, vo
                       static_cast<uint8_t*>(ContextRecord));
 }
 
+namespace {
+// Para la sonda del traductor (debug.hyperplay.probe): RVAs relativas al módulo del cargador.
+[[maybe_unused]] const bool s_probeResolverSet = [] {
+    OryonEmitterBackend::setModuleBaseResolver([](uint64_t pc) -> uint64_t {
+        sehimpl::initOnce();
+        return seh::moduleBaseOf(pc);
+    });
+    return true;
+}();
+}  // namespace
+
 void* NativeDllInterceptor::win_RtlPcToFileHeader(void* PcValue, void** BaseOfImage) {
     s_ntdllCalls.fetch_add(1);
     sehimpl::initOnce();

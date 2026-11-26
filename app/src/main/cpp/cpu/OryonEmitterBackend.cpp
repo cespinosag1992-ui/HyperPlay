@@ -2771,6 +2771,135 @@ void OryonEmitterBackend::emitFastNativeCall(uintptr_t fn, bool blocking, uintpt
     if (tailCall) lastExitDynamic_ = true;  // el bloque termina con la búsqueda en línea del RIP
 }
 
+// --- Sonda de diagnóstico (setprop debug.hyperplay.probe "rva1,rva2,...") -----------------------
+// Un bloque que empieza en <módulo PE>+RVA (base según el cargador, como RtlPcToFileHeader) llama antes de
+// su primera instrucción a probeLog, que registra RAX..R9, [RSP] y los textos a los que apuntan
+// RCX/RDX/R8/R9. Sirve para ver argumentos y resultados de funciones sin símbolos (coreclr.dll).
+namespace {
+const std::vector<uint64_t>& probeRvas() {
+    static const std::vector<uint64_t> s = [] {
+        std::vector<uint64_t> v;
+#if defined(__ANDROID__)
+        char buf[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.probe", buf) > 0) {
+            const char* p = buf;
+            while (*p != '\0') {
+                char* end = nullptr;
+                const unsigned long long x = std::strtoull(p, &end, 16);
+                if (end == p) break;
+                if (x != 0) v.push_back(x);
+                p = (*end == ',') ? end + 1 : end;
+            }
+        }
+#endif
+        if (!v.empty()) LOGI("[Sonda] %zu RVAs vigiladas", v.size());
+        return v;
+    }();
+    return s;
+}
+
+bool probeReadable(uintptr_t addr, size_t len) {
+    if (addr < 0x10000) return false;
+    const uintptr_t ps = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE));
+    const uintptr_t first = addr & ~(ps - 1);
+    const size_t span = static_cast<size_t>((addr + len - 1 - first) / ps) + 1;
+    unsigned char vec[8] = {};
+    if (span > sizeof(vec)) return false;
+    return mincore(reinterpret_cast<void*>(first), span * ps, vec) == 0;
+}
+
+std::atomic<uint64_t (*)(uint64_t)> s_moduleBaseOf{nullptr};
+
+bool probeMatches(uintptr_t rip) {
+    auto baseOf = s_moduleBaseOf.load(std::memory_order_acquire);
+    if (baseOf == nullptr) return false;
+    const uint64_t base = baseOf(rip);
+    if (base == 0) return false;
+    for (const uint64_t rva : probeRvas()) {
+        if (rip - base == rva) return true;
+    }
+    return false;
+}
+
+std::string probeText(uint64_t p) {
+    if (!probeReadable(p, 64)) return {};
+    const auto* b = reinterpret_cast<const uint8_t*>(p);
+    std::string a, w;
+    for (size_t i = 0; i < 64 && b[i] >= 0x20 && b[i] < 0x7F; ++i) a.push_back(static_cast<char>(b[i]));
+    for (size_t i = 0; i + 1 < 64 && b[i] >= 0x20 && b[i] < 0x7F && b[i + 1] == 0; i += 2) w.push_back(static_cast<char>(b[i]));
+    if (w.size() >= 3) return " u\"" + w + "\"";
+    if (a.size() >= 3) return " \"" + a + "\"";
+    return {};
+}
+}  // namespace
+
+void OryonEmitterBackend::setModuleBaseResolver(uint64_t (*fn)(uint64_t)) {
+    s_moduleBaseOf.store(fn, std::memory_order_release);
+}
+
+static void probeLog(CpuContext* c, uint64_t rip) {
+    static std::atomic<int> s_hits{0};
+    if (s_hits.fetch_add(1) >= 400) return;
+    uint64_t ret = 0;
+    if (probeReadable(c->gpr[4], 8)) ret = *reinterpret_cast<const uint64_t*>(c->gpr[4]);
+    LOGI("[Sonda] rip=%llx rax=%llx rcx=%llx%s rdx=%llx%s r8=%llx%s r9=%llx%s ret=%llx",
+         static_cast<unsigned long long>(rip), static_cast<unsigned long long>(c->gpr[0]),
+         static_cast<unsigned long long>(c->gpr[1]), probeText(c->gpr[1]).c_str(),
+         static_cast<unsigned long long>(c->gpr[2]), probeText(c->gpr[2]).c_str(),
+         static_cast<unsigned long long>(c->gpr[8]), probeText(c->gpr[8]).c_str(),
+         static_cast<unsigned long long>(c->gpr[9]), probeText(c->gpr[9]).c_str(),
+         static_cast<unsigned long long>(ret));
+    if (probeReadable(c->gpr[8], 32)) {
+        const auto* q = reinterpret_cast<const uint64_t*>(c->gpr[8]);
+        LOGI("[Sonda]   [r8]=%llx%s [r8+8]=%llx%s [r8+10]=%llx [r8+18]=%llx [r8+20]=%llx",
+             static_cast<unsigned long long>(q[0]), probeText(q[0]).c_str(),
+             static_cast<unsigned long long>(q[1]), probeText(q[1]).c_str(),
+             static_cast<unsigned long long>(q[2]), static_cast<unsigned long long>(q[3]),
+             static_cast<unsigned long long>(probeReadable(c->gpr[8] + 32, 8) ? q[4] : 0));
+    }
+    if (probeReadable(c->gpr[1], 32)) {
+        const auto* q = reinterpret_cast<const uint64_t*>(c->gpr[1]);
+        LOGI("[Sonda]   [rcx]=%llx%s [rcx+8]=%llx%s [rcx+10]=%llx [rcx+18]=%llx",
+             static_cast<unsigned long long>(q[0]), probeText(q[0]).c_str(),
+             static_cast<unsigned long long>(q[1]), probeText(q[1]).c_str(),
+             static_cast<unsigned long long>(q[2]), static_cast<unsigned long long>(q[3]));
+    }
+    LOGI("[Sonda]   rbx=%llx rsi=%llx rdi=%llx r12=%llx r13=%llx r14=%llx r15=%llx",
+         static_cast<unsigned long long>(c->gpr[3]), static_cast<unsigned long long>(c->gpr[6]),
+         static_cast<unsigned long long>(c->gpr[7]), static_cast<unsigned long long>(c->gpr[12]),
+         static_cast<unsigned long long>(c->gpr[13]), static_cast<unsigned long long>(c->gpr[14]),
+         static_cast<unsigned long long>(c->gpr[15]));
+}
+
+void OryonEmitterBackend::emitProbeCall(uintptr_t rip) {
+    const int32_t nzcvOffset = static_cast<int32_t>(offsetof(CpuContext, nzcv));
+    const int32_t simdOffset = static_cast<int32_t>(offsetof(CpuContext, simd));
+    for (uint8_t i = 0; i < 8; ++i) {
+        emitStrQ(i, 19, simdOffset + static_cast<int32_t>(i * 16));
+        emitStrQ(static_cast<uint8_t>(i + 16), 19, simdOffset + static_cast<int32_t>((i + 8) * 16));
+    }
+    for (uint8_t i = 0; i < 8; ++i) {
+        emitStpX(static_cast<uint8_t>(i * 2), static_cast<uint8_t>(i * 2 + 1), 19, static_cast<int32_t>(i * 16));
+    }
+    emitWord(0xD53B4211u);  // MRS X17, NZCV
+    emitStrX(17, 19, nzcvOffset);
+    emitMovReg(0, 19, true);
+    emitMovImm64(1, rip);
+    emitMovHostAddr(16, reinterpret_cast<uintptr_t>(&probeLog), kJitRelocLib);
+    emitStpPre(29, 30, 31, -2);
+    emitBlr(16);
+    emitLdpPost(29, 30, 31, 2);
+    emitLdrX(17, 19, nzcvOffset);
+    emitWord(0xD51B4211u);  // MSR NZCV, X17
+    for (uint8_t i = 0; i < 8; ++i) {
+        emitLdpX(static_cast<uint8_t>(i * 2), static_cast<uint8_t>(i * 2 + 1), 19, static_cast<int32_t>(i * 16));
+    }
+    for (uint8_t i = 0; i < 8; ++i) {
+        emitLdrQ(i, 19, simdOffset + static_cast<int32_t>(i * 16));
+        emitLdrQ(static_cast<uint8_t>(i + 16), 19, simdOffset + static_cast<int32_t>((i + 8) * 16));
+    }
+}
+
 // Instrucción x87: guarda el estado invitado (GPR y XMM en ctx, NZCV en ctx.nzcv porque la
 // llamada a C lo destruye), llama a executeX87(ctx, op, modrm, ea = X16 si hay memoria) y lo
 // recarga. No sale al despachador (salvo FCOMI, que lo decide quien llama).
@@ -9783,6 +9912,8 @@ TranslatedBlock* OryonEmitterBackend::compileLocked(const uint8_t* code, size_t 
 
     emitPrologue();
     prologueBytes_ = jitOffset_ - start;  // el cuerpo empieza aquí (destino de los enlaces)
+    const bool probed = !probeRvas().empty() && probeMatches(baseRip);
+    if (probed) emitProbeCall(baseRip);
     curBlockRip_ = baseRip;
     struct ClearBlockRip {
         uintptr_t& r;
@@ -9859,7 +9990,7 @@ TranslatedBlock* OryonEmitterBackend::compileLocked(const uint8_t* code, size_t 
 
     // Caché persistente: el bloque recién emitido aún no tiene enlaces (se parchean después,
     // desde el despachador), así que se guarda tal cual, sin estado de esta ejecución.
-    if (JitDiskCache& disk = JitDiskCache::instance(); disk.enabled() && consumed > 0) {
+    if (JitDiskCache& disk = JitDiskCache::instance(); disk.enabled() && consumed > 0 && !probed) {
         JitRecord rec;
         rec.guestRip = baseRip;
         rec.guestHash = JitDiskCache::hashBytes(code, consumed);
@@ -10184,7 +10315,8 @@ TranslatedBlock* OryonEmitterBackend::translateBlock(uintptr_t guestRip) {
     smcProtectForTranslation(guestRip, std::min<size_t>(available, kMaxGuestBytesPerBlock));
     const uint8_t* code = reinterpret_cast<const uint8_t*>(guestRip);
     const auto t0 = std::chrono::steady_clock::now();
-    TranslatedBlock* block = loadPersistedLocked(guestRip, available);
+    // Con una sonda en este RIP no se usa el bloque guardado (no la llevaría).
+    TranslatedBlock* block = (!probeRvas().empty() && probeMatches(guestRip)) ? nullptr : loadPersistedLocked(guestRip, available);
     if (block == nullptr) block = compileLocked(code, available, guestRip);
     s_jitNs.fetch_add(static_cast<uint64_t>(
                           std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count()),
