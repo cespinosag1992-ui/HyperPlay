@@ -10,6 +10,7 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **Branding: the game start screen said "HYPERPLAY".** It now shows the Exedra64 name like the rest of the app.
 - **32-bit games: controller input reaches the game (DmC opens its main menu).** `GetFocus` now returns the game window for
   32-bit games; Unreal 3 only reads the keyboard and controller while its window has the focus.
 - **Direct3D 9 renderer (Vulkan) for 32-bit games: DmC shows its title screen at about 60 FPS.** New `gfx/D3D9GpuRenderer`:
@@ -78,6 +79,7 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Marca: la pantalla de inicio de un juego decía "HYPERPLAY".** Ahora muestra el nombre Exedra64 como el resto de la app.
 - **Juegos de 32 bits: el mando llega al juego (DmC abre su menú principal).** `GetFocus` devuelve ahora la ventana del
   juego en 32 bits; Unreal 3 solo lee teclado y mando mientras su ventana tiene el foco.
 - **Renderizador Direct3D 9 (Vulkan) para juegos de 32 bits: DmC muestra su pantalla de título a unos 60 FPS.** Nuevo

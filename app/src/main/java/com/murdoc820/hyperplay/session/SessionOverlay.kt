@@ -168,7 +168,7 @@ private fun LoadingScreen(state: SessionUiState) {
         Row(Modifier.align(Alignment.TopStart).padding(36.dp), verticalAlignment = Alignment.CenterVertically) {
             com.murdoc820.hyperplay.ui.HyperLogo(30.dp)
             Spacer(Modifier.width(10.dp))
-            Text("HYPERPLAY", color = Deck.Text, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
+            Text(androidx.compose.ui.res.stringResource(com.murdoc820.hyperplay.R.string.brand_upper), color = Deck.Text, fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
         }
         Column(Modifier.align(Alignment.BottomStart).padding(start = 56.dp, bottom = 56.dp).widthIn(max = 620.dp)) {
             val logo = art?.logo
