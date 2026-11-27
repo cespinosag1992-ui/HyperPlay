@@ -335,10 +335,11 @@ private fun ActionsPane(
 private fun LiveStatus(state: SessionUiState) {
     val target = FrameGenLogic.presentedFps(FrameGenLogic.gameFps(state.thermal, state.frameGen), state.frameGen)
     val fps = state.presentFps
-    val fpsColor = when {
-        target <= 0 || fps >= target * 0.95f -> Mac.Green
-        fps >= target * 0.8f -> Mac.Orange
-        else -> Mac.Red
+    // Mismos umbrales de jugabilidad que el overlay de rendimiento (rojo solo por debajo de lo jugable).
+    val fpsColor = when (PerfMonitorLogic.fpsLevel(fps.toFloat(), target)) {
+        PerfLevel.BAD -> Mac.Red
+        PerfLevel.WARN -> Mac.Orange
+        else -> Mac.Green
     }
     StatusLine(fpsColor, if (target > 0) stringResource(R.string.fps_of, fps, target) else stringResource(R.string.fps_now, fps))
     val bat = state.perf.batteryTempC

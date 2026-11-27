@@ -192,27 +192,37 @@ object PerfMonitorLogic {
         return if (c in MIN_VALID_C..MAX_VALID_C) c else null
     }
 
+    /**
+     * FPS por jugabilidad, no por el tope: verde desde 55 FPS, ámbar entre 30 y 55, rojo solo por debajo de 30
+     * (por debajo de ahí un juego deja de considerarse jugable). Un juego a 90 con tope 120 va bien: verde.
+     */
     fun fpsLevel(fps: Float?): PerfLevel = when {
         fps == null -> PerfLevel.NONE
-        fps >= 58f -> PerfLevel.GOOD
-        fps >= 45f -> PerfLevel.WARN
+        fps >= GOOD_FPS -> PerfLevel.GOOD
+        fps >= PLAYABLE_FPS -> PerfLevel.WARN
         else -> PerfLevel.BAD
     }
 
     /**
-     * FPS respecto al tope activo: verde hasta 3 FPS por debajo del objetivo (60 → ≥ 57, 72 → ≥ 69),
-     * ámbar hasta el 85 % del objetivo, rojo por debajo. Sin tope (0) se usa la escala fija.
+     * Con un tope bajo (30, 40...) se mide contra él: verde hasta 3 FPS por debajo del tope, rojo por debajo del
+     * 80 % del tope. Sin tope (0) o con tope alto, la escala fija de [fpsLevel].
      */
     fun fpsLevel(fps: Float?, targetFps: Int): PerfLevel {
+        if (fps == null) return PerfLevel.NONE
         if (targetFps <= 0) return fpsLevel(fps)
+        val good = minOf(GOOD_FPS, targetFps - 3f)
+        val playable = minOf(PLAYABLE_FPS, targetFps * 0.8f)
         return when {
-            fps == null -> PerfLevel.NONE
-            fps >= targetFps - 3f -> PerfLevel.GOOD
-            fps >= targetFps * 0.85f -> PerfLevel.WARN
+            fps >= good -> PerfLevel.GOOD
+            fps >= playable -> PerfLevel.WARN
             else -> PerfLevel.BAD
         }
     }
 
+    /** Desde aquí el juego va fluido (verde). */
+    const val GOOD_FPS = 55f
+    /** Por debajo de esto un juego deja de ser jugable (rojo). */
+    const val PLAYABLE_FPS = 30f
     /** Temperatura del SoC (CPU/GPU) del Snapdragon 8 Elite: < 65 °C verde, ≤ 80 °C ámbar, > 80 °C rojo. */
     fun tempLevel(c: Float?): PerfLevel = when {
         c == null -> PerfLevel.NONE

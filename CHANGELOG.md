@@ -10,6 +10,8 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **Overlay: FPS colours show playability, not distance to the cap.** Green from 55 FPS, amber from 30, red only below 30
+  (with a low cap such as 30 FPS, green near the cap). A game at 90 FPS with a 120 FPS cap is no longer shown in red.
 - **Branding: the game start screen said "HYPERPLAY".** It now shows the Exedra64 name like the rest of the app.
 - **32-bit games: controller input reaches the game (DmC opens its main menu).** `GetFocus` now returns the game window for
   32-bit games; Unreal 3 only reads the keyboard and controller while its window has the focus.
@@ -79,6 +81,9 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Overlay: los colores de FPS indican si el juego es jugable, no lo lejos que está del tope.** Verde desde 55 FPS, ámbar
+  desde 30 y rojo solo por debajo de 30 (con un tope bajo, como 30 FPS, verde cerca del tope). Un juego a 90 FPS con tope 120
+  ya no sale en rojo.
 - **Marca: la pantalla de inicio de un juego decía "HYPERPLAY".** Ahora muestra el nombre Exedra64 como el resto de la app.
 - **Juegos de 32 bits: el mando llega al juego (DmC abre su menú principal).** `GetFocus` devuelve ahora la ventana del
   juego en 32 bits; Unreal 3 solo lee teclado y mando mientras su ventana tiene el foco.

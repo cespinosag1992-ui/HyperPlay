@@ -116,7 +116,8 @@ class PerfMonitorTest {
         assertEquals(PerfLevel.GOOD, L.fpsLevel(60f))
         assertEquals(PerfLevel.GOOD, L.fpsLevel(58f))
         assertEquals(PerfLevel.WARN, L.fpsLevel(50f))
-        assertEquals(PerfLevel.BAD, L.fpsLevel(30f))
+        assertEquals(PerfLevel.WARN, L.fpsLevel(30f))
+        assertEquals(PerfLevel.BAD, L.fpsLevel(29f))
         assertEquals(PerfLevel.NONE, L.fpsLevel(null))
         // SoC del Snapdragon 8 Elite: < 65 verde, ≤ 80 ámbar, > 80 rojo (antes 45/55: rojo en carga normal).
         assertEquals(PerfLevel.GOOD, L.tempLevel(40f))

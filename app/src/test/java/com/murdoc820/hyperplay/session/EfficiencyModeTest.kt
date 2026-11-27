@@ -228,12 +228,16 @@ class EfficiencyModeTest {
     fun fpsLevelIsRelativeToTheActiveCap() {
         val L = PerfMonitorLogic
         assertEquals(PerfLevel.GOOD, L.fpsLevel(57f, 60))
-        assertEquals(PerfLevel.WARN, L.fpsLevel(55f, 60))
-        assertEquals(PerfLevel.BAD, L.fpsLevel(50f, 60))
+        assertEquals(PerfLevel.GOOD, L.fpsLevel(55f, 60))
+        assertEquals(PerfLevel.WARN, L.fpsLevel(50f, 60))
         assertEquals(PerfLevel.GOOD, L.fpsLevel(70f, 72))
-        assertEquals(PerfLevel.WARN, L.fpsLevel(65f, 72))
+        assertEquals(PerfLevel.GOOD, L.fpsLevel(65f, 72))
         assertEquals(PerfLevel.GOOD, L.fpsLevel(118f, 120))
-        assertEquals(PerfLevel.BAD, L.fpsLevel(90f, 120))
+        assertEquals(PerfLevel.GOOD, L.fpsLevel(90f, 120))  // 90 con tope 120: jugable, verde
+        assertEquals(PerfLevel.WARN, L.fpsLevel(40f, 120))
+        assertEquals(PerfLevel.BAD, L.fpsLevel(25f, 120))
+        assertEquals(PerfLevel.GOOD, L.fpsLevel(28f, 30))  // tope bajo: contra el tope
+        assertEquals(PerfLevel.BAD, L.fpsLevel(20f, 30))
         assertEquals(L.fpsLevel(50f), L.fpsLevel(50f, 0))  // sin tope: escala fija
         assertEquals(PerfLevel.NONE, L.fpsLevel(null, 60))
     }
