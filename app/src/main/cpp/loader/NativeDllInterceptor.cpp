@@ -22,6 +22,8 @@
 #include "Win64Context.h"
 #include "Win32Context.h"
 #include "D3D9Probe32.h"
+#include "DirectInput32.h"
+#include "DirectSound32.h"
 #include "SteamEmu32.h"
 #include "GuestSeh.h"
 #include "gfx/GuestOpenGl.h"
@@ -5704,6 +5706,8 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "CreateDXGIFactory1") result = w32arity::hpFn(&win_CreateDXGIFactory1);
         else if (funcName == "CreateDXGIFactory2") result = w32arity::hpFn(&win_CreateDXGIFactory2);
     }
+    if (!result && dll == "dsound.dll" && s_activeImage != nullptr && s_activeImage->is32Bit) result = dsound32::resolve(funcName);
+    if (!result && dll == "dinput8.dll" && s_activeImage != nullptr && s_activeImage->is32Bit) result = dinput32::resolve(funcName);
     if (!result && dll == "d3d9.dll") {
         s_d3dCalls.fetch_add(1);
         if (s_activeImage != nullptr && s_activeImage->is32Bit) {
@@ -9587,11 +9591,13 @@ static std::string buildCommandLine() {
                       static_cast<int>(win32::screenWidth()), static_cast<int>(win32::screenHeight()));
         full += args;
     }
-    // Unreal Engine 3 (Binaries/Win32 con Engine/Config): -dx11 elige el RHI de Direct3D 11 (SM5,
-    // que el juego trae cocinado) en lugar de D3D9, sin modificar los .ini del jugador.
+    // Unreal Engine 3: RHI elegido a mano para pruebas (setprop debug.hyperplay.ue3rhi d3d9|dx11|opengl).
+    // Sin la propiedad, el del juego (DmC solo trae D3D9 activo: su comprobación de D3D11 devuelve 0 y no
+    // incluye shaders de OpenGL).
     if (s_activeImage != nullptr && s_activeImage->is32Bit &&
         access((s_activeImage->gameDir + "/../../Engine/Config/BaseEngine.ini").c_str(), F_OK) == 0) {
-        full += " -dx11";
+        char rhi[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.ue3rhi", rhi) > 0) full += std::string(" -") + rhi;
     }
     LOGI("Línea de comandos del juego: %s", full.c_str());
     return full;
@@ -10568,13 +10574,16 @@ void NativeDllInterceptor::win_CoUninitialize() {
 
 namespace {
 int32_t wasapiCreateEnumerator(uint32_t iidData1, void** ppv);
+uint32_t wasapi32ToGuest(void* host);  // proxy de 32 bits de un objeto WASAPI (más abajo)
 }  // namespace
 
 int32_t NativeDllInterceptor::win_CoCreateInstance(const void* rclsid, void* pUnkOuter, uint32_t,
                                                    const void* riid, void** ppv) {
     s_otherCalls.fetch_add(1);
     if (ppv == nullptr) return static_cast<int32_t>(0x80004003);  // E_POINTER
-    *ppv = nullptr;
+    // Tamaño de puntero del invitado: en 32 bits escribir 8 bytes pisaba lo que sigue a ppv en la pila
+    // (el EBP guardado de Wwise en DmC).
+    lowmem::storePtr(ppv, uint64_t{0});
     if (rclsid == nullptr || riid == nullptr) return static_cast<int32_t>(0x80070057);  // E_INVALIDARG
 
     const auto* c = static_cast<const uint8_t*>(rclsid);
@@ -10585,10 +10594,23 @@ int32_t NativeDllInterceptor::win_CoCreateInstance(const void* rclsid, void* pUn
                               (static_cast<uint32_t>(i[2]) << 16) | (static_cast<uint32_t>(i[3]) << 24);
     // MMDeviceEnumerator: el objeto WASAPI es de 64 bits (vive por encima de 4 GB); un invitado de 32 bits
     // lo truncaba y fallaba. Hasta tener audio de 32 bits: "clase no registrada" (el juego sigue sin audio).
+    // DirectSound8 / DirectSound en 32 bits (Wwise cuando no hay XAudio2): IDirectSound8 sobre AAudio.
+    if ((clsData1 == 0x3901CC3Fu || clsData1 == 0x47D4D946u) && s_activeImage != nullptr && s_activeImage->is32Bit) {
+        if (ppv == nullptr) return static_cast<int32_t>(0x80004003);
+        const uint32_t dev = dsound32::create();
+        *reinterpret_cast<uint32_t*>(ppv) = dev;
+        return dev != 0 ? 0 : static_cast<int32_t>(0x8007000E);
+    }
+    // MMDeviceEnumerator en 32 bits: el objeto real es de 64 bits; el invitado recibe su proxy de 32 bits
+    // (vtable < 4 GB con las aridades exactas, ver wasapi32).
     if (clsData1 == 0xBCDE0395u && s_activeImage != nullptr && s_activeImage->is32Bit) {
-        if (ppv != nullptr) *reinterpret_cast<uint32_t*>(ppv) = 0;
-        LOGW("CoCreateInstance(MMDeviceEnumerator): sin WASAPI para 32 bits todavía");
-        return static_cast<int32_t>(0x80040154);
+        if (ppv == nullptr) return static_cast<int32_t>(0x80004003);  // E_POINTER
+        void* host = nullptr;
+        const int32_t r = wasapiCreateEnumerator(iidData1, &host);
+        const uint32_t guest = r == 0 ? wasapi32ToGuest(host) : 0u;
+        *reinterpret_cast<uint32_t*>(ppv) = guest;
+        LOGI("CoCreateInstance(MMDeviceEnumerator) 32 bits -> proxy 0x%x (hr=0x%x)", guest, static_cast<uint32_t>(r));
+        return guest != 0 ? r : static_cast<int32_t>(0x80040154);
     }
     if (clsData1 == 0xBCDE0395u) return wasapiCreateEnumerator(iidData1, ppv);  // MMDeviceEnumerator
     LOGW("CoCreateInstance: CLSID={%08X-...} IID={%08X-...} outer=%p no registrado",
@@ -15701,6 +15723,7 @@ void stopWasapiClient(WasapiClient* c) {
 // los hilos de audio del huésped no se detienen solos: el bombeo seguía enviando a AAudio y el
 // juego "se oía" en el launcher. Se paran todos los clientes WASAPI (cierra cada stream AAudio).
 void NativeDllInterceptor::stopAllAudio() noexcept {
+    dsound32::stopAll();
     std::vector<WasapiClient*> clients;
     {
         std::lock_guard<std::mutex> lock(s_wasapiMutex);
@@ -16120,6 +16143,299 @@ uint64_t wasapiDispatch(int iface, int slot, const ComArgs& args) {
             return hr(kHrNotImpl);
     }
 }
+
+// =============================================================================
+// WASAPI para invitados de 32 bits (Wwise de DmC).
+//
+// Los objetos WASAPI de arriba son de 64 bits (vtable de punteros de 8 bytes, direcciones del host).
+// Para un invitado x86 cada objeto tiene un proxy en memoria baja: su primera palabra es una vtable de
+// 32 bits cuyas entradas son alias < 4 GB de funciones nativas con la aridad exacta de cada método
+// (stdcall, `this` incluido). El proxy llama a wasapiDispatch con el objeto real; los punteros de salida
+// se reciben en temporales de 8 bytes y se devuelven al invitado como 4 bytes (interfaces -> su proxy).
+// GetBuffer entrega un búfer en memoria baja que ReleaseBuffer copia al del cliente. La ruta de 64 bits
+// no cambia.
+// =============================================================================
+namespace wasapi32 {
+using u32 = uint32_t;
+using i64 = int64_t;
+
+struct Proxy {
+    u32 vtbl;  // vtable de 32 bits (lo que lee el invitado)
+    u32 pad;
+    ComObject* host;
+    uint8_t* lowBuf;        // GetBuffer: búfer visible para el invitado
+    u32 lowCap;
+    uint8_t* hostStaging;   // GetBuffer: búfer real del cliente
+    u32 stagingBytes;
+};
+
+std::mutex g_mtx;
+std::unordered_map<const ComObject*, Proxy*> g_proxies;
+u32 g_vt[kComMMEndpoint + 1] = {};
+
+uint8_t* lowAlloc(size_t n) {
+    static uint8_t* cur = nullptr;
+    static size_t left = 0;
+    n = (n + 15) & ~size_t{15};
+    if (cur == nullptr || left < n) {
+        void* p = lowmem::mmapBelow4G(0x10000);
+        if (p == MAP_FAILED) return nullptr;
+        cur = static_cast<uint8_t*>(p);
+        left = 0x10000;
+    }
+    uint8_t* r = cur;
+    cur += n;
+    left -= n;
+    return r;
+}
+
+Proxy* P(u32 self) { return reinterpret_cast<Proxy*>(static_cast<uintptr_t>(self)); }
+uint64_t H(u32 self) { return self != 0 ? reinterpret_cast<uintptr_t>(P(self)->host) : 0; }
+template <typename T> T* G(u32 a) { return reinterpret_cast<T*>(static_cast<uintptr_t>(a)); }
+void put32(u32 guestAddr, u32 v) { if (guestAddr != 0) std::memcpy(G<void>(guestAddr), &v, 4); }
+
+u32 buildVtable(int kind);
+
+u32 toGuest(ComObject* host) {
+    if (host == nullptr) return 0;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (const auto it = g_proxies.find(host); it != g_proxies.end()) return static_cast<u32>(reinterpret_cast<uintptr_t>(it->second));
+    auto* p = reinterpret_cast<Proxy*>(lowAlloc(sizeof(Proxy)));
+    if (p == nullptr) return 0;
+    std::memset(p, 0, sizeof(Proxy));
+    const int kind = static_cast<int>(host->kind);
+    if (kind < kComMMEnumerator || kind > kComMMEndpoint) return 0;
+    if (g_vt[kind] == 0) g_vt[kind] = buildVtable(kind);
+    p->vtbl = g_vt[kind];
+    p->host = host;
+    g_proxies[host] = p;
+    return static_cast<u32>(reinterpret_cast<uintptr_t>(p));
+}
+
+u32 call(int iface, int slot, std::initializer_list<uint64_t> a) {
+    ComArgs args{};
+    size_t i = 0;
+    for (uint64_t v : a) args.a[i++] = v;
+    return static_cast<u32>(wasapiDispatch(iface, slot, args));
+}
+
+// Sin punteros de salida.
+template <int I, int S> u32 G1(u32 t) { return call(I, S, {H(t)}); }
+template <int I, int S> u32 G2(u32 t, u32 a) { return call(I, S, {H(t), a}); }
+template <int I, int S> u32 G3(u32 t, u32 a, u32 b) { return call(I, S, {H(t), a, b}); }
+template <int I, int S> u32 G5(u32 t, u32 a, u32 b, u32 c, u32 d) { return call(I, S, {H(t), a, b, c, d}); }
+
+// Interfaz de salida en el argumento K (contando `this` como 0): se devuelve su proxy.
+template <int I, int S, int K>
+u32 O3(u32 t, u32 a, u32 b) {
+    uint64_t tmp = 0;
+    uint64_t v[3] = {H(t), a, b};
+    const u32 guestOut = static_cast<u32>(v[K]);
+    v[K] = reinterpret_cast<uintptr_t>(&tmp);
+    const u32 r = call(I, S, {v[0], v[1], v[2]});
+    put32(guestOut, toGuest(reinterpret_cast<ComObject*>(static_cast<uintptr_t>(tmp))));
+    return r;
+}
+template <int I, int S, int K>
+u32 O4(u32 t, u32 a, u32 b, u32 c) {
+    uint64_t tmp = 0;
+    uint64_t v[4] = {H(t), a, b, c};
+    const u32 guestOut = static_cast<u32>(v[K]);
+    v[K] = reinterpret_cast<uintptr_t>(&tmp);
+    const u32 r = call(I, S, {v[0], v[1], v[2], v[3]});
+    put32(guestOut, toGuest(reinterpret_cast<ComObject*>(static_cast<uintptr_t>(tmp))));
+    return r;
+}
+template <int I, int S, int K>
+u32 O5(u32 t, u32 a, u32 b, u32 c, u32 d) {
+    uint64_t tmp = 0;
+    uint64_t v[5] = {H(t), a, b, c, d};
+    const u32 guestOut = static_cast<u32>(v[K]);
+    v[K] = reinterpret_cast<uintptr_t>(&tmp);
+    const u32 r = call(I, S, {v[0], v[1], v[2], v[3], v[4]});
+    put32(guestOut, toGuest(reinterpret_cast<ComObject*>(static_cast<uintptr_t>(tmp))));
+    return r;
+}
+// Dato de salida (CoTaskMem, ya < 4 GB en 32 bits) en el argumento K.
+template <int I, int S, int K>
+u32 D2(u32 t, u32 a) {
+    uint64_t tmp = 0;
+    uint64_t v[2] = {H(t), a};
+    const u32 guestOut = static_cast<u32>(v[K]);
+    v[K] = reinterpret_cast<uintptr_t>(&tmp);
+    const u32 r = call(I, S, {v[0], v[1]});
+    put32(guestOut, static_cast<u32>(tmp));
+    return r;
+}
+template <int I, int S, int K>
+u32 D4(u32 t, u32 a, u32 b, u32 c) {
+    uint64_t tmp = 0;
+    uint64_t v[4] = {H(t), a, b, c};
+    const u32 guestOut = static_cast<u32>(v[K]);
+    v[K] = reinterpret_cast<uintptr_t>(&tmp);
+    const u32 r = call(I, S, {v[0], v[1], v[2], v[3]});
+    put32(guestOut, static_cast<u32>(tmp));
+    return r;
+}
+
+// IAudioClient::Initialize(share, flags, REFERENCE_TIME buffer, REFERENCE_TIME period, format, session)
+u32 Initialize(u32 t, u32 share, u32 flags, i64 buf, i64 per, u32 fmt, u32 guid) {
+    return call(kComAudioClient, 3, {H(t), share, flags, static_cast<uint64_t>(buf), static_cast<uint64_t>(per), fmt, guid});
+}
+// IPropertyStore::GetValue: el PROPVARIANT de 32 bits mide 16 bytes (valor en +8, puntero de 4).
+u32 GetValue(u32 t, u32 key, u32 pv) {
+    if (pv == 0) return kHrPointer;
+    alignas(8) uint8_t tmp[24] = {};
+    const u32 r = call(kComPropertyStore, 5, {H(t), key, reinterpret_cast<uintptr_t>(tmp)});
+    uint8_t out[16] = {};
+    std::memcpy(out, tmp, 8);
+    uint64_t val = 0;
+    std::memcpy(&val, tmp + 8, 8);
+    const u32 low = static_cast<u32>(val);
+    std::memcpy(out + 8, &low, 4);
+    std::memcpy(G<void>(pv), out, 16);
+    return r;
+}
+// IAudioRenderClient::GetBuffer / ReleaseBuffer con búfer en memoria baja.
+u32 GetBuffer(u32 t, u32 frames, u32 ppData) {
+    uint64_t tmp = 0;
+    const u32 r = call(kComAudioRender, 3, {H(t), frames, reinterpret_cast<uintptr_t>(&tmp)});
+    Proxy* p = P(t);
+    if (r != 0 || tmp == 0) { put32(ppData, 0); return r; }
+    WasapiClient* c = asWasapiClient(p->host);
+    const u32 bytes = c != nullptr ? static_cast<u32>(frames * c->fmt.blockAlign) : 0;
+    if (bytes > p->lowCap) {
+        const u32 cap = std::max<u32>(bytes, 64 * 1024);
+        void* nb = lowmem::mmapBelow4G((cap + 0xFFF) & ~0xFFFu);
+        if (nb == MAP_FAILED) { put32(ppData, 0); return kHrOutOfMemory; }
+        if (p->lowBuf != nullptr) munmap(p->lowBuf, (p->lowCap + 0xFFF) & ~0xFFFu);
+        p->lowBuf = static_cast<uint8_t*>(nb);
+        p->lowCap = cap;
+    }
+    p->hostStaging = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(tmp));
+    p->stagingBytes = bytes;
+    put32(ppData, static_cast<u32>(reinterpret_cast<uintptr_t>(p->lowBuf)));
+    return r;
+}
+u32 ReleaseBuffer(u32 t, u32 frames, u32 flags) {
+    Proxy* p = P(t);
+    WasapiClient* c = asWasapiClient(p->host);
+    if (p->hostStaging != nullptr && p->lowBuf != nullptr && c != nullptr) {
+        const u32 bytes = std::min<u32>(static_cast<u32>(frames * c->fmt.blockAlign), p->stagingBytes);
+        std::memcpy(p->hostStaging, p->lowBuf, bytes);
+    }
+    p->hostStaging = nullptr;
+    return call(kComAudioRender, 4, {H(t), frames, flags});
+}
+
+template <int I>
+void iunknown(std::vector<void*>& m) {
+    m.push_back(w32arity::hpFn(&O3<I, 0, 2>));  // QueryInterface
+    m.push_back(w32arity::hpFn(&G1<I, 1>));     // AddRef
+    m.push_back(w32arity::hpFn(&G1<I, 2>));     // Release
+}
+
+u32 buildVtable(int kind) {
+    std::vector<void*> m;
+    switch (kind) {
+        case kComMMEnumerator:
+            iunknown<kComMMEnumerator>(m);
+            m.push_back(w32arity::hpFn(&O4<kComMMEnumerator, 3, 3>));  // EnumAudioEndpoints
+            m.push_back(w32arity::hpFn(&O4<kComMMEnumerator, 4, 3>));  // GetDefaultAudioEndpoint
+            m.push_back(w32arity::hpFn(&O3<kComMMEnumerator, 5, 2>));  // GetDevice
+            m.push_back(w32arity::hpFn(&G2<kComMMEnumerator, 6>));     // RegisterEndpointNotificationCallback
+            m.push_back(w32arity::hpFn(&G2<kComMMEnumerator, 7>));     // Unregister...
+            break;
+        case kComMMCollection:
+            iunknown<kComMMCollection>(m);
+            m.push_back(w32arity::hpFn(&G2<kComMMCollection, 3>));     // GetCount
+            m.push_back(w32arity::hpFn(&O3<kComMMCollection, 4, 2>));  // Item
+            break;
+        case kComMMDevice:
+            iunknown<kComMMDevice>(m);
+            m.push_back(w32arity::hpFn(&O5<kComMMDevice, 3, 4>));      // Activate
+            m.push_back(w32arity::hpFn(&O3<kComMMDevice, 4, 2>));      // OpenPropertyStore
+            m.push_back(w32arity::hpFn(&D2<kComMMDevice, 5, 1>));      // GetId
+            m.push_back(w32arity::hpFn(&G2<kComMMDevice, 6>));         // GetState
+            break;
+        case kComPropertyStore:
+            iunknown<kComPropertyStore>(m);
+            m.push_back(w32arity::hpFn(&G2<kComPropertyStore, 3>));    // GetCount
+            m.push_back(w32arity::hpFn(&G3<kComPropertyStore, 4>));    // GetAt
+            m.push_back(w32arity::hpFn(&GetValue));                    // GetValue
+            m.push_back(w32arity::hpFn(&G3<kComPropertyStore, 6>));    // SetValue
+            m.push_back(w32arity::hpFn(&G1<kComPropertyStore, 7>));    // Commit
+            break;
+        case kComMMEndpoint:
+            iunknown<kComMMEndpoint>(m);
+            m.push_back(w32arity::hpFn(&G2<kComMMEndpoint, 3>));       // GetDataFlow
+            break;
+        case kComAudioClient:
+            iunknown<kComAudioClient>(m);
+            m.push_back(w32arity::hpFn(&Initialize));                  // 3
+            m.push_back(w32arity::hpFn(&G2<kComAudioClient, 4>));      // GetBufferSize
+            m.push_back(w32arity::hpFn(&G2<kComAudioClient, 5>));      // GetStreamLatency
+            m.push_back(w32arity::hpFn(&G2<kComAudioClient, 6>));      // GetCurrentPadding
+            m.push_back(w32arity::hpFn(&D4<kComAudioClient, 7, 3>));   // IsFormatSupported
+            m.push_back(w32arity::hpFn(&D2<kComAudioClient, 8, 1>));   // GetMixFormat
+            m.push_back(w32arity::hpFn(&G3<kComAudioClient, 9>));      // GetDevicePeriod
+            m.push_back(w32arity::hpFn(&G1<kComAudioClient, 10>));     // Start
+            m.push_back(w32arity::hpFn(&G1<kComAudioClient, 11>));     // Stop
+            m.push_back(w32arity::hpFn(&G1<kComAudioClient, 12>));     // Reset
+            m.push_back(w32arity::hpFn(&G2<kComAudioClient, 13>));     // SetEventHandle
+            m.push_back(w32arity::hpFn(&O3<kComAudioClient, 14, 2>));  // GetService
+            m.push_back(w32arity::hpFn(&G3<kComAudioClient, 15>));     // IsOffloadCapable
+            m.push_back(w32arity::hpFn(&G2<kComAudioClient, 16>));     // SetClientProperties
+            m.push_back(w32arity::hpFn(&G5<kComAudioClient, 17>));     // GetBufferSizeLimits
+            break;
+        case kComAudioRender:
+            iunknown<kComAudioRender>(m);
+            m.push_back(w32arity::hpFn(&GetBuffer));
+            m.push_back(w32arity::hpFn(&ReleaseBuffer));
+            break;
+        case kComAudioClock:
+            iunknown<kComAudioClock>(m);
+            m.push_back(w32arity::hpFn(&G2<kComAudioClock, 3>));       // GetFrequency
+            m.push_back(w32arity::hpFn(&G3<kComAudioClock, 4>));       // GetPosition
+            m.push_back(w32arity::hpFn(&G2<kComAudioClock, 5>));       // GetCharacteristics
+            break;
+        case kComAudioVolume:
+            iunknown<kComAudioVolume>(m);
+            m.push_back(w32arity::hpFn(&G3<kComAudioVolume, 3>));      // SetMasterVolume(float, ctx)
+            m.push_back(w32arity::hpFn(&G2<kComAudioVolume, 4>));      // GetMasterVolume
+            m.push_back(w32arity::hpFn(&G3<kComAudioVolume, 5>));      // SetMute
+            m.push_back(w32arity::hpFn(&G2<kComAudioVolume, 6>));      // GetMute
+            break;
+        case kComAudioSession:
+            iunknown<kComAudioSession>(m);
+            m.push_back(w32arity::hpFn(&G2<kComAudioSession, 3>));     // GetState
+            m.push_back(w32arity::hpFn(&G2<kComAudioSession, 4>));     // GetDisplayName
+            m.push_back(w32arity::hpFn(&G3<kComAudioSession, 5>));     // SetDisplayName
+            m.push_back(w32arity::hpFn(&G2<kComAudioSession, 6>));     // GetIconPath
+            m.push_back(w32arity::hpFn(&G3<kComAudioSession, 7>));     // SetIconPath
+            m.push_back(w32arity::hpFn(&G2<kComAudioSession, 8>));     // GetGroupingParam
+            m.push_back(w32arity::hpFn(&G3<kComAudioSession, 9>));     // SetGroupingParam
+            m.push_back(w32arity::hpFn(&G2<kComAudioSession, 10>));    // RegisterAudioSessionNotification
+            m.push_back(w32arity::hpFn(&G2<kComAudioSession, 11>));    // Unregister...
+            m.push_back(w32arity::hpFn(&G2<kComAudioSession, 12>));    // GetSessionIdentifier
+            m.push_back(w32arity::hpFn(&G2<kComAudioSession, 13>));    // GetSessionInstanceIdentifier
+            m.push_back(w32arity::hpFn(&G2<kComAudioSession, 14>));    // GetProcessId
+            m.push_back(w32arity::hpFn(&G1<kComAudioSession, 15>));    // IsSystemSoundsSession
+            m.push_back(w32arity::hpFn(&G2<kComAudioSession, 16>));    // SetDuckingPreference
+            break;
+        default:
+            return 0;
+    }
+    auto* vt = reinterpret_cast<u32*>(lowAlloc(4 * m.size()));
+    if (vt == nullptr) return 0;
+    for (size_t i = 0; i < m.size(); ++i) {
+        vt[i] = static_cast<u32>(w32alias::lowFor(m[i], "mmdevapi.dll!WASAPI32_" + std::to_string(kind) + "#" + std::to_string(i)));
+    }
+    return static_cast<u32>(reinterpret_cast<uintptr_t>(vt));
+}
+}  // namespace wasapi32
+
+uint32_t wasapi32ToGuest(void* host) { return wasapi32::toGuest(static_cast<ComObject*>(host)); }
 
 uint64_t comDispatch(int iface, int slot, const ComArgs& args) {
     if (iface >= kComMMEnumerator && iface <= kComMMEndpoint) return wasapiDispatch(iface, slot, args);

@@ -10,6 +10,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **32-bit games: audio and input foundations (DmC).** New DirectSound 8 over AAudio and 32-bit proxies for
+  the WASAPI device objects (Wwise in DmC), and a minimal DirectInput 8 (keyboard/mouse devices without data;
+  controllers keep using XInput). Fixed `CoCreateInstance` clearing 8 bytes of a 32-bit out-pointer (it
+  overwrote the caller's saved frame pointer). DmC now passes audio and input setup; it needs a Direct3D 9
+  renderer next (its Direct3D 11 path is disabled in the shipped executable).
 - **DmC: the Unreal Engine 3 game now loads its packages and starts the engine (window, splash, shaders,
   PhysX, game packages).** Unreal 3 games (32-bit) now see the real install layout: the .exe is presented
   as `D:\Binaries\Win32\` and `D:\` is the install root, so `..\..\` paths collapse like on Windows
@@ -42,6 +47,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Juegos de 32 bits: base de audio y entrada (DmC).** Nuevo DirectSound 8 sobre AAudio y proxies de 32 bits
+  para los objetos de dispositivo WASAPI (Wwise en DmC), y un DirectInput 8 mínimo (teclado/ratón sin datos;
+  los mandos siguen por XInput). Corregido `CoCreateInstance`, que borraba 8 bytes de un puntero de salida de
+  32 bits (pisaba el puntero de marco guardado del llamador). DmC ya pasa la inicialización de audio y entrada;
+  ahora necesita un renderizador Direct3D 9 (su ruta Direct3D 11 está desactivada en el ejecutable).
 - **DmC: el juego de Unreal Engine 3 ya carga sus paquetes y arranca el motor (ventana, splash, shaders,
   PhysX, paquetes del juego).** Los juegos de Unreal 3 (32 bits) ven ahora la estructura real de la instalación:
   el .exe aparece como `D:\Binaries\Win32\` y `D:\` es la raíz, así las rutas `..\..\` se resuelven como en
