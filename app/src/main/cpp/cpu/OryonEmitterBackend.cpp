@@ -1577,6 +1577,15 @@ void OryonEmitterBackend::emitAddRegShift(uint8_t dst, uint8_t src1, uint8_t src
     emitWord(base | ((static_cast<uint32_t>(shift) & 3u) << 10) | (rm << 16) | (rn << 5) | rd);
 }
 
+// Paso de MOVS/STOS en X17: +tamaño con DF=0, -tamaño con DF=1 (bit 10 de rflags). Usa X21.
+void OryonEmitterBackend::emitStringStep(uint8_t elemSize) {
+    emitLdrX(21, 19, static_cast<int32_t>(offsetof(CpuContext, rflags)));
+    emitUbfx(21, 21, 10, 1);
+    emitMovImm64(17, elemSize);
+    const uint32_t shift = elemSize == 1 ? 1u : elemSize == 2 ? 2u : elemSize == 4 ? 3u : 4u;  // 2*tamaño
+    emitWord(0xCB000000u | (21u << 16) | (shift << 10) | (17u << 5) | 17u);  // SUB X17, X17, X21, LSL #shift
+}
+
 void OryonEmitterBackend::emitSubReg(uint8_t dst, uint8_t src1, uint8_t src2, bool setFlags,
                                      bool is64) {
     const uint32_t rd = dst & 0x1F;
@@ -2942,6 +2951,21 @@ static void probeLog(CpuContext* c, uint64_t rip) {
          static_cast<unsigned long long>(c->gpr[8]), probeText(c->gpr[8]).c_str(),
          static_cast<unsigned long long>(c->gpr[9]), probeText(c->gpr[9]).c_str(),
          static_cast<unsigned long long>(ret));
+    static const std::pair<uint64_t, uint32_t> s_mem = [] {  // debug.hyperplay.probemem <dir>,<bytes> (hex)
+        char b[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.probemem", b) <= 0) return std::pair<uint64_t, uint32_t>{0, 0};
+        char* e = nullptr;
+        const uint64_t a = std::strtoull(b, &e, 16);
+        const uint32_t n = (e != nullptr && *e == ',') ? static_cast<uint32_t>(std::strtoul(e + 1, nullptr, 16)) : 16u;
+        return std::pair<uint64_t, uint32_t>{a, n > 64 ? 64u : n};
+    }();
+    if (s_mem.first != 0 && probeReadable(s_mem.first, s_mem.second)) {
+        char line[64 * 3 + 1] = {};
+        const auto* m = reinterpret_cast<const uint32_t*>(s_mem.first);
+        size_t o = 0;
+        for (uint32_t i = 0; i < s_mem.second / 4; ++i) o += std::snprintf(line + o, sizeof(line) - o, "%08x ", m[i]);
+        LOGI("[Sonda]   mem[%llx]: %s", static_cast<unsigned long long>(s_mem.first), line);
+    }
     LOGI("[Sonda]   rbx=%llx rsp=%llx rbp=%llx rsi=%llx rdi=%llx", static_cast<unsigned long long>(c->gpr[3]),
          static_cast<unsigned long long>(c->gpr[4]), static_cast<unsigned long long>(c->gpr[5]),
          static_cast<unsigned long long>(c->gpr[6]), static_cast<unsigned long long>(c->gpr[7]));
@@ -7829,33 +7853,30 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
     // --- MOVSB / MOVSW / MOVSD / MOVSQ (0xA4 / 0xA5) -------------------------------
     if (op == 0xA4 || op == 0xA5) {
         const uint8_t elemSize = (op == 0xA4) ? 1 : (is64 ? 8 : (prefix66 ? 2 : 4));
+        // DF=1 (STD) recorre hacia abajo: el memmove solapado de MSVC copia así desde el final.
+        emitStringStep(elemSize);
+        const auto copyOne = [&] {
+            if (elemSize == 1) {
+                emitLdrB(16, 6, 0);
+                emitStrB(16, 7, 0);
+            } else if (elemSize == 8) {
+                emitLdrX(16, 6, 0);
+                emitStrX(16, 7, 0);
+            } else if (elemSize == 2) {
+                emitLdrH(16, 6, 0);
+                emitStrH(16, 7, 0);
+            } else {
+                emitLdrW(16, 6, 0);
+                emitStrW(16, 7, 0);
+            }
+            emitAddReg(6, 6, 17, false, !mode32_);
+            emitAddReg(7, 7, 17, false, !mode32_);
+        };
         if (prefixF3) {
             emitCbz(1, 0);
             const size_t skipZero = wordPos() - 1;
             const size_t loopStart = wordPos();
-
-            if (elemSize == 1) {
-                emitLdrB(16, 6, 0);
-                emitAddImm(6, 6, 1, !mode32_);
-                emitStrB(16, 7, 0);
-                emitAddImm(7, 7, 1, !mode32_);
-            } else if (elemSize == 8) {
-                emitLdrX(16, 6, 0);
-                emitAddImm(6, 6, 8, !mode32_);
-                emitStrX(16, 7, 0);
-                emitAddImm(7, 7, 8, !mode32_);
-            } else if (elemSize == 2) {
-                emitLdrH(16, 6, 0);
-                emitAddImm(6, 6, 2, !mode32_);
-                emitStrH(16, 7, 0);
-                emitAddImm(7, 7, 2, !mode32_);
-            } else {
-                emitLdrW(16, 6, 0);
-                emitAddImm(6, 6, 4, !mode32_);
-                emitStrW(16, 7, 0);
-                emitAddImm(7, 7, 4, !mode32_);
-            }
-
+            copyOne();
             emitSubImm(1, 1, 1, !mode32_);
             const int32_t loopDelta = static_cast<int32_t>(loopStart) - static_cast<int32_t>(wordPos());
             emitCbnz(1, loopDelta);
@@ -7863,27 +7884,7 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
             const size_t end = wordPos();
             patchImm19(skipZero, end);
         } else {
-            if (elemSize == 1) {
-                emitLdrB(16, 6, 0);
-                emitAddImm(6, 6, 1, !mode32_);
-                emitStrB(16, 7, 0);
-                emitAddImm(7, 7, 1, !mode32_);
-            } else if (elemSize == 8) {
-                emitLdrX(16, 6, 0);
-                emitAddImm(6, 6, 8, !mode32_);
-                emitStrX(16, 7, 0);
-                emitAddImm(7, 7, 8, !mode32_);
-            } else if (elemSize == 2) {
-                emitLdrH(16, 6, 0);
-                emitAddImm(6, 6, 2, !mode32_);
-                emitStrH(16, 7, 0);
-                emitAddImm(7, 7, 2, !mode32_);
-            } else {
-                emitLdrW(16, 6, 0);
-                emitAddImm(6, 6, 4, !mode32_);
-                emitStrW(16, 7, 0);
-                emitAddImm(7, 7, 4, !mode32_);
-            }
+            copyOne();
         }
         return finish();
     }
@@ -7993,25 +7994,24 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
     // --- STOSB / STOSW / STOSD / STOSQ (0xAA / 0xAB) -------------------------------
     if (op == 0xAA || op == 0xAB) {
         const uint8_t elemSize = (op == 0xAA) ? 1 : (is64 ? 8 : (prefix66 ? 2 : 4));
+        emitStringStep(elemSize);  // DF=1: hacia abajo
+        const auto storeOne = [&] {
+            if (elemSize == 1) {
+                emitStrB(0, 7, 0);
+            } else if (elemSize == 8) {
+                emitStrX(0, 7, 0);
+            } else if (elemSize == 2) {
+                emitStrH(0, 7, 0);
+            } else {
+                emitStrW(0, 7, 0);
+            }
+            emitAddReg(7, 7, 17, false, !mode32_);
+        };
         if (prefixF3) {
             emitCbz(1, 0);
             const size_t skipZero = wordPos() - 1;
             const size_t loopStart = wordPos();
-
-            if (elemSize == 1) {
-                emitStrB(0, 7, 0);
-                emitAddImm(7, 7, 1, !mode32_);
-            } else if (elemSize == 8) {
-                emitStrX(0, 7, 0);
-                emitAddImm(7, 7, 8, !mode32_);
-            } else if (elemSize == 2) {
-                emitStrH(0, 7, 0);
-                emitAddImm(7, 7, 2, !mode32_);
-            } else {
-                emitStrW(0, 7, 0);
-                emitAddImm(7, 7, 4, !mode32_);
-            }
-
+            storeOne();
             emitSubImm(1, 1, 1, !mode32_);
             const int32_t loopDelta = static_cast<int32_t>(loopStart) - static_cast<int32_t>(wordPos());
             emitCbnz(1, loopDelta);
@@ -8019,19 +8019,7 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
             const size_t end = wordPos();
             patchImm19(skipZero, end);
         } else {
-            if (elemSize == 1) {
-                emitStrB(0, 7, 0);
-                emitAddImm(7, 7, 1, !mode32_);
-            } else if (elemSize == 8) {
-                emitStrX(0, 7, 0);
-                emitAddImm(7, 7, 8, !mode32_);
-            } else if (elemSize == 2) {
-                emitStrH(0, 7, 0);
-                emitAddImm(7, 7, 2, !mode32_);
-            } else {
-                emitStrW(0, 7, 0);
-                emitAddImm(7, 7, 4, !mode32_);
-            }
+            storeOne();
         }
         return finish();
     }
@@ -10744,8 +10732,14 @@ using AddSpecialSignalHandlerFnT = void (*)(int, SigchainAction*);
 bool guestCrashSpecialHandler(int sig, siginfo_t* info, void* uctx) {
     if (sig == SIGSEGV && smcHandleWriteFault(info)) return true;  // cualquier hilo
     OryonEmitterBackend* b = t_currentBackend;
+    if (b != nullptr && b->captureFault(sig, info, uctx)) return true;  // se entrega al huésped tras sigreturn
+    // Vigía de escritura (diagnóstico): escritura desde código nativo (thunks, hilos propios).
+    if (sig == SIGSEGV && info != nullptr && info->si_code == SEGV_ACCERR &&
+        OryonEmitterBackend::handleWriteWatch(reinterpret_cast<uint64_t>(info->si_addr),
+                                              static_cast<uint64_t>(static_cast<ucontext_t*>(uctx)->uc_mcontext.regs[30]))) {
+        return true;  // página ya escribible: la instrucción se repite
+    }
     if (b == nullptr) return false;  // señales de ART/otros hilos: no tocar
-    if (b->captureFault(sig, info, uctx)) return true;  // se entrega al huésped tras sigreturn
     s_prevSegv.sa_sigaction = nullptr;  // no encadenar dentro de guestCrashHandler
     s_prevBus.sa_sigaction = nullptr;
     s_prevIll.sa_sigaction = nullptr;
@@ -10865,19 +10859,22 @@ std::atomic<uint64_t> s_watchHits{0}, s_watchArms{0};
 // Vigía relativo (setprop debug.hyperplay.wwrel <offset>,<bytes>,<tamaño del bloque>): al crearse un bloque
 // grande del montón con ese tamaño, vigila [bloque+offset, +bytes) desde ese mismo instante.
 static void relWatchHook(void* block, size_t total) {
-    static const std::array<uint64_t, 3> cfg = [] {
-        std::array<uint64_t, 3> c{0, 0, 0};
+    static const std::array<uint64_t, 4> cfg = [] {
+        std::array<uint64_t, 4> c{0, 0, 0, 0};
         char buf[PROP_VALUE_MAX] = {};
         if (__system_property_get("debug.hyperplay.wwrel", buf) <= 0) return c;
         char* p = buf;
-        for (int i = 0; i < 3 && *p != '\0'; ++i) {
+        for (int i = 0; i < 4 && *p != '\0'; ++i) {
             char* end = nullptr;
             c[i] = std::strtoull(p, &end, 16);
             p = (*end == ',') ? end + 1 : end;
         }
         return c;
     }();
-    if (cfg[2] == 0 || lowmem::g_traceMaps.load() <= 0 || ((total + 0xFFFF) & ~size_t{0xFFFF}) != cfg[2] || s_watchExactLo.load() != 0) return;
+    static std::atomic<uint64_t> s_seen{0};
+    if (cfg[2] == 0 || ((total + 0xFFFF) & ~size_t{0xFFFF}) != cfg[2] || s_watchExactLo.load() != 0) return;
+    LOGI("[Vigía] bloque candidato %llu en 0x%lx", static_cast<unsigned long long>(s_seen.load()), static_cast<unsigned long>(reinterpret_cast<uintptr_t>(block)));
+    if (s_seen.fetch_add(1) != cfg[3]) return;  // 4.º valor: cuál de los bloques de ese tamaño (0 = el primero)
     const uintptr_t addr = reinterpret_cast<uintptr_t>(block) + cfg[0];
     const uintptr_t lo = addr & ~uintptr_t{0xFFF};
     s_watchExactLo.store(addr);
@@ -10911,6 +10908,10 @@ void OryonEmitterBackend::armWriteWatchFromProperty() {
     s_watchHi.store(hi);
     s_watchExactLo.store(addr);
     s_watchExactHi.store(addr + len);
+    // Si la página aún no existe, mmapBelow4G la protege en el mismo instante en que se crea.
+    lowmem::g_watchArmedFlag = &s_watchArmed;
+    lowmem::g_watchPageHi.store(hi);
+    lowmem::g_watchPageLo.store(lo);
     LOGI("[Vigía] escrituras en 0x%lx..0x%lx", static_cast<unsigned long>(lo), static_cast<unsigned long>(hi));
     std::thread([] {
         for (int i = 0; i < 200000; ++i) {  // ~60 s
@@ -10956,8 +10957,8 @@ bool OryonEmitterBackend::handleWriteWatch(uint64_t address, uint64_t rip) {
     if (lo == 0 || address < lo || address >= hi) return false;
     s_watchHits.fetch_add(1);
     if (address >= s_watchExactLo.load() && address < s_watchExactHi.load() && s_watchLogs.fetch_add(1) < 20000)
-        LOGI("[Vigía] escritura en 0x%llx desde RIP=0x%llx", static_cast<unsigned long long>(address),
-             static_cast<unsigned long long>(rip));
+        LOGI("[Vigía] escritura en 0x%llx desde RIP=0x%llx (valor previo 0x%x)", static_cast<unsigned long long>(address),
+             static_cast<unsigned long long>(rip), *reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(address & ~uint64_t{3})));
     mprotect(reinterpret_cast<void*>(lo), hi - lo, PROT_READ | PROT_WRITE);
     s_watchArmed.store(false);
     return true;

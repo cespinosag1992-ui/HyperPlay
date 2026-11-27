@@ -22,6 +22,9 @@ using hyperplay::EmitterConfig;
 using hyperplay::OryonEmitterBackend;
 
 // El escáner solo traduce: el interceptor real no se enlaza.
+// LowMem.h: la traza de mapeos vive en NativeDllInterceptor.cpp, que estas pruebas no enlazan.
+namespace hyperplay::lowmem { void traceMap(void*, size_t, int, void*) {} }
+
 namespace hyperplay {
 void NativeDllInterceptor::setGuestTeb(void*, bool) noexcept {}
 bool NativeDllInterceptor::isRegisteredTrampoline(uintptr_t) noexcept { return false; }

@@ -47,6 +47,9 @@
 #include <limits>
 #include <map>
 
+// LowMem.h: la traza de mapeos vive en NativeDllInterceptor.cpp, que estas pruebas no enlazan.
+namespace hyperplay::lowmem { void traceMap(void*, size_t, int, void*) {} }
+
 // Estado observado por el VEH de prueba (testVectoredExceptionHandlerAccessViolation).
 uintptr_t g_vehHandler = 0;
 uint32_t g_vehCode = 0;
@@ -3018,6 +3021,47 @@ void testFlagsAcrossCall() {
     CHECK_EQ(runCode(code), 1);
 }
 
+// STD + REP MOVSD/STOSD: el memmove solapado de MSVC copia hacia atrás con DF=1. Antes el JIT
+// ignoraba DF, repetía el primer elemento y escribía más allá del final (montón de Wwise en DmC).
+void testStringDirectionFlag32() {
+    CHECK(configureBackend(true));
+    auto* buf = static_cast<uint32_t*>(hyperplay::lowmem::mmapBelow4G(4096));
+    CHECK(buf != MAP_FAILED);
+    for (uint32_t i = 0; i < 8; ++i) buf[i] = i + 1;
+    const uint32_t b = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(buf));
+    Bytes mv;
+    movRegImm32(mv, 6, b + 12);           // esi = &buf[3]
+    movRegImm32(mv, 7, b + 16);           // edi = &buf[4]
+    movRegImm32(mv, 1, 4);                // ecx = 4
+    append(mv, {0xFD, 0xF3, 0xA5, 0xFC});  // std; rep movsd; cld
+    append(mv, {0x89, 0xF8, 0xC3});        // mov eax, edi; ret
+    CHECK_EQ(runCode(mv, true), static_cast<int64_t>(b));  // EDI acaba en &buf[0]
+    const uint32_t wantMv[8] = {1, 1, 2, 3, 4, 6, 7, 8};
+    for (int i = 0; i < 8; ++i) CHECK_EQ(buf[i], wantMv[i]);
+    CHECK_EQ(g_backend->context().gpr[6], static_cast<uint64_t>(b - 4));
+
+    Bytes st;
+    movRegImm32(st, 7, b + 28);           // edi = &buf[7]
+    movRegImm32(st, 0, 0x55);
+    movRegImm32(st, 1, 2);
+    append(st, {0xFD, 0xF3, 0xAB, 0xFC});  // std; rep stosd; cld
+    append(st, {0x89, 0xF8, 0xC3});
+    CHECK_EQ(runCode(st, true), static_cast<int64_t>(b + 20));
+    CHECK_EQ(buf[5], 6u);
+    CHECK_EQ(buf[6], 0x55u);
+    CHECK_EQ(buf[7], 0x55u);
+
+    // Sin STD sigue hacia delante.
+    Bytes fw;
+    movRegImm32(fw, 6, b);
+    movRegImm32(fw, 7, b + 16);
+    movRegImm32(fw, 1, 2);
+    append(fw, {0xFC, 0xF3, 0xA5, 0x89, 0xF8, 0xC3});  // cld; rep movsd
+    CHECK_EQ(runCode(fw, true), static_cast<int64_t>(b + 24));
+    CHECK_EQ(buf[4], 1u);
+    CHECK_EQ(buf[5], 1u);
+}
+
 void testMode32Program() {
     CHECK(configureBackend(true));
     Bytes code;
@@ -5390,6 +5434,8 @@ int main() {
     testInstructionFamiliesDecode();
     std::printf("testMode32Program\n");
     testMode32Program();
+    std::printf("testStringDirectionFlag32\n");
+    testStringDirectionFlag32();
     std::printf("testWxAndUnsupported\n");
     testWxAndUnsupported();
     std::printf("testCmovAndNotNeg\n");

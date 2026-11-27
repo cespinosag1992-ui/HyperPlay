@@ -10,6 +10,10 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **JIT: `MOVS`/`STOS` now honor the direction flag (`STD`).** Repeated string copies and fills always moved forward,
+  so an overlapping `memmove` (MSVC copies backwards with `STD; REP MOVSD`) repeated the first element and wrote
+  past the end of the buffer. In DmC this corrupted Wwise's memory pool right after the Direct3D 9 device was created.
+  DmC now runs past that point and presents its first frame. New unit test; 64-bit games unchanged.
 - **32-bit games: pointer-size fixes in Windows synchronization and thread data.** `SLIST` operations used the
   64-bit layout (they wrote 8 bytes into each 4-byte entry and past the 8-byte header), `InitializeSRWLock` wrote 8 bytes,
   TLS expansion slots stored a 64-bit pointer in the 32-bit TEB, and static TLS blocks of new threads were stored as
@@ -58,6 +62,10 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **JIT: `MOVS`/`STOS` respetan ahora el flag de dirección (`STD`).** Las copias y rellenos repetidos siempre avanzaban,
+  así que un `memmove` solapado (MSVC copia hacia atrás con `STD; REP MOVSD`) repetía el primer elemento y escribía
+  más allá del final del búfer. En DmC esto corrompía el montón de Wwise justo después de crear el dispositivo Direct3D 9.
+  DmC ya pasa ese punto y presenta su primer fotograma. Prueba unitaria nueva; los juegos de 64 bits no cambian.
 - **Juegos de 32 bits: tamaño de puntero en la sincronización de Windows y los datos por hilo.** Las `SLIST` usaban el
   formato de 64 bits (escribían 8 bytes en cada entrada de 4 y más allá de la cabecera de 8), `InitializeSRWLock`
   escribía 8 bytes, las ranuras TLS de expansión guardaban un puntero de 64 bits en el TEB de 32 bits y los bloques TLS

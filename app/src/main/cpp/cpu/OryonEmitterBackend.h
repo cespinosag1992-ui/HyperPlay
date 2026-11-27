@@ -416,6 +416,7 @@ private:
     void emitAddReg(uint8_t dst, uint8_t src1, uint8_t src2, bool setFlags, bool is64);
     void emitAddRegShift(uint8_t dst, uint8_t src1, uint8_t src2, uint8_t shift, bool is64);
     void emitSubReg(uint8_t dst, uint8_t src1, uint8_t src2, bool setFlags, bool is64);
+    void emitStringStep(uint8_t elemSize);  // X17 = ±tamaño según DF (MOVS/STOS)
     void emitAndReg(uint8_t dst, uint8_t src1, uint8_t src2, bool setFlags, bool is64);
     void emitOrrReg(uint8_t dst, uint8_t src1, uint8_t src2, bool is64);
     void emitEorReg(uint8_t dst, uint8_t src1, uint8_t src2, bool is64);
