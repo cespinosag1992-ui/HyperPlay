@@ -9,11 +9,13 @@
 
 #include <android/log.h>
 #include <sys/mman.h>
+#include <sys/system_properties.h>
 #include <time.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -73,6 +75,9 @@ void* lowSmall(size_t n) {
 size_t pageRound(size_t n) { return (n + 0xFFF) & ~size_t{0xFFF}; }
 uint8_t* lowBig(size_t n) {
     void* p = lowmem::mmapBelow4G(pageRound(std::max<size_t>(n, 1)));
+    static std::atomic<int> s_logs{0};
+    static const int s_max = [] { char v[PROP_VALUE_MAX] = {}; return __system_property_get("debug.hyperplay.d3d9memlog", v) > 0 ? std::atoi(v) : 0; }();
+    if (p != MAP_FAILED && s_logs.fetch_add(1) < s_max) LOGI("memoria de recurso 0x%lx..0x%lx", static_cast<unsigned long>(reinterpret_cast<uintptr_t>(p)), static_cast<unsigned long>(reinterpret_cast<uintptr_t>(p) + n));
     return p == MAP_FAILED ? nullptr : static_cast<uint8_t*>(p);
 }
 // Libera la memoria física pero deja la dirección reservada y sin acceso: si el juego aún guarda un
@@ -1050,6 +1055,10 @@ uint32_t createDevice(const CreateParams& p) {
     Obj* sc = make<Obj>(kSwapChain, d);
     d->swapChain = sc;
     LOGI("IDirect3DDevice9 de 32 bits -> 0x%x (flags 0x%x, ventana 0x%x)", L(d), p.behaviorFlags, p.focusWindow);
+    {   // diagnóstico (setprop debug.hyperplay.tracemaps N): N mapeos bajos tras crear el dispositivo
+        char v[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.tracemaps", v) > 0) lowmem::g_traceMaps.store(std::atoi(v));
+    }
     return L(d);
 }
 

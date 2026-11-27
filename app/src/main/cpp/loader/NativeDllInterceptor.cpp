@@ -5029,6 +5029,17 @@ void* resolve(const std::string& fn) {
     return nullptr;
 }
 }  // namespace msg32
+namespace lowmem {
+void traceMap(void* p, size_t len, int prot, void* caller) {
+    if (g_traceMaps.fetch_sub(1) <= 0) return;
+    Dl_info di{};
+    const char* sym = (dladdr(caller, &di) != 0 && di.dli_sname != nullptr) ? di.dli_sname : "?";
+    const uintptr_t off = di.dli_fbase != nullptr ? reinterpret_cast<uintptr_t>(caller) - reinterpret_cast<uintptr_t>(di.dli_fbase) : 0;
+    __android_log_print(ANDROID_LOG_INFO, "HyperPlay.DllInterceptor", "[Mapas] 0x%lx..0x%lx prot=%d desde %s+0x%lx",
+                        static_cast<unsigned long>(reinterpret_cast<uintptr_t>(p)),
+                        static_cast<unsigned long>(reinterpret_cast<uintptr_t>(p) + len), prot, sym, static_cast<unsigned long>(off));
+}
+}  // namespace lowmem
 namespace guestcwd {  // definido más abajo
 uint32_t SetCurrentDirectoryA(const char* p);
 uint32_t GetCurrentDirectoryA(uint32_t len, char* buf);
@@ -11248,6 +11259,33 @@ bool NativeDllInterceptor::prepareGuestException32(CpuContext& ctx, uint32_t cod
             char w[12];
             std::snprintf(w, sizeof(w), " %08x", seh32::rd32(esp + 4 * k));
             words += w;
+        }
+        // Memoria en [ESI] (estructura con la que trabajaba el código que falló).
+        {
+            const uint32_t esiv = static_cast<uint32_t>(ctx.gpr[6]);
+            std::string mem;
+            for (uint32_t k = 0; k < 32 && isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{esiv + 4 * k}), 4); ++k) {
+                char w[12];
+                std::snprintf(w, sizeof(w), " %08x", seh32::rd32(esiv + 4 * k));
+                mem += w;
+            }
+            LOGI("[SEH32]   [ESI]:%s", mem.c_str());
+        }
+        // Mapeos de /proc/self/maps que contienen ESI/EAX (de dónde sale la memoria del fallo).
+        static std::atomic<int> s_mapDumps{0};
+        if (FILE* mf = s_mapDumps.fetch_add(1) < 3 ? std::fopen("/proc/self/maps", "r") : nullptr) {
+            char line[512];
+            const uint64_t want[2] = {ctx.gpr[6] & 0xFFFFFFFFull, ctx.gpr[0] & 0xFFFFFFFFull};
+            while (std::fgets(line, sizeof(line), mf) != nullptr) {
+                unsigned long long lo = 0, hi = 0;
+                if (std::sscanf(line, "%llx-%llx", &lo, &hi) != 2) continue;
+                for (uint64_t w : want) {
+                    if (w >= lo && w < hi) { LOGI("[SEH32]   mapa de 0x%llx: %s", static_cast<unsigned long long>(w), line); break; }
+                }
+                // vecinos de ±1 MB para ver qué hay alrededor
+                if (lo <= want[0] + 0x100000 && hi + 0x100000 >= want[0]) LOGI("[SEH32]   cerca: %s", line);
+            }
+            std::fclose(mf);
         }
         LOGI("[SEH32]   EAX=%x EBX=%x ECX=%x EDX=%x ESI=%x EDI=%x EBP=%x ESP=%x pila:%s",
              static_cast<uint32_t>(ctx.gpr[0]), static_cast<uint32_t>(ctx.gpr[3]), static_cast<uint32_t>(ctx.gpr[1]),

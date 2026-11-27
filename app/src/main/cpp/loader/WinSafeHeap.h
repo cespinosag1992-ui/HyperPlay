@@ -75,6 +75,7 @@ public:
         h->sizeClass = cls;
         h->userSize = userSize;
         ++live_;
+        if (cls == kLargeClass && lowmem::g_largeBlockHook != nullptr) lowmem::g_largeBlockHook(block, large_[reinterpret_cast<uintptr_t>(block)]);
         return block + kHeaderSize;
     }
 

@@ -5,6 +5,7 @@
 // MAP_FIXED_NOREPLACE de arriba abajo entre 1.5 y 3.75 GB. Las imágenes PE del invitado se cargan más
 // abajo y el alias de funciones nativas está en 0x7F000000 (los huecos ocupados se saltan solos).
 
+#include <android/log.h>
 #include <sys/mman.h>
 
 #include <atomic>
@@ -20,6 +21,15 @@ inline std::atomic<bool> g_enabled{false};
 inline bool enabled() noexcept { return g_enabled.load(std::memory_order_relaxed); }
 
 // Como mmap(nullptr, size, prot, MAP_PRIVATE|MAP_ANONYMOUS[|extra]); MAP_FAILED si no hay hueco.
+// Vigía de escritura (diagnóstico): página a proteger en cuanto se mapee (0 = ninguna).
+inline std::atomic<uintptr_t> g_watchPageLo{0}, g_watchPageHi{0};
+inline std::atomic<bool>* g_watchArmedFlag = nullptr;
+// Traza de mapeos (diagnóstico): registra cada mmapBelow4G con su llamador mientras sea > 0.
+inline std::atomic<int> g_traceMaps{0};
+void traceMap(void* p, size_t len, int prot, void* caller);  // NativeDllInterceptor.cpp
+// Vigía relativo: se llama al crear un bloque grande del montón (diagnóstico, puede ser nullptr).
+inline void (*g_largeBlockHook)(void* block, size_t total) = nullptr;
+
 inline void* mmapBelow4G(size_t size, int prot = PROT_READ | PROT_WRITE, int extraFlags = 0) {
     static std::mutex s_m;
     static uintptr_t s_next = 0xEF000000u;
@@ -32,6 +42,18 @@ inline void* mmapBelow4G(size_t size, int prot = PROT_READ | PROT_WRITE, int ext
                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | extraFlags, -1, 0);
             if (p == MAP_FAILED) continue;
             s_next = reinterpret_cast<uintptr_t>(p);
+            if (g_traceMaps.load(std::memory_order_relaxed) > 0) traceMap(p, len, prot, __builtin_return_address(0));
+            const uintptr_t wlo = g_watchPageLo.load(), whi = g_watchPageHi.load();
+            const uintptr_t b = reinterpret_cast<uintptr_t>(p);
+            if (wlo != 0 && b < whi && b + len > wlo) {
+                __android_log_print(ANDROID_LOG_INFO, "HyperPlay.OryonEmitter", "[Vigía] mmapBelow4G 0x%lx..0x%lx prot=%d llamador=%p",
+                                    static_cast<unsigned long>(b), static_cast<unsigned long>(b + len), prot, __builtin_return_address(0));
+            }
+            if (wlo != 0 && b < whi && b + len > wlo && (prot & PROT_WRITE) != 0) {
+                const uintptr_t plo = wlo > b ? wlo : b, phi = whi < b + len ? whi : b + len;
+                mprotect(reinterpret_cast<void*>(plo), phi - plo, PROT_READ);
+                if (g_watchArmedFlag != nullptr) g_watchArmedFlag->store(true);
+            }
             return p;
         }
         s_next = 0xEF000000u;  // segunda vuelta: huecos liberados

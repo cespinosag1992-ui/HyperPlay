@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -739,6 +740,12 @@ bool OryonEmitterBackend::allocateTeb() {
         // 32 bits: vector de punteros de 4 bytes y bloques por debajo de 4 GB (un solo mapeo de 256 KB,
         // se queda mientras viva el proceso: los hilos de 32 bits son pocos).
         void* blocks = mmapBelow4G(64 * 4096);
+        LOGI("Hilo de 32 bits: pila 0x%lx..0x%lx TEB 0x%lx TLS 0x%lx..0x%lx",
+             static_cast<unsigned long>(reinterpret_cast<uintptr_t>(stackBase_)),
+             static_cast<unsigned long>(reinterpret_cast<uintptr_t>(stackBase_) + stackSize_),
+             static_cast<unsigned long>(reinterpret_cast<uintptr_t>(teb_)),
+             static_cast<unsigned long>(reinterpret_cast<uintptr_t>(blocks)),
+             static_cast<unsigned long>(reinterpret_cast<uintptr_t>(blocks) + 64 * 4096));
         auto* vec32 = reinterpret_cast<uint32_t*>(t + 0x800);
         for (size_t i = 0; i < 64 && blocks != MAP_FAILED; ++i) {
             vec32[i] = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(blocks) + i * 4096);
@@ -10836,7 +10843,42 @@ std::atomic<int> s_watchLogs{0};
 std::atomic<uint64_t> s_watchHits{0}, s_watchArms{0};
 }  // namespace
 
+// Vigía relativo (setprop debug.hyperplay.wwrel <offset>,<bytes>,<tamaño del bloque>): al crearse un bloque
+// grande del montón con ese tamaño, vigila [bloque+offset, +bytes) desde ese mismo instante.
+static void relWatchHook(void* block, size_t total) {
+    static const std::array<uint64_t, 3> cfg = [] {
+        std::array<uint64_t, 3> c{0, 0, 0};
+        char buf[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.wwrel", buf) <= 0) return c;
+        char* p = buf;
+        for (int i = 0; i < 3 && *p != '\0'; ++i) {
+            char* end = nullptr;
+            c[i] = std::strtoull(p, &end, 16);
+            p = (*end == ',') ? end + 1 : end;
+        }
+        return c;
+    }();
+    if (cfg[2] == 0 || lowmem::g_traceMaps.load() <= 0 || ((total + 0xFFFF) & ~size_t{0xFFFF}) != cfg[2] || s_watchExactLo.load() != 0) return;
+    const uintptr_t addr = reinterpret_cast<uintptr_t>(block) + cfg[0];
+    const uintptr_t lo = addr & ~uintptr_t{0xFFF};
+    s_watchExactLo.store(addr);
+    s_watchExactHi.store(addr + cfg[1]);
+    s_watchLo.store(lo);
+    s_watchHi.store(lo + 0x1000);
+    mprotect(reinterpret_cast<void*>(lo), 0x1000, PROT_READ);
+    s_watchArmed.store(true);
+    LOGI("[Vigía] bloque 0x%lx (0x%zx bytes): vigilando 0x%lx", static_cast<unsigned long>(reinterpret_cast<uintptr_t>(block)), total,
+         static_cast<unsigned long>(addr));
+    std::thread([] {
+        for (int i = 0; i < 100000; ++i) {
+            if (!s_watchArmed.load() && mprotect(reinterpret_cast<void*>(s_watchLo.load()), 0x1000, PROT_READ) == 0) s_watchArmed.store(true);
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
+    }).detach();
+}
+
 void OryonEmitterBackend::armWriteWatchFromProperty() {
+    lowmem::g_largeBlockHook = &relWatchHook;
 #if defined(__ANDROID__)
     char buf[PROP_VALUE_MAX] = {};
     if (__system_property_get("debug.hyperplay.wwatch", buf) <= 0) return;
@@ -10894,7 +10936,7 @@ bool OryonEmitterBackend::handleWriteWatch(uint64_t address, uint64_t rip) {
     const uintptr_t lo = s_watchLo.load(), hi = s_watchHi.load();
     if (lo == 0 || address < lo || address >= hi) return false;
     s_watchHits.fetch_add(1);
-    if (address >= s_watchExactLo.load() && address < s_watchExactHi.load() && s_watchLogs.fetch_add(1) < 400)
+    if (address >= s_watchExactLo.load() && address < s_watchExactHi.load() && s_watchLogs.fetch_add(1) < 20000)
         LOGI("[Vigía] escritura en 0x%llx desde RIP=0x%llx", static_cast<unsigned long long>(address),
              static_cast<unsigned long long>(rip));
     mprotect(reinterpret_cast<void*>(lo), hi - lo, PROT_READ | PROT_WRITE);
@@ -10934,6 +10976,17 @@ bool OryonEmitterBackend::deliverPendingFault() {
     // 32 bits: SEH x86 (VEH + cadena fs:[0]) ejecutado como código del invitado desde un
     // despachador; el hilo sigue en ese despachador. El camino de 64 bits de abajo no cambia.
     if (mode32_) {
+        // Diagnóstico: bits altos de los registros (en 32 bits deben ser 0; si no, una dirección
+        // calculada con el registro completo lee memoria ajena).
+        uint64_t dirty = 0;
+        for (int i = 0; i < 8; ++i) dirty |= ctx_.gpr[i] >> 32;
+        if (dirty != 0) {
+            LOGW("Fallo de 32 bits con bits altos en registros: RAX=%llx RCX=%llx RDX=%llx RBX=%llx RSP=%llx RBP=%llx RSI=%llx RDI=%llx",
+                 static_cast<unsigned long long>(ctx_.gpr[0]), static_cast<unsigned long long>(ctx_.gpr[1]),
+                 static_cast<unsigned long long>(ctx_.gpr[2]), static_cast<unsigned long long>(ctx_.gpr[3]),
+                 static_cast<unsigned long long>(ctx_.gpr[4]), static_cast<unsigned long long>(ctx_.gpr[5]),
+                 static_cast<unsigned long long>(ctx_.gpr[6]), static_cast<unsigned long long>(ctx_.gpr[7]));
+        }
         for (int i = 0; i < 16; ++i) ctx_.gpr[i] &= 0xFFFFFFFFull;
         return NativeDllInterceptor::prepareGuestException32(ctx_, f.code, static_cast<uint32_t>(f.address),
                                                             static_cast<uint32_t>(f.access));
