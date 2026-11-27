@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.22.1)
+cmake_minimum_required(VERSION 3.22.1)
 project(hyperplay LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -19,6 +19,7 @@ add_library(hyperplay SHARED
     loader/VulkanPassthrough.cpp
     loader/NativeSteamStub.cpp
     loader/SteamEmu32.cpp
+    loader/D3D9Probe32.cpp
     loader/FramePacing.cpp
     cpu/OryonSiliconScheduler.cpp
     cpu/HyperAotCache.cpp

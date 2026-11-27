@@ -81,6 +81,20 @@ public:
     // "..\" (instalación de Unreal). Esas rutas son de solo lectura + creación: nada de borrar,
     // mover ni reemplazar (un juego borró así Config y Localization de su instalación).
     [[nodiscard]] static bool lastPathEscapedGameDir() noexcept;
+    // Directorio actual del invitado (SetCurrentDirectory, hoy solo en 32 bits) en forma canónica
+    // "D:/..", "D:/../../DevilGame"... Vacío = D:\ (la carpeta del .exe). Las rutas relativas de
+    // resolveVirtualPath se resuelven desde él.
+    static void setGuestCwd(const std::string& winDir);
+    [[nodiscard]] static std::string guestCwd();
+    // Une una ruta de Windows al directorio actual y la normaliza ("D:/../x"). Absoluta: solo normaliza.
+    [[nodiscard]] static std::string canonicalWinPath(const std::string& winPath);
+    // Disposición de Unreal Engine 3 (32 bits): D:\ es la raíz de la instalación y el .exe está en
+    // D:\<subdir>\ (p. ej. "Binaries/Win32"). Así "D:\Binaries\Win32\..\..\DevilGame" se colapsa como en
+    // Windows. Vacío (lo normal) = D:\ es la carpeta del .exe.
+    static void setExeSubdir(const std::string& subdir);
+    [[nodiscard]] static std::string exeSubdir();
+    // Carpeta de Windows del .exe con barra final: "D:\" o "D:\Binaries\Win32\".
+    [[nodiscard]] static std::string exeWinDir();
 
 private:
     void* allocateArena(size_t size, bool is32Bit, uint64_t preferredBase);

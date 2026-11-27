@@ -808,6 +808,79 @@ thread_local bool t_pathEscaped = false;
 }
 bool BionicPeLoader::lastPathEscapedGameDir() noexcept { return t_pathEscaped; }
 
+namespace {
+std::mutex s_cwdMutex;
+std::string s_guestCwd;   // vacío = carpeta del .exe
+std::string s_exeSubdir;  // "Binaries/Win32" en Unreal 3 de 32 bits; vacío = D:\ es la carpeta del .exe
+}
+
+void BionicPeLoader::setExeSubdir(const std::string& subdir) {
+    std::lock_guard<std::mutex> lk(s_cwdMutex);
+    s_exeSubdir = subdir;
+    s_guestCwd.clear();
+}
+
+std::string BionicPeLoader::exeSubdir() {
+    std::lock_guard<std::mutex> lk(s_cwdMutex);
+    return s_exeSubdir;
+}
+
+std::string BionicPeLoader::exeWinDir() {
+    std::string sub = exeSubdir();
+    if (sub.empty()) return "D:\\";
+    for (char& c : sub) if (c == '/') c = '\\';
+    return "D:\\" + sub + "\\";
+}
+
+void BionicPeLoader::setGuestCwd(const std::string& winDir) {
+    std::lock_guard<std::mutex> lk(s_cwdMutex);
+    s_guestCwd = (winDir == "D:" || winDir == "D:/") && s_exeSubdir.empty() ? std::string() : winDir;
+}
+
+std::string BionicPeLoader::guestCwd() {
+    std::lock_guard<std::mutex> lk(s_cwdMutex);
+    if (s_guestCwd.empty() && !s_exeSubdir.empty()) return "D:/" + s_exeSubdir;
+    return s_guestCwd;
+}
+
+std::string BionicPeLoader::canonicalWinPath(const std::string& winPath) {
+    std::string p;
+    for (char c : winPath) {
+        if (c == '\\') p.push_back('/');
+        else if (c != '\0' && c != '\"') p.push_back(c);
+    }
+    std::string drive = "D:";
+    std::string rest;
+    if (p.size() >= 2 && p[1] == ':') {
+        drive = std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(p[0])))) + ":";
+        rest = p.substr(2);
+    } else if (!p.empty() && p[0] == '/') {
+        rest = p;  // raíz de la unidad actual (D:)
+    } else {
+        const std::string cwd = guestCwd();
+        rest = (cwd.empty() ? std::string() : cwd.substr(2)) + "/" + p;
+    }
+    std::vector<std::string> comps;
+    int ups = 0;
+    size_t start = 0;
+    while (start <= rest.size()) {
+        const size_t slash = rest.find('/', start);
+        const std::string part = rest.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
+        if (part == "..") {
+            if (!comps.empty()) comps.pop_back();
+            else if (drive == "D:" && ups < 2 && exeSubdir().empty()) ++ups;  // con subcarpeta, D:\ ya es la raíz
+        } else if (!part.empty() && part != ".") {
+            comps.push_back(part);
+        }
+        if (slash == std::string::npos) break;
+        start = slash + 1;
+    }
+    std::string out = drive;
+    for (int i = 0; i < ups; ++i) out += "/..";
+    for (const auto& c : comps) out += "/" + c;
+    return out;
+}
+
 std::string BionicPeLoader::resolveVirtualPath(const LoadedPeImage& image, const std::string& winPath) {
     t_pathEscaped = false;
     std::string norm;
@@ -815,6 +888,11 @@ std::string BionicPeLoader::resolveVirtualPath(const LoadedPeImage& image, const
     for (char c : winPath) {
         if (c == '\\') norm.push_back('/');
         else if (c != '\0' && c != '\"') norm.push_back(c);
+    }
+    // Ruta relativa con un directorio actual distinto de D:\ (SetCurrentDirectory en 32 bits).
+    if (!norm.empty() && norm[0] != '/' && !(norm.size() >= 2 && norm[1] == ':')) {
+        const std::string cwd = guestCwd();
+        if (!cwd.empty()) norm = cwd + "/" + norm;
     }
     // Rutas largas de Win32 ("\\?\D:\Saves", "\??\D:\..."; Mono las usa al crear carpetas) y de
     // dispositivo ("\\.\D:\..."): el prefijo no forma parte de la ruta.
@@ -840,6 +918,24 @@ std::string BionicPeLoader::resolveVirtualPath(const LoadedPeImage& image, const
         relative = norm;
     }
 
+    // Disposición Unreal 3 (exeSubdir): D:\ es la raíz de la instalación. "D:\Binaries\Win32\x" es la
+    // carpeta del .exe; el resto de D:\ se alcanza como antes con ..\..\ desde ella (y queda marcado
+    // como fuera de la carpeta del juego para la protección contra borrados).
+    if (const std::string sub = exeSubdir(); !sub.empty() && norm.size() >= 2 && norm[1] == ':' &&
+                                              (norm[0] == 'D' || norm[0] == 'd')) {
+        std::string lowRel = relative, lowSub = sub;
+        for (char& ch : lowRel) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        for (char& ch : lowSub) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        if (lowRel == lowSub) {
+            relative.clear();
+        } else if (lowRel.rfind(lowSub + "/", 0) == 0) {
+            relative = relative.substr(sub.size() + 1);
+        } else {
+            std::string upsPrefix;
+            for (char ch : sub) if (ch == '/') upsPrefix += "../";
+            relative = upsPrefix + "../" + relative;
+        }
+    }
     // "..": dentro de la ruta retrocede un componente. Por encima de D:\ (la carpeta del ejecutable)
     // solo se permite subir dos niveles, hasta la raíz de la instalación: Unreal pone el .exe en
     // Binaries\Win32 y abre "..\..\DmCGame\Config\...". Nunca se sale más arriba.

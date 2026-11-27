@@ -10,6 +10,16 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **DmC: the Unreal Engine 3 game now loads its packages and starts the engine (window, splash, shaders,
+  PhysX, game packages).** Unreal 3 games (32-bit) now see the real install layout: the .exe is presented
+  as `D:\Binaries\Win32\` and `D:\` is the install root, so `..\..\` paths collapse like on Windows
+  (before, packages were read from a wrong path and reported as "unrecognizable data"). The game is started
+  with `-dx11` (Direct3D 11 renderer, shipped SM5 shaders). Added: a query-only `IDirect3D9` (GPU
+  identification), `SetCurrentDirectory`/`GetCurrentDirectory` for 32-bit games, VC++ 2008 runtime calls
+  served by the VC++ 2010 runtime, executable heaps (.NET stubs), WinINet without network, and exact
+  signatures for `CallNtPowerInformation`, `D3DXCheckVersion`, `ReadProcessMemory`, console and
+  debug-output functions. Not done yet: audio (Wwise needs WASAPI for 32-bit) and the Direct3D 11 renderer
+  for 32-bit games.
 - **32-bit games (DmC): Steam is emulated for 32-bit games** (`steam_api.dll`: Apps, User, Friends,
   Utils, UserStats, RemoteStorage saved in `_HyperPlaySaves/steam_cloud`). The 64-bit Steam emulation is
   unchanged. Added the x86 `EMMS` instruction and `FileTimeToLocalFileTime`/`LocalFileTimeToFileTime`.
@@ -32,6 +42,15 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **DmC: el juego de Unreal Engine 3 ya carga sus paquetes y arranca el motor (ventana, splash, shaders,
+  PhysX, paquetes del juego).** Los juegos de Unreal 3 (32 bits) ven ahora la estructura real de la instalación:
+  el .exe aparece como `D:\Binaries\Win32\` y `D:\` es la raíz, así las rutas `..\..\` se resuelven como en
+  Windows (antes los paquetes se leían de una ruta equivocada y daban "unrecognizable data"). El juego arranca
+  con `-dx11` (renderizador Direct3D 11, shaders SM5 incluidos). Añadido: `IDirect3D9` de solo consulta
+  (identificar la GPU), `SetCurrentDirectory`/`GetCurrentDirectory` en 32 bits, llamadas del runtime VC++ 2008
+  atendidas por el de VC++ 2010, montones ejecutables (stubs de .NET), WinINet sin red y firmas exactas de
+  `CallNtPowerInformation`, `D3DXCheckVersion`, `ReadProcessMemory` y funciones de consola y depuración.
+  Falta: audio (Wwise necesita WASAPI de 32 bits) y el renderizador Direct3D 11 para juegos de 32 bits.
 - **Juegos de 32 bits (DmC): Steam se emula en juegos de 32 bits** (`steam_api.dll`: Apps, User, Friends,
   Utils, UserStats y RemoteStorage guardado en `_HyperPlaySaves/steam_cloud`). La emulación de Steam de 64
   bits no cambia. Añadidas la instrucción x86 `EMMS` y `FileTimeToLocalFileTime`/`LocalFileTimeToFileTime`.

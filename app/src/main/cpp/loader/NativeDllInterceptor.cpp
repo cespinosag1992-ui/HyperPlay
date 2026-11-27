@@ -21,6 +21,7 @@
 #include "LowMem.h"
 #include "Win64Context.h"
 #include "Win32Context.h"
+#include "D3D9Probe32.h"
 #include "SteamEmu32.h"
 #include "GuestSeh.h"
 #include "gfx/GuestOpenGl.h"
@@ -1757,6 +1758,26 @@ void* win_FreeSid(void* sid) {
 }
 uint32_t win_GetLengthSid(const uint8_t* sid) { return sidLength(sid); }
 uint8_t* win_GetSidSubAuthorityCount(uint8_t* sid) { return sid != nullptr ? sid + 1 : nullptr; }
+
+// POWRPROF!CallNtPowerInformation (stdcall, 5 args). ProcessorInformation (11) devuelve un
+// PROCESSOR_POWER_INFORMATION de 24 bytes por CPU (8, como GetSystemInfo); el resto, ceros.
+// MSVCR90 (cdecl): _encode_pointer/_decode_pointer sin cifrado (identidad) y _encoded_null.
+uint32_t crt90IdentityPtr(uint32_t p) { return p; }
+uint32_t crt90EncodedNull() { return 0; }
+
+int32_t win_CallNtPowerInformation(int32_t level, const void*, uint32_t, void* out, uint32_t outLen) {
+    if (out == nullptr || outLen == 0) return 0;
+    if (level != 11) { std::memset(out, 0, outLen); return 0; }
+    constexpr uint32_t kCpus = 8, kEntry = 24;
+    if (outLen < kCpus * kEntry) return static_cast<int32_t>(0xC0000023u);  // STATUS_BUFFER_TOO_SMALL
+    auto* b = static_cast<uint8_t*>(out);
+    for (uint32_t i = 0; i < kCpus; ++i) {
+        const uint32_t mhz = i >= 6 ? 4320u : 3530u;
+        const uint32_t e[6] = {i, mhz, mhz, mhz, 0, 0};  // Number, MaxMhz, CurrentMhz, MhzLimit, Idle
+        std::memcpy(b + i * kEntry, e, kEntry);
+    }
+    return 0;
+}
 uint32_t* win_GetSidSubAuthority(uint8_t* sid, uint32_t n) {
     return sid != nullptr ? reinterpret_cast<uint32_t*>(sid + 8 + 4 * n) : nullptr;
 }
@@ -1931,6 +1952,19 @@ void* resolveRegistryExport(const std::string& funcName) {
 
 void NativeDllInterceptor::init(LoadedPeImage* image) {
     s_activeImage = image;
+    // Unreal Engine 3 de 32 bits (<raíz>/Binaries/Win32/juego.exe y <raíz>/Engine/Config): D:\ pasa a ser la
+    // raíz y el .exe se presenta en D:\Binaries\Win32\. Unreal colapsa "<base>\..\..\" y con la base en D:\
+    // perdía la unidad ("DevilGame\CookedPCConsole\Core.upk" relativo). 64 bits: sin cambios.
+    BionicPeLoader::setExeSubdir({});
+    if (image != nullptr && image->is32Bit &&
+        access((image->gameDir + "/../../Engine/Config/BaseEngine.ini").c_str(), F_OK) == 0) {
+        const size_t s1 = image->gameDir.find_last_of('/');
+        const size_t s2 = s1 == std::string::npos || s1 == 0 ? std::string::npos : image->gameDir.find_last_of('/', s1 - 1);
+        if (s2 != std::string::npos) {
+            BionicPeLoader::setExeSubdir(image->gameDir.substr(s2 + 1));
+            LOGI("Unreal Engine 3: .exe en %s", BionicPeLoader::exeWinDir().c_str());
+        }
+    }
     // Invitado de 32 bits: el montón Win32 y demás memoria que se le entrega, por debajo de 4 GB.
     if (image != nullptr && image->is32Bit) {
         lowmem::g_enabled.store(true);
@@ -2741,7 +2775,16 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
             const uint64_t prevThunkRet = t_thunkRet;
             t_thunkCtx = &ctx;
             t_thunkRet = ret32;
+            // Mismo vigilante que en 64 bits: llamadas nativas largas y volcado de pilas (dumpstacks).
+            startStallWatchdog();
+            ThunkInFlight& inFlight = myInFlight();
+            inFlight.ret.store(ret32, std::memory_order_relaxed);
+            inFlight.a0.store(args[0], std::memory_order_relaxed);
+            inFlight.a1.store(args[1], std::memory_order_relaxed);
+            inFlight.since.store(monoMs(), std::memory_order_relaxed);
+            inFlight.info.store(info, std::memory_order_release);
             ret = win64abi::invokeThunk(host, args);
+            inFlight.info.store(nullptr, std::memory_order_release);
             t_thunkCtx = prevThunkCtx;
             t_thunkRet = prevThunkRet;
             if (t_ctxOverride) {
@@ -4468,9 +4511,60 @@ float* D3DXMatrixInverse(float* out, float* det, const float* m) {
     return out;
 }
 
+// D3DXCheckVersion(D3D_SDK_VERSION, D3DX_SDK_VERSION) (WINAPI): TRUE = versiones compatibles.
+uint32_t D3DXCheckVersion(uint32_t, uint32_t) { return 1; }
+
+// ReadProcessMemory (stdcall, 5): solo el proceso actual; copia si la memoria es legible (el
+// manejador de errores de Unreal lee así la pila). ReportFault (stdcall, 2): sin informe a Microsoft.
+uint32_t ReadProcessMemory(uint32_t process, uint32_t src, uint32_t dst, uint32_t size, uint32_t readOut) {
+    uint32_t done = 0;
+    const void* s = reinterpret_cast<const void*>(static_cast<uintptr_t>(src));
+    if ((process == 0xFFFFFFFFu || process == 0) && src != 0 && dst != 0 && size != 0 && isGuestRangeReadable(s, size)) {
+        std::memmove(reinterpret_cast<void*>(static_cast<uintptr_t>(dst)), s, size);
+        done = size;
+    }
+    if (readOut != 0) std::memcpy(reinterpret_cast<void*>(static_cast<uintptr_t>(readOut)), &done, 4);
+    if (done == 0) NativeDllInterceptor::win_SetLastError(299);  // ERROR_PARTIAL_COPY
+    return done != 0 ? 1 : 0;
+}
+uint32_t ReportFault(uint32_t, uint32_t) { return 0; }
+
+// WinINet sin red (stdcall, firmas exactas): abrir/conectar devuelve NULL con
+// ERROR_INTERNET_CANNOT_CONNECT y el juego sigue sin conexión, como en un PC sin internet.
+uint32_t InetFail(uint32_t r) { NativeDllInterceptor::win_SetLastError(12029); return r; }
+uint32_t InetOpen5(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return InetFail(0); }
+uint32_t InetConnect8(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return InetFail(0); }
+uint32_t InetOpenUrl6(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return InetFail(0); }
+uint32_t InetFalse5(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return InetFail(0); }
+uint32_t InetFalse4(uint32_t, uint32_t, uint32_t, uint32_t) { return InetFail(0); }
+uint32_t InetTrue4(uint32_t, uint32_t, uint32_t, uint32_t) { return 1; }
+uint32_t InetClose1(uint32_t) { return 1; }
+uint32_t InetCallback2(uint32_t, uint32_t) { return 0; }
+// Consola (stdcall): sin ventana de consola; OutputDebugStringA va a logcat.
+uint32_t GetConsoleWindow0() { return 0; }
+uint32_t GetConsoleScreenBufferInfo2(uint32_t, uint32_t) { NativeDllInterceptor::win_SetLastError(6); return 0; }
+void OutputDebugStringA1(const char* s) {
+    if (s != nullptr) __android_log_print(ANDROID_LOG_INFO, "HyperPlay.DllInterceptor", "[OutputDebugString] %.400s", s);
+}
+
 void* resolve(const std::string& dll, const std::string& fn) {
     static const std::unordered_map<std::string, void*> kMap = {
         {"D3DXMatrixInverse", w32arity::hpFn(&D3DXMatrixInverse)},
+        {"D3DXCheckVersion", w32arity::hpFn(&D3DXCheckVersion)},
+        {"ReadProcessMemory", w32arity::hpFn(&ReadProcessMemory)}, {"ReportFault", w32arity::hpFn(&ReportFault)},
+        {"InternetOpenW", w32arity::hpFn(&InetOpen5)}, {"InternetOpenA", w32arity::hpFn(&InetOpen5)},
+        {"InternetConnectW", w32arity::hpFn(&InetConnect8)}, {"InternetConnectA", w32arity::hpFn(&InetConnect8)},
+        {"HttpOpenRequestW", w32arity::hpFn(&InetConnect8)}, {"HttpOpenRequestA", w32arity::hpFn(&InetConnect8)},
+        {"InternetOpenUrlA", w32arity::hpFn(&InetOpenUrl6)}, {"InternetOpenUrlW", w32arity::hpFn(&InetOpenUrl6)},
+        {"HttpSendRequestW", w32arity::hpFn(&InetFalse5)}, {"HttpSendRequestA", w32arity::hpFn(&InetFalse5)},
+        {"HttpQueryInfoA", w32arity::hpFn(&InetFalse5)}, {"HttpQueryInfoW", w32arity::hpFn(&InetFalse5)},
+        {"InternetReadFile", w32arity::hpFn(&InetFalse4)}, {"InternetQueryOptionW", w32arity::hpFn(&InetFalse4)},
+        {"InternetCrackUrlW", w32arity::hpFn(&InetFalse4)}, {"InternetSetOptionW", w32arity::hpFn(&InetTrue4)},
+        {"InternetCloseHandle", w32arity::hpFn(&InetClose1)},
+        {"GetConsoleWindow", w32arity::hpFn(&GetConsoleWindow0)},
+        {"GetConsoleScreenBufferInfo", w32arity::hpFn(&GetConsoleScreenBufferInfo2)},
+        {"OutputDebugStringA", w32arity::hpFn(&OutputDebugStringA1)},
+        {"InternetSetStatusCallbackW", w32arity::hpFn(&InetCallback2)},
         {"FindResourceW", w32arity::hpFn(&FindResourceW)}, {"FindResourceA", w32arity::hpFn(&FindResourceA)},
         {"FindResourceExW", w32arity::hpFn(&FindResourceExW)}, {"LoadResource", w32arity::hpFn(&LoadResource)},
         {"SizeofResource", w32arity::hpFn(&SizeofResource)}, {"LockResource", w32arity::hpFn(&LockResource)},
@@ -4855,6 +4949,11 @@ void* resolve(const std::string& fn) {
 
 static void* resolvePeExport(void* base, const PeInfo& pe, const char* lpProcName, int depth);
 static void ensureGuestGl();
+
+namespace guestcwd {  // definido más abajo
+uint32_t SetCurrentDirectoryA(const char* p);
+uint32_t GetCurrentDirectoryA(uint32_t len, char* buf);
+}  // namespace guestcwd
 
 void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, const std::string& funcName) {
     const std::string dll = toLower(dllName);
@@ -5451,6 +5550,10 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
 
     // 4a'. Resto de importaciones de clr.dll (solo 32 bits; los juegos de 64 bits siguen igual).
     if (!result && s_activeImage != nullptr && s_activeImage->is32Bit) result = w32more::resolve(dll, funcName);
+    if (!result && s_activeImage != nullptr && s_activeImage->is32Bit && dll == "kernel32.dll") {
+        if (funcName == "SetCurrentDirectoryA") result = w32arity::hpFn(&guestcwd::SetCurrentDirectoryA);
+        else if (funcName == "GetCurrentDirectoryA") result = w32arity::hpFn(&guestcwd::GetCurrentDirectoryA);
+    }
 
     // 4b. OLEAUT32: BSTR, VARIANT y IErrorInfo; el resto E_NOTIMPL con su aridad exacta (en 32 bits
     // stdcall: una aridad equivocada desbalancea la pila del invitado).
@@ -5571,6 +5674,9 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     if (!result && (dll.find("registry-l") != std::string::npos || dll.find("kernelbase") != std::string::npos)) {
         result = resolveRegistryExport(funcName);
     }
+    if (!result && dll.find("powrprof") != std::string::npos && funcName == "CallNtPowerInformation") {
+        result = w32arity::hpFn(&win_CallNtPowerInformation);
+    }
     if (!result && (dll.find("kernel32") != std::string::npos || dll.find("ntdll") != std::string::npos ||
                     dll.find("kernelbase") != std::string::npos || dll.find("api-ms-win") != std::string::npos)) {
         result = resolveSystemExtraExport(funcName);
@@ -5600,7 +5706,13 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     }
     if (!result && dll == "d3d9.dll") {
         s_d3dCalls.fetch_add(1);
-        if (funcName == "Direct3DCreate9") result = w32arity::hpFn(&win_Direct3DCreate9);
+        if (s_activeImage != nullptr && s_activeImage->is32Bit) {
+            // 32 bits (Unreal Engine 3): IDirect3D9 de solo consulta; renderiza con Direct3D 11.
+            result = d3d9probe32::resolve(funcName, {static_cast<uint32_t>(win32::screenWidth()),
+                                                     static_cast<uint32_t>(win32::screenHeight()),
+                                                     static_cast<uint32_t>(win32::kPrimaryMonitor)});
+        }
+        if (!result && funcName == "Direct3DCreate9") result = w32arity::hpFn(&win_Direct3DCreate9);
     }
     if (!result && dll == "opengl32.dll") {
         ensureGuestGl();
@@ -5631,6 +5743,16 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         // comunes: mismo CRT de Microsoft con las mismas funciones (antes eran stubs: malloc devolvía 0).
         if (s_activeImage->is32Bit && dll == "msvcrt.dll") localName = "MSVCR100.dll";
         struct stat st{};
+        // 32 bits: MSVCR90.dll (VC++ 2008, p. ej. PhysX de DmC) sin el runtime 2008 instalado -> msvcr100.dll:
+        // la API C es la misma. Las tres funciones que 2010 quitó (_encode/_decode_pointer, _encoded_null)
+        // se resuelven aquí; sin esto malloc era un stub que devolvía 0.
+        if (s_activeImage->is32Bit && dll == "msvcr90.dll" &&
+            stat((s_activeImage->gameDir + "/" + localName).c_str(), &st) != 0 &&
+            stat("/sdcard/HyperPlay/redist/x86/msvcr90.dll", &st) != 0) {
+            if (funcName == "_encode_pointer" || funcName == "_decode_pointer") return w32arity::hpFn(&crt90IdentityPtr);
+            if (funcName == "_encoded_null") return w32arity::hpFn(&crt90EncodedNull);
+            localName = "MSVCR100.dll";
+        }
         bool existsOnDisk = stat((s_activeImage->gameDir + "/" + localName).c_str(), &st) == 0;
         // Runtimes redistribuibles comunes (BionicPeLoader::loadLocalDll también los busca ahí).
         if (!existsOnDisk) {
@@ -6195,10 +6317,34 @@ void* NativeDllInterceptor::win_CreateFileA(const char* lpFileName, uint32_t dwD
 }
 
 int32_t NativeDllInterceptor::win_ReadFile(void* hFile, void* lpBuffer, uint32_t nNumberOfBytesToRead,
-                                           uint32_t* lpNumberOfBytesRead, void*) {
+                                           uint32_t* lpNumberOfBytesRead, void* lpOverlapped) {
     s_kernel32Calls.fetch_add(1);
     const int fd = fdFromHandle(hFile);
     if (fd < 0 || !lpBuffer) return 0;
+    // 32 bits: con OVERLAPPED se lee en su desplazamiento (Offset/OffsetHigh en +8/+12), como Windows en
+    // un handle síncrono; antes se leía de la posición actual (Unreal 3: "contains unrecognizable data").
+    // Se completa al momento: Internal=0, InternalHigh=bytes y se señala hEvent (+16).
+    if (lpOverlapped != nullptr && s_activeImage != nullptr && s_activeImage->is32Bit) {
+        auto* ov = static_cast<uint8_t*>(lpOverlapped);
+        uint32_t lo = 0, hi = 0, ev = 0;
+        std::memcpy(&lo, ov + 8, 4);
+        std::memcpy(&hi, ov + 12, 4);
+        std::memcpy(&ev, ov + 16, 4);
+        const off_t pos = static_cast<off_t>((static_cast<uint64_t>(hi) << 32) | lo);
+        const ssize_t n = pread(fd, lpBuffer, nNumberOfBytesToRead, pos);
+        if (n < 0) return 0;
+        if (lseek(fd, pos + n, SEEK_SET) < 0) { /* el puntero de archivo es orientativo */ }
+        const uint32_t zero = 0, got = static_cast<uint32_t>(n);
+        std::memcpy(ov, &zero, 4);
+        std::memcpy(ov + 4, &got, 4);
+        if (lpNumberOfBytesRead) *lpNumberOfBytesRead = got;
+        if ((ev & ~1u) != 0) win_SetEvent(reinterpret_cast<void*>(static_cast<uintptr_t>(ev & ~1u)));  // bit 0: sin puerto
+        s_readFileBytes.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
+        static std::atomic<int> s_logged{0};
+        if (s_logged.fetch_add(1) < 3) LOGI("ReadFile[32] OVERLAPPED: %u bytes en 0x%llx -> %zd", nNumberOfBytesToRead,
+                                            static_cast<unsigned long long>(pos), n);
+        return 1;
+    }
     {
         // Diagnóstico (setprop debug.hyperplay.tracetrad <tamaño hex>): una lectura de ese
         // tamaño activa el registro de las siguientes 1500 traducciones del JIT.
@@ -6221,7 +6367,20 @@ int32_t NativeDllInterceptor::win_ReadFile(void* hFile, void* lpBuffer, uint32_t
         }
     }
 
+    // Diagnóstico (setprop debug.hyperplay.readlog N): las N primeras lecturas con fd, posición y bytes.
+    static const int s_readLog = [] {
+        char v[PROP_VALUE_MAX] = {};
+        return __system_property_get("debug.hyperplay.readlog", v) > 0 ? std::atoi(v) : 0;
+    }();
+    static std::atomic<int> s_readLogged{0};
+    const off_t posBefore = s_readLog > 0 ? lseek(fd, 0, SEEK_CUR) : 0;
     const ssize_t n = read(fd, lpBuffer, nNumberOfBytesToRead);
+    if (s_readLog > 0 && s_readLogged.fetch_add(1) < s_readLog) {
+        uint32_t head = 0;
+        if (n >= 4) std::memcpy(&head, lpBuffer, 4);
+        LOGI("[ReadLog] fd=%d pos=0x%llx pedido=%u leído=%zd buf=%p primeros=%08x ov=%p", fd,
+             static_cast<unsigned long long>(posBefore), nNumberOfBytesToRead, n, lpBuffer, head, lpOverlapped);
+    }
     if (n < 0) return 0;
     s_readFileBytes.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
     if (lpNumberOfBytesRead) *lpNumberOfBytesRead = static_cast<uint32_t>(n);
@@ -7924,10 +8083,17 @@ uint64_t NativeDllInterceptor::win_GetTickCount64() {
 
 void* NativeDllInterceptor::win_HeapAlloc(void* hHeap, uint32_t dwFlags, size_t dwBytes) {
     s_kernel32Calls.fetch_add(1);
-    (void)hHeap;
     (void)dwFlags;
     // Sin log por llamada: Mono/Unity hacen decenas de miles por segundo.
-    return safeHeapAlloc(dwBytes);
+    void* p = safeHeapAlloc(dwBytes);
+    // Montón ejecutable (HeapCreate con HEAP_CREATE_ENABLE_EXECUTE; el CLR de .NET Framework pone ahí
+    // sus stubs): sus bloques se registran como código del invitado, por páginas.
+    if (p != nullptr && reinterpret_cast<uintptr_t>(hHeap) == 0xCAFE0003u) {
+        const uintptr_t start = reinterpret_cast<uintptr_t>(p) & ~uintptr_t{0xFFF};
+        const uintptr_t end = (reinterpret_cast<uintptr_t>(p) + dwBytes + 0xFFF) & ~uintptr_t{0xFFF};
+        OryonEmitterBackend::addExecutableRangeAll(start, end - start);
+    }
+    return p;
 }
 
 int32_t NativeDllInterceptor::win_HeapFree(void*, uint32_t, void* lpMem) {
@@ -8221,6 +8387,9 @@ std::u16string classKey(const void* name) {
 
 void registerClass(const void* wndClass) {
     if (wndClass == nullptr) return;
+    // Los desplazamientos son los de x64. En 32 bits (punteros de 4 bytes) se leía basura como puntero
+    // al nombre (SIGSEGV en DmC); la cola de mensajes con WndProc aún es solo para invitados de 64 bits.
+    if (s_activeImage != nullptr && s_activeImage->is32Bit) return;
     const auto* b = static_cast<const uint8_t*>(wndClass);
     uint64_t proc = 0;
     const void* name = nullptr;
@@ -9411,12 +9580,18 @@ static std::string buildCommandLine() {
         LOGI("Línea de comandos (juego .NET): %s", full.c_str());
         return full;
     }
-    std::string full = "\"D:\\" + getActiveExeName() + "\"";
+    std::string full = "\"" + BionicPeLoader::exeWinDir() + getActiveExeName() + "\"";
     if (s_activeImage != nullptr && access((s_activeImage->gameDir + "/UnityPlayer.dll").c_str(), F_OK) == 0) {
         char args[96];
         std::snprintf(args, sizeof(args), " -screen-width %d -screen-height %d -screen-fullscreen 1",
                       static_cast<int>(win32::screenWidth()), static_cast<int>(win32::screenHeight()));
         full += args;
+    }
+    // Unreal Engine 3 (Binaries/Win32 con Engine/Config): -dx11 elige el RHI de Direct3D 11 (SM5,
+    // que el juego trae cocinado) en lugar de D3D9, sin modificar los .ini del jugador.
+    if (s_activeImage != nullptr && s_activeImage->is32Bit &&
+        access((s_activeImage->gameDir + "/../../Engine/Config/BaseEngine.ini").c_str(), F_OK) == 0) {
+        full += " -dx11";
     }
     LOGI("Línea de comandos del juego: %s", full.c_str());
     return full;
@@ -9735,7 +9910,7 @@ static std::string guestModulePath(void* hModule) {
     if (hModule == nullptr || hModule == s_activeImage->baseAddress) {
         // Juego .NET: el proceso es mono.exe del runtime (Mono calcula su raíz desde aquí).
         if (std::string w = managed::toWinPath(s_activeImage->filePath); !w.empty()) return w;
-        return "D:\\" + getActiveExeName();
+        return BionicPeLoader::exeWinDir() + getActiveExeName();
     }
     for (const auto& kv : s_activeImage->localDlls) {
         if (kv.second.base != hModule) continue;
@@ -9765,7 +9940,7 @@ static std::string guestModulePath(void* hModule) {
         std::string p = kv.first;
         for (char& ch : p) if (ch == '/') ch = '\\';
         if (p.size() >= 2 && p[1] == ':') return p;
-        return "D:\\" + p;
+        return BionicPeLoader::exeWinDir() + p;
     }
     const auto h = reinterpret_cast<uintptr_t>(hModule);
     if ((h & ~static_cast<uintptr_t>(0xFF)) == 0x7FFF0000u) {
@@ -10408,6 +10583,13 @@ int32_t NativeDllInterceptor::win_CoCreateInstance(const void* rclsid, void* pUn
                               (static_cast<uint32_t>(c[2]) << 16) | (static_cast<uint32_t>(c[3]) << 24);
     const uint32_t iidData1 = static_cast<uint32_t>(i[0]) | (static_cast<uint32_t>(i[1]) << 8) |
                               (static_cast<uint32_t>(i[2]) << 16) | (static_cast<uint32_t>(i[3]) << 24);
+    // MMDeviceEnumerator: el objeto WASAPI es de 64 bits (vive por encima de 4 GB); un invitado de 32 bits
+    // lo truncaba y fallaba. Hasta tener audio de 32 bits: "clase no registrada" (el juego sigue sin audio).
+    if (clsData1 == 0xBCDE0395u && s_activeImage != nullptr && s_activeImage->is32Bit) {
+        if (ppv != nullptr) *reinterpret_cast<uint32_t*>(ppv) = 0;
+        LOGW("CoCreateInstance(MMDeviceEnumerator): sin WASAPI para 32 bits todavía");
+        return static_cast<int32_t>(0x80040154);
+    }
     if (clsData1 == 0xBCDE0395u) return wasapiCreateEnumerator(iidData1, ppv);  // MMDeviceEnumerator
     LOGW("CoCreateInstance: CLSID={%08X-...} IID={%08X-...} outer=%p no registrado",
          clsData1, iidData1, pUnkOuter);
@@ -10584,8 +10766,23 @@ void* NativeDllInterceptor::win_SetUnhandledExceptionFilter(void* filter) {
     return reinterpret_cast<void*>(previous);
 }
 
-int32_t NativeDllInterceptor::win_UnhandledExceptionFilter(void*) {
+int32_t NativeDllInterceptor::win_UnhandledExceptionFilter(void* pointers) {
     s_kernel32Calls.fetch_add(1);
+    // Registro del fallo (p. ej. __report_gsfailure del CRT): código, dirección y registros.
+    if (pointers != nullptr && s_activeImage != nullptr && s_activeImage->is32Bit &&
+        isGuestRangeReadable(pointers, 8)) {
+        uint32_t ptrs[2] = {};
+        std::memcpy(ptrs, pointers, 8);
+        auto* rec = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(ptrs[0]));
+        auto* ctx = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(ptrs[1]));
+        uint32_t code = 0, addr = 0, eip = 0, esp = 0, ebp = 0;
+        if (rec != nullptr && isGuestRangeReadable(rec, 16)) { std::memcpy(&code, rec, 4); std::memcpy(&addr, rec + 12, 4); }
+        if (ctx != nullptr && isGuestRangeReadable(ctx, 0xCC)) {
+            std::memcpy(&ebp, ctx + 0xB4, 4); std::memcpy(&eip, ctx + 0xB8, 4); std::memcpy(&esp, ctx + 0xC4, 4);
+        }
+        LOGW("UnhandledExceptionFilter[32]: código=0x%x dirección=0x%x EIP=0x%x ESP=0x%x EBP=0x%x",
+             code, addr, eip, esp, ebp);
+    }
     return 1; // EXCEPTION_EXECUTE_HANDLER
 }
 
@@ -10845,6 +11042,19 @@ bool raise(uint32_t code, uint32_t flags, uint32_t n, const void* args) {
                 words += w;
             }
             LOGI("[SEH32]   objeto 0x%x:%s", obj, words.c_str());
+            // throw L"texto" (Unreal: appErrorf/appThrowf): se muestra el texto lanzado.
+            const uint32_t str = rd32(obj);
+            if (type == ".PA_W" && str != 0 && isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{str}), 2)) {
+                std::string text;
+                for (uint32_t k = 0; k < 400; ++k) {
+                    if (!isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{str + 2 * k}), 2)) break;
+                    uint16_t ch = 0;
+                    std::memcpy(&ch, reinterpret_cast<const void*>(uintptr_t{str + 2 * k}), 2);
+                    if (ch == 0) break;
+                    text.push_back(ch < 0x80 ? static_cast<char>(ch) : '?');
+                }
+                LOGW("[SEH32]   texto lanzado: \"%s\"", text.c_str());
+            }
         }
     }
     CpuContext d = c;
@@ -12608,8 +12818,11 @@ size_t NativeDllInterceptor::win_VirtualQuery(const void* lpAddress, void* lpBuf
     return kMbiSize;
 }
 
-void* NativeDllInterceptor::win_HeapCreate(uint32_t /*flOptions*/, size_t /*dwInitialSize*/, size_t /*dwMaximumSize*/) {
+void* NativeDllInterceptor::win_HeapCreate(uint32_t flOptions, size_t /*dwInitialSize*/, size_t /*dwMaximumSize*/) {
     s_kernel32Calls.fetch_add(1);
+    // 32 bits: HEAP_CREATE_ENABLE_EXECUTE (0x40000) -> handle propio; HeapAlloc registra sus bloques como código.
+    if ((flOptions & 0x40000u) != 0 && s_activeImage != nullptr && s_activeImage->is32Bit)
+        return reinterpret_cast<void*>(0xCAFE0003ULL);
     return reinterpret_cast<void*>(0xCAFE0002ULL);
 }
 
@@ -12843,9 +13056,41 @@ int32_t NativeDllInterceptor::win_SetEnvironmentVariableW(const wchar_t* lpName,
     return 1;
 }
 
+// Directorio actual de los invitados de 32 bits (Unreal 3 hace SetCurrentDirectory y luego abre
+// "DevilGame\CookedPCConsole\..." en relativo). Los de 64 bits siguen con D:\ fijo.
+namespace guestcwd {
+std::string current() {
+    const std::string c = BionicPeLoader::guestCwd();
+    std::string w = c.empty() ? BionicPeLoader::exeWinDir() : c;
+    for (char& ch : w) if (ch == '/') ch = '\\';
+    return w;
+}
+int32_t set(const std::string& path) {
+    if (s_activeImage == nullptr || path.empty()) return 0;
+    const std::string canon = BionicPeLoader::canonicalWinPath(path);
+    const std::string host = BionicPeLoader::resolveVirtualPath(*s_activeImage, canon);
+    struct stat st{};
+    if (stat(host.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+        NativeDllInterceptor::win_SetLastError(3);  // ERROR_PATH_NOT_FOUND
+        LOGW("SetCurrentDirectory('%s') -> no existe (%s)", path.c_str(), host.c_str());
+        return 0;
+    }
+    BionicPeLoader::setGuestCwd(canon);
+    LOGI("SetCurrentDirectory('%s') -> %s (%s)", path.c_str(), canon.c_str(), host.c_str());
+    return 1;
+}
+uint32_t SetCurrentDirectoryA(const char* p) { return p != nullptr ? static_cast<uint32_t>(set(p)) : 0u; }
+uint32_t GetCurrentDirectoryA(uint32_t len, char* buf) {
+    const std::string cur = current();
+    if (buf == nullptr || len <= cur.size()) return static_cast<uint32_t>(cur.size() + 1);
+    std::memcpy(buf, cur.c_str(), cur.size() + 1);
+    return static_cast<uint32_t>(cur.size());
+}
+}  // namespace guestcwd
+
 uint32_t NativeDllInterceptor::win_GetCurrentDirectoryW(uint32_t nBufferLength, wchar_t* lpBuffer) {
     s_kernel32Calls.fetch_add(1);
-    const std::string cur = "D:\\";
+    const std::string cur = (s_activeImage != nullptr && s_activeImage->is32Bit) ? guestcwd::current() : "D:\\";
     const uint32_t len = static_cast<uint32_t>(cur.size());
     if (lpBuffer == nullptr || nBufferLength <= len) {
         return len + 1;
@@ -12854,8 +13099,10 @@ uint32_t NativeDllInterceptor::win_GetCurrentDirectoryW(uint32_t nBufferLength, 
     return len;
 }
 
-int32_t NativeDllInterceptor::win_SetCurrentDirectoryW(const wchar_t* /*lpPathName*/) {
+int32_t NativeDllInterceptor::win_SetCurrentDirectoryW(const wchar_t* lpPathName) {
     s_kernel32Calls.fetch_add(1);
+    if (s_activeImage != nullptr && s_activeImage->is32Bit && lpPathName != nullptr)
+        return guestcwd::set(wcharToUtf8(lpPathName));
     return 1;
 }
 
