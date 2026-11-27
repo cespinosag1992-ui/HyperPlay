@@ -20,6 +20,7 @@
 #include "Win32Arity.h"
 #include "LowMem.h"
 #include "Win64Context.h"
+#include "Win32Context.h"
 #include "GuestSeh.h"
 #include "gfx/GuestOpenGl.h"
 #include "cpu/OryonEmitterBackend.h"
@@ -204,6 +205,12 @@ uintptr_t lowFor(void* host, const std::string& name) {
     return low;
 }
 }  // namespace w32alias
+
+// SEH de 32 bits (definido junto a RaiseException).
+namespace seh32 {
+int32_t hp_NtContinue32(const uint8_t* ctx, int32_t testAlert);
+uint32_t hp_RtlUnwind32(uint32_t target, uint32_t targetIp, uint8_t* rec, uint32_t retVal);
+}  // namespace seh32
 
 namespace {
 std::string findTrampolineName(uintptr_t addr) {
@@ -1483,14 +1490,15 @@ uint32_t win_EventRegister(const void*, void*, void*, uint64_t* handle) {
     if (handle != nullptr) *handle = s_next.fetch_add(1);
     return 0;
 }
-uint32_t win_EventUnregister(uint64_t) { return 0; }
-uint32_t win_EventSetInformation(uint64_t, uint32_t, void*, uint32_t) { return 0; }
-uint32_t win_EventWriteTransfer(uint64_t, const void*, const void*, const void*, uint32_t, void*) { return 0; }
+// REGHANDLE es ULONGLONG por valor: int64_t (2 ranuras de pila en 32 bits).
+uint32_t win_EventUnregister(int64_t) { return 0; }
+uint32_t win_EventSetInformation(int64_t, uint32_t, void*, uint32_t) { return 0; }
+uint32_t win_EventWriteTransfer(int64_t, const void*, const void*, const void*, uint32_t, void*) { return 0; }
 uint32_t win_EventActivityIdControl(uint32_t, void* guid) {
     if (guid != nullptr) std::memset(guid, 0, 16);
     return 0;
 }
-uint8_t win_EventEnabled(uint64_t, const void*) { return 0; }
+uint8_t win_EventEnabled(int64_t, const void*) { return 0; }
 
 // Registro de eventos de Windows: no hay visor de eventos; se acepta y no se guarda.
 void* win_RegisterEventSourceW(const char16_t*, const char16_t*) { return reinterpret_cast<void*>(0xE7E70001); }
@@ -1545,6 +1553,188 @@ void* win_InterlockedPushListSListEx(void* head, void* list, void* listEnd, uint
     return reinterpret_cast<void*>(old);
 }
 
+// OpenProcess: solo existe el propio proceso (pseudo-handle -1); otros PID -> NULL.
+void* win_OpenProcess(uint32_t, int32_t, uint32_t pid) {
+    if (pid == static_cast<uint32_t>(getpid()) || pid == 0) return reinterpret_cast<void*>(~uintptr_t{0});
+    NativeDllInterceptor::win_SetLastError(87);
+    return nullptr;
+}
+uint32_t win_GetProcessId(void*) { return static_cast<uint32_t>(getpid()); }
+
+// Avisos de memoria: nunca hay "memoria baja" (el GC de .NET solo los consulta).
+void* win_CreateMemoryResourceNotification(uint32_t) { return reinterpret_cast<void*>(uintptr_t{0xCAFE0040u}); }
+int32_t win_QueryMemoryResourceNotification(void*, int32_t* state) {
+    if (state != nullptr) *state = 0;
+    return 1;
+}
+// El proceso no está dentro de un Job object.
+int32_t win_IsProcessInJob(void*, void*, int32_t* result) {
+    if (result != nullptr) *result = 0;
+    return 1;
+}
+
+// Idioma de interfaz: en-US (como el resto del entorno).
+uint16_t win_GetUserDefaultUILanguage() { return 0x0409; }
+
+// OpenEvent: no hay eventos con nombre de otros procesos -> NULL + ERROR_FILE_NOT_FOUND.
+void* win_OpenEventW(uint32_t, int32_t, const void*) {
+    NativeDllInterceptor::win_SetLastError(2);
+    return nullptr;
+}
+
+// Seguridad: un solo usuario, sin ACL. Los descriptores se inicializan (revisión 1, vacíos) y
+// las operaciones sobre ellos tienen éxito; el CLR falla con HRESULT_FROM_WIN32(GetLastError())
+// si devuelven FALSE.
+int32_t win_InitializeSecurityDescriptor(uint8_t* sd, uint32_t revision) {
+    if (sd == nullptr) { NativeDllInterceptor::win_SetLastError(87); return 0; }
+    std::memset(sd, 0, lowmem::enabled() ? 20 : 40);  // SECURITY_DESCRIPTOR
+    sd[0] = static_cast<uint8_t>(revision);
+    return 1;
+}
+int32_t win_SetSecurityDescriptorDacl(uint8_t* sd, int32_t present, void* dacl, int32_t defaulted) {
+    if (sd == nullptr) { NativeDllInterceptor::win_SetLastError(87); return 0; }
+    uint16_t control = 0;
+    std::memcpy(&control, sd + 2, 2);
+    control = static_cast<uint16_t>((control & ~0x000Cu) | (present ? 0x4u : 0u) | (defaulted ? 0x8u : 0u));
+    std::memcpy(sd + 2, &control, 2);
+    lowmem::storePtr(sd + (lowmem::enabled() ? 16 : 32), dacl);  // Dacl
+    return 1;
+}
+
+int32_t win_GetSecurityDescriptorDacl(const uint8_t* sd, int32_t* present, void** dacl, int32_t* defaulted) {
+    if (sd == nullptr) { NativeDllInterceptor::win_SetLastError(87); return 0; }
+    uint16_t control = 0;
+    std::memcpy(&control, sd + 2, 2);
+    if (present != nullptr) *present = (control & 0x4u) != 0 ? 1 : 0;
+    if (defaulted != nullptr) *defaulted = (control & 0x8u) != 0 ? 1 : 0;
+    lowmem::storePtr(dacl, lowmem::loadPtr(sd + (lowmem::enabled() ? 16 : 32)));
+    return 1;
+}
+int32_t win_IsValidSecurityDescriptor(const uint8_t* sd) { return sd != nullptr && sd[0] == 1 ? 1 : 0; }
+
+// SDDL -> descriptor: uno vacío (revisión 1, sin DACL = acceso total) en el montón (LocalFree).
+int32_t win_ConvertStringSecurityDescriptorToSecurityDescriptorW(const void*, uint32_t, void** out, uint32_t* size) {
+    const uint32_t n = lowmem::enabled() ? 20u : 40u;
+    auto* sd = static_cast<uint8_t*>(NativeDllInterceptor::win_HeapAlloc(NativeDllInterceptor::win_GetProcessHeap(), 8, n));
+    if (sd == nullptr || out == nullptr) { NativeDllInterceptor::win_SetLastError(8); return 0; }
+    sd[0] = 1;
+    lowmem::storePtr(out, sd);
+    if (size != nullptr) *size = n;
+    return 1;
+}
+
+// El hilo no suplanta a nadie: OpenThreadToken falla con ERROR_NO_TOKEN (lo que esperan los
+// llamadores, que entonces usan el token del proceso).
+int32_t win_OpenThreadToken(void*, uint32_t, int32_t, void** token) {
+    lowmem::storePtr(token, uint64_t{0});
+    NativeDllInterceptor::win_SetLastError(1008);
+    return 0;
+}
+
+// GetTokenInformation: usuario S-1-5-21-0-0-0-1000, elevado, integridad alta. Estructuras con
+// punteros del tamaño del invitado (SID_AND_ATTRIBUTES = {PSID, DWORD}) y el SID detrás.
+int32_t win_GetTokenInformation(void*, uint32_t cls, uint8_t* buf, uint32_t len, uint32_t* retLen) {
+    const uint32_t ps = static_cast<uint32_t>(lowmem::guestPtrSize());
+    auto fail = [](uint32_t err) {
+        NativeDllInterceptor::win_SetLastError(err);
+        return 0;
+    };
+    if (cls == 1 || cls == 25) {  // TokenUser / TokenIntegrityLevel: SID_AND_ATTRIBUTES + SID
+        const uint8_t userSid[] = {1, 5, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xE8, 3, 0, 0};
+        const uint8_t highSid[] = {1, 1, 0, 0, 0, 0, 0, 16, 0x00, 0x30, 0, 0};
+        const uint8_t* sid = cls == 1 ? userSid : highSid;
+        const uint32_t sidLen = cls == 1 ? sizeof(userSid) : sizeof(highSid);
+        const uint32_t hdr = ps * 2;  // PSID + DWORD Attributes (con relleno en 64 bits)
+        const uint32_t need = hdr + sidLen;
+        if (retLen != nullptr) *retLen = need;
+        if (buf == nullptr || len < need) return fail(122);  // ERROR_INSUFFICIENT_BUFFER
+        std::memset(buf, 0, hdr);
+        lowmem::storePtr(buf, buf + hdr);
+        const uint32_t attrs = cls == 25 ? 0x60u /*SE_GROUP_INTEGRITY|ENABLED*/ : 0u;
+        std::memcpy(buf + ps, &attrs, 4);
+        std::memcpy(buf + hdr, sid, sidLen);
+        return 1;
+    }
+    if (cls == 18 || cls == 20) {  // TokenElevationType (1 = por defecto) / TokenElevation (1)
+        if (retLen != nullptr) *retLen = 4;
+        if (buf == nullptr || len < 4) return fail(122);
+        const uint32_t v = 1;
+        std::memcpy(buf, &v, 4);
+        return 1;
+    }
+    if (retLen != nullptr) *retLen = 0;
+    return fail(87);
+}
+
+// SID: {Revision=1, SubAuthorityCount, IdentifierAuthority[6], SubAuthority[n] (DWORD)}.
+uint32_t sidLength(const uint8_t* sid) { return sid == nullptr ? 0u : 8u + 4u * sid[1]; }
+int32_t win_AllocateAndInitializeSid(const uint8_t* authority, uint8_t count, uint32_t s0, uint32_t s1, uint32_t s2,
+                                     uint32_t s3, uint32_t s4, uint32_t s5, uint32_t s6, uint32_t s7, void** out) {
+    if (authority == nullptr || out == nullptr || count > 8) { NativeDllInterceptor::win_SetLastError(87); return 0; }
+    auto* sid = static_cast<uint8_t*>(NativeDllInterceptor::win_HeapAlloc(NativeDllInterceptor::win_GetProcessHeap(), 8, 8 + 4 * 8));
+    if (sid == nullptr) { NativeDllInterceptor::win_SetLastError(8); return 0; }
+    sid[0] = 1;
+    sid[1] = count;
+    std::memcpy(sid + 2, authority, 6);
+    const uint32_t sub[8] = {s0, s1, s2, s3, s4, s5, s6, s7};
+    std::memcpy(sid + 8, sub, 4u * count);
+    lowmem::storePtr(out, sid);
+    return 1;
+}
+void* win_FreeSid(void* sid) {
+    if (sid != nullptr) NativeDllInterceptor::win_HeapFree(NativeDllInterceptor::win_GetProcessHeap(), 0, sid);
+    return nullptr;
+}
+uint32_t win_GetLengthSid(const uint8_t* sid) { return sidLength(sid); }
+uint8_t* win_GetSidSubAuthorityCount(uint8_t* sid) { return sid != nullptr ? sid + 1 : nullptr; }
+uint32_t* win_GetSidSubAuthority(uint8_t* sid, uint32_t n) {
+    return sid != nullptr ? reinterpret_cast<uint32_t*>(sid + 8 + 4 * n) : nullptr;
+}
+uint8_t* win_GetSidIdentifierAuthority(uint8_t* sid) { return sid != nullptr ? sid + 2 : nullptr; }
+// "S-1-<autoridad>-<sub>..." en memoria del montón (el llamador la libera con LocalFree).
+int32_t win_ConvertSidToStringSidW(const uint8_t* sid, void** out) {
+    if (sid == nullptr || out == nullptr || sid[0] != 1) { NativeDllInterceptor::win_SetLastError(1337); return 0; }
+    uint64_t auth = 0;
+    for (int i = 2; i < 8; ++i) auth = (auth << 8) | sid[i];
+    std::string s = "S-1-" + std::to_string(auth);
+    for (uint32_t i = 0; i < sid[1]; ++i) {
+        uint32_t v = 0;
+        std::memcpy(&v, sid + 8 + 4 * i, 4);
+        s += "-" + std::to_string(v);
+    }
+    auto* w = static_cast<char16_t*>(NativeDllInterceptor::win_HeapAlloc(NativeDllInterceptor::win_GetProcessHeap(), 0, (s.size() + 1) * 2));
+    if (w == nullptr) { NativeDllInterceptor::win_SetLastError(8); return 0; }
+    for (size_t i = 0; i <= s.size(); ++i) w[i] = static_cast<char16_t>(i < s.size() ? s[i] : 0);
+    lowmem::storePtr(out, w);
+    return 1;
+}
+int32_t win_IsValidSid(const uint8_t* sid) { return sid != nullptr && sid[0] == 1 && sid[1] <= 15 ? 1 : 0; }
+int32_t win_EqualSid(const uint8_t* a, const uint8_t* b) {
+    return a != nullptr && b != nullptr && sidLength(a) == sidLength(b) && std::memcmp(a, b, sidLength(a)) == 0 ? 1 : 0;
+}
+int32_t win_CopySid(uint32_t len, uint8_t* dst, const uint8_t* src) {
+    const uint32_t n = sidLength(src);
+    if (dst == nullptr || src == nullptr || len < n) { NativeDllInterceptor::win_SetLastError(122); return 0; }
+    std::memcpy(dst, src, n);
+    return 1;
+}
+// ACL vacía {Revision, Sbz1, AclSize, AceCount=0, Sbz2}; los ACE se aceptan sin guardarse.
+int32_t win_InitializeAcl(uint8_t* acl, uint32_t size, uint32_t revision) {
+    if (acl == nullptr || size < 8) { NativeDllInterceptor::win_SetLastError(122); return 0; }
+    std::memset(acl, 0, 8);
+    acl[0] = static_cast<uint8_t>(revision);
+    const auto s = static_cast<uint16_t>(size);
+    std::memcpy(acl + 2, &s, 2);
+    return 1;
+}
+int32_t win_AddAccessAllowedAce(void*, uint32_t, uint32_t, void*) { return 1; }
+int32_t win_AddAccessAllowedAceEx(void*, uint32_t, uint32_t, uint32_t, void*) { return 1; }
+// Un solo usuario: pertenece a todos los grupos que se consulten (como un administrador local).
+int32_t win_CheckTokenMembership(void*, void*, int32_t* isMember) {
+    if (isMember != nullptr) *isMember = 1;
+    return 1;
+}
+
 void* resolveSystemExtraExport(const std::string& funcName) {
     static const std::unordered_map<std::string, void*> kExports = {
         {"RtlAddGrowableFunctionTable", w32arity::hpFn(&win_RtlAddGrowableFunctionTable)},
@@ -1593,6 +1783,15 @@ void* resolveSystemExtraExport(const std::string& funcName) {
         {"RtlInterlockedPopEntrySList", w32arity::hpFn(&NativeDllInterceptor::win_InterlockedPopEntrySList)},
         {"RtlInterlockedFlushSList", w32arity::hpFn(&NativeDllInterceptor::win_InterlockedFlushSList)},
         {"RtlInitializeSListHead", w32arity::hpFn(&NativeDllInterceptor::win_InitializeSListHead)},
+        {"GetUserDefaultUILanguage", w32arity::hpFn(&win_GetUserDefaultUILanguage)},
+        {"GetSystemDefaultUILanguage", w32arity::hpFn(&win_GetUserDefaultUILanguage)},
+        {"OpenEventW", w32arity::hpFn(&win_OpenEventW)},
+        {"OpenEventA", w32arity::hpFn(&win_OpenEventW)},
+        {"OpenProcess", w32arity::hpFn(&win_OpenProcess)},
+        {"GetProcessId", w32arity::hpFn(&win_GetProcessId)},
+        {"CreateMemoryResourceNotification", w32arity::hpFn(&win_CreateMemoryResourceNotification)},
+        {"QueryMemoryResourceNotification", w32arity::hpFn(&win_QueryMemoryResourceNotification)},
+        {"IsProcessInJob", w32arity::hpFn(&win_IsProcessInJob)},
     };
     auto it = kExports.find(funcName);
     return it == kExports.end() ? nullptr : it->second;
@@ -1601,6 +1800,28 @@ void* resolveSystemExtraExport(const std::string& funcName) {
 void* resolveRegistryExport(const std::string& funcName) {
     static const std::unordered_map<std::string, void*> kExports = {
         {"RegOpenKeyExW", w32arity::hpFn(&win_RegOpenKeyExW)},
+        {"InitializeSecurityDescriptor", w32arity::hpFn(&win_InitializeSecurityDescriptor)},
+        {"SetSecurityDescriptorDacl", w32arity::hpFn(&win_SetSecurityDescriptorDacl)},
+        {"AllocateAndInitializeSid", w32arity::hpFn(&win_AllocateAndInitializeSid)},
+        {"GetSecurityDescriptorDacl", w32arity::hpFn(&win_GetSecurityDescriptorDacl)},
+        {"IsValidSecurityDescriptor", w32arity::hpFn(&win_IsValidSecurityDescriptor)},
+        {"OpenThreadToken", w32arity::hpFn(&win_OpenThreadToken)},
+        {"ConvertStringSecurityDescriptorToSecurityDescriptorW",
+         w32arity::hpFn(&win_ConvertStringSecurityDescriptorToSecurityDescriptorW)},
+        {"GetTokenInformation", w32arity::hpFn(&win_GetTokenInformation)},
+        {"FreeSid", w32arity::hpFn(&win_FreeSid)},
+        {"GetLengthSid", w32arity::hpFn(&win_GetLengthSid)},
+        {"GetSidSubAuthorityCount", w32arity::hpFn(&win_GetSidSubAuthorityCount)},
+        {"GetSidSubAuthority", w32arity::hpFn(&win_GetSidSubAuthority)},
+        {"GetSidIdentifierAuthority", w32arity::hpFn(&win_GetSidIdentifierAuthority)},
+        {"ConvertSidToStringSidW", w32arity::hpFn(&win_ConvertSidToStringSidW)},
+        {"IsValidSid", w32arity::hpFn(&win_IsValidSid)},
+        {"EqualSid", w32arity::hpFn(&win_EqualSid)},
+        {"CopySid", w32arity::hpFn(&win_CopySid)},
+        {"InitializeAcl", w32arity::hpFn(&win_InitializeAcl)},
+        {"AddAccessAllowedAce", w32arity::hpFn(&win_AddAccessAllowedAce)},
+        {"AddAccessAllowedAceEx", w32arity::hpFn(&win_AddAccessAllowedAceEx)},
+        {"CheckTokenMembership", w32arity::hpFn(&win_CheckTokenMembership)},
         {"RegisterEventSourceW", w32arity::hpFn(&win_RegisterEventSourceW)},
         {"DeregisterEventSource", w32arity::hpFn(&win_DeregisterEventSource)},
         {"ReportEventW", w32arity::hpFn(&win_ReportEventW)},
@@ -2693,6 +2914,33 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
 }
 
 
+// Nombre de un import por ordinal en las DLL de sistema que se importan así (clr.dll de .NET
+// Framework importa OLEAUT32 solo por ordinal). Vacío si el ordinal no se conoce.
+static std::string importName(const std::string& dll, const ImportedFunction& fn) {
+    if (!fn.name.empty() || fn.ordinal == 0) return fn.name;
+    std::string d = dll;
+    for (char& c : d) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (d == "oleaut32.dll" || d == "oleaut32") {
+        static const std::unordered_map<uint16_t, const char*> kOleAut = {
+            {2, "SysAllocString"}, {4, "SysAllocStringLen"}, {6, "SysFreeString"}, {7, "SysStringLen"},
+            {8, "VariantInit"}, {9, "VariantClear"}, {10, "VariantCopy"}, {12, "VariantChangeType"},
+            {16, "SafeArrayDestroy"}, {17, "SafeArrayGetDim"}, {18, "SafeArrayGetElemsize"},
+            {19, "SafeArrayGetUBound"}, {20, "SafeArrayGetLBound"}, {23, "SafeArrayAccessData"},
+            {24, "SafeArrayUnaccessData"}, {25, "SafeArrayGetElement"}, {26, "SafeArrayPutElement"},
+            {37, "SafeArrayAllocData"}, {41, "SafeArrayAllocDescriptorEx"}, {44, "SafeArraySetRecordInfo"},
+            {45, "SafeArrayGetRecordInfo"}, {77, "SafeArrayGetVartype"}, {147, "VariantChangeTypeEx"},
+            {149, "SysStringByteLen"}, {150, "SysAllocStringByteLen"}, {162, "LoadRegTypeLib"},
+            {164, "QueryPathOfRegTypeLib"}, {179, "VarDecMul"}, {180, "CreateTypeLib2"}, {183, "LoadTypeLibEx"},
+            {187, "VarDecFix"}, {188, "VarDecInt"}, {193, "VarDecFromR4"}, {194, "VarDecFromR8"},
+            {196, "VarDecFromCy"}, {200, "GetErrorInfo"}, {201, "SetErrorInfo"}, {202, "CreateErrorInfo"},
+            {203, "VarDecRound"}, {204, "VarDecCmp"}, {216, "VarR4FromDec"}, {220, "VarR8FromDec"},
+            {228, "VarCyFromDec"}, {323, "GetRecordInfoFromTypeInfo"}, {411, "SafeArrayCreateVector"},
+        };
+        if (const auto it = kOleAut.find(fn.ordinal); it != kOleAut.end()) return it->second;
+    }
+    return fn.name;
+}
+
 size_t NativeDllInterceptor::hijackIat(LoadedPeImage& image) {
     return hijackIatChecked(image).hijacked;
 }
@@ -2718,7 +2966,7 @@ IatHijackStats NativeDllInterceptor::hijackIatChecked(LoadedPeImage& image) {
                 }
                 continue;
             }
-            void* nativeFunc = resolveNativeSymbol(mod.name, fn.name);
+            void* nativeFunc = resolveNativeSymbol(mod.name, importName(mod.name, fn));
             if (nativeFunc == nullptr && image.is32Bit) {
                 // 32 bits (en desarrollo): stub de diagnóstico como en las DLL locales. El log dice cuáles
                 // se llegan a llamar ("[32 bits] ... aridad desconocida (stub)") para implementarlas.
@@ -2857,7 +3105,7 @@ IatHijackStats NativeDllInterceptor::hijackLocalDllIat(LoadedPeImage& image) {
                 ++stats.outOfImage;
                 continue;
             }
-            void* nativeFunc = resolveNativeSymbol(mod.name, fn.name);
+            void* nativeFunc = resolveNativeSymbol(mod.name, importName(mod.name, fn));
             if (nativeFunc == nullptr) {
                 // Asigna un dynamic diagnostic stub por slot para imports secundarios
                 nativeFunc = DynamicStubManager::getOrCreateStub(mod.name, fn.name);
@@ -2882,7 +3130,7 @@ IatHijackStats NativeDllInterceptor::hijackLocalDllIat(LoadedPeImage& image) {
             uintptr_t value = reinterpret_cast<uintptr_t>(nativeFunc);
             if (image.is32Bit) {
                 // Antes se truncaba a 32 bits en silencio (salto a basura): alias bajo 4 GB.
-                if (value > 0xFFFFFFFFull) value = w32alias::lowFor(nativeFunc, mod.name + "!" + fn.name);
+                if (value > 0xFFFFFFFFull) value = w32alias::lowFor(nativeFunc, mod.name + "!" + importName(mod.name, fn));
                 const uint32_t slot = static_cast<uint32_t>(value);
                 std::memcpy(target, &slot, sizeof(slot));
             } else {
@@ -3211,6 +3459,81 @@ static uint32_t hp_GetSystemDirectoryW(char16_t* buf, uint32_t size) {
     return copyWinDir(buf, size, "C:\\Windows\\System32");
 }
 
+// OLEAUT32 mínimo. BSTR: [longitud en bytes (DWORD)][UTF-16][NUL]; el puntero apunta a los datos.
+// Memoria del montón del proceso (por debajo de 4 GB en invitados de 32 bits).
+namespace oleaut {
+constexpr int32_t kENotImpl = static_cast<int32_t>(0x80004001u);
+char16_t* allocBstrBytes(const void* src, uint32_t bytes) {
+    auto* p = static_cast<uint8_t*>(NativeDllInterceptor::win_HeapAlloc(NativeDllInterceptor::win_GetProcessHeap(), 0, bytes + 6));
+    if (p == nullptr) return nullptr;
+    std::memcpy(p, &bytes, 4);
+    if (src != nullptr) std::memcpy(p + 4, src, bytes);
+    else std::memset(p + 4, 0, bytes);
+    p[4 + bytes] = 0;
+    p[5 + bytes] = 0;
+    return reinterpret_cast<char16_t*>(p + 4);
+}
+char16_t* SysAllocStringLen(const char16_t* s, uint32_t len) { return allocBstrBytes(s, len * 2); }
+char16_t* SysAllocString(const char16_t* s) {
+    if (s == nullptr) return nullptr;
+    uint32_t n = 0;
+    while (s[n] != 0) ++n;
+    return SysAllocStringLen(s, n);
+}
+char16_t* SysAllocStringByteLen(const char* s, uint32_t bytes) { return allocBstrBytes(s, bytes); }
+uint32_t SysStringByteLen(const char16_t* b) {
+    if (b == nullptr) return 0;
+    uint32_t n = 0;
+    std::memcpy(&n, reinterpret_cast<const uint8_t*>(b) - 4, 4);
+    return n;
+}
+uint32_t SysStringLen(const char16_t* b) { return SysStringByteLen(b) / 2; }
+void SysFreeString(char16_t* b) {
+    if (b != nullptr) NativeDllInterceptor::win_HeapFree(NativeDllInterceptor::win_GetProcessHeap(), 0, reinterpret_cast<uint8_t*>(b) - 4);
+}
+// VARIANT: vt (WORD) en +0, valor en +8. Solo se liberan los BSTR (VT_BSTR = 8).
+void VariantInit(uint8_t* v) {
+    if (v != nullptr) std::memset(v, 0, 8);
+}
+int32_t VariantClear(uint8_t* v) {
+    if (v == nullptr) return 0;
+    uint16_t vt = 0;
+    std::memcpy(&vt, v, 2);
+    if (vt == 8) SysFreeString(reinterpret_cast<char16_t*>(static_cast<uintptr_t>(lowmem::loadPtr(v + 8))));
+    std::memset(v, 0, 8);
+    return 0;
+}
+int32_t VariantCopy(uint8_t* dst, const uint8_t* src) {
+    if (dst == nullptr || src == nullptr) return static_cast<int32_t>(0x80070057u);
+    VariantClear(dst);
+    std::memcpy(dst, src, lowmem::enabled() ? 16 : 24);
+    uint16_t vt = 0;
+    std::memcpy(&vt, src, 2);
+    if (vt == 8) {
+        auto* b = reinterpret_cast<const char16_t*>(static_cast<uintptr_t>(lowmem::loadPtr(src + 8)));
+        lowmem::storePtr(dst + 8, b != nullptr ? SysAllocStringLen(b, SysStringLen(b)) : nullptr);
+    }
+    return 0;
+}
+// Sin objetos IErrorInfo: "no hay información de error" (S_FALSE) y puntero nulo.
+int32_t GetErrorInfo(uint32_t, void** pp) {
+    lowmem::storePtr(pp, uint64_t{0});
+    return 1;
+}
+int32_t SetErrorInfo(uint32_t, void*) { return 0; }
+int32_t CreateErrorInfo(void** pp) {
+    lowmem::storePtr(pp, uint64_t{0});
+    return kENotImpl;
+}
+uint32_t Zero1(void*) { return 0; }
+int32_t NotImpl1(void*) { return kENotImpl; }
+int32_t NotImpl2(void*, void*) { return kENotImpl; }
+int32_t NotImpl3(void*, void*, void*) { return kENotImpl; }
+int32_t NotImpl4(void*, void*, void*, void*) { return kENotImpl; }
+int32_t NotImpl5(void*, void*, void*, void*, void*) { return kENotImpl; }
+void* Null3(void*, void*, void*) { return nullptr; }
+}  // namespace oleaut
+
 // UrlIsW(url, URLIS): URLIS_URL (0) = tiene esquema "xxx:" de más de una letra (C:\ no cuenta);
 // URLIS_FILEURL (3) = empieza por "file:". El resto de consultas: FALSE.
 static int32_t hp_UrlIsW(const char16_t* url, int32_t kind) {
@@ -3231,6 +3554,69 @@ static int32_t hp_UrlIsW(const char16_t* url, int32_t kind) {
         return i > 1 && url[i] == u':' ? 1 : 0;
     }
     return 0;
+}
+
+static int32_t hp_PathIsURLW(const char16_t* p) { return hp_UrlIsW(p, 0); }
+
+// PathRemoveBackslashW: quita una '\' final salvo en raíces ("C:\"); devuelve el puntero al final.
+static char16_t* hp_PathRemoveBackslashW(char16_t* p) {
+    if (p == nullptr) return nullptr;
+    size_t n = 0;
+    while (p[n] != 0) ++n;
+    if (n > 0 && p[n - 1] == u'\\' && !(n == 3 && p[1] == u':')) p[--n] = 0;
+    return p + (n > 0 ? n - 1 : 0);
+}
+// StrChrW: primera aparición del carácter (WCHAR en 32 bits como argumento de 4 bytes).
+static char16_t* hp_StrChrW(char16_t* s, uint32_t ch) {
+    if (s == nullptr) return nullptr;
+    for (; *s != 0; ++s) if (*s == static_cast<char16_t>(ch)) return s;
+    return nullptr;
+}
+
+// UrlCanonicalizeW / UrlUnescapeW (S_OK / E_POINTER). Rutas locales: se copian; %xx se decodifica
+// al desescapar (URL_UNESCAPE_INPLACE = 0x100000 trabaja sobre la propia cadena).
+static int32_t urlCopyOut(const std::u16string& s, char16_t* out, uint32_t* cch) {
+    if (cch == nullptr) return static_cast<int32_t>(0x80070057u);
+    if (out == nullptr || *cch <= s.size()) {
+        *cch = static_cast<uint32_t>(s.size() + 1);
+        return static_cast<int32_t>(0x80004003u);  // E_POINTER
+    }
+    std::memcpy(out, s.data(), s.size() * 2);
+    out[s.size()] = 0;
+    *cch = static_cast<uint32_t>(s.size());
+    return 0;
+}
+static std::u16string u16of(const char16_t* p) {
+    std::u16string s;
+    if (p != nullptr) for (; *p != 0; ++p) s.push_back(*p);
+    return s;
+}
+static int32_t hp_UrlCanonicalizeW(const char16_t* url, char16_t* out, uint32_t* cch, uint32_t) {
+    return urlCopyOut(u16of(url), out, cch);
+}
+static int32_t hp_UrlUnescapeW(char16_t* url, char16_t* out, uint32_t* cch, uint32_t flags) {
+    const std::u16string in = u16of(url);
+    std::u16string s;
+    auto hex = [](char16_t c) -> int {
+        if (c >= u'0' && c <= u'9') return c - u'0';
+        if (c >= u'a' && c <= u'f') return c - u'a' + 10;
+        if (c >= u'A' && c <= u'F') return c - u'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == u'%' && i + 2 < in.size() + 0 && hex(in[i + 1]) >= 0 && hex(in[i + 2]) >= 0) {
+            s.push_back(static_cast<char16_t>(hex(in[i + 1]) * 16 + hex(in[i + 2])));
+            i += 2;
+        } else {
+            s.push_back(in[i]);
+        }
+    }
+    if ((flags & 0x100000u) != 0 && url != nullptr) {
+        std::memcpy(url, s.data(), s.size() * 2);
+        url[s.size()] = 0;
+        return 0;
+    }
+    return urlCopyOut(s, out, cch);
 }
 
 static uint16_t hp_GetSystemDefaultLangID() { return 0x0409; }  // en-US
@@ -3750,6 +4136,12 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "RtlLookupFunctionEntry") result = w32arity::hpFn(&win_RtlLookupFunctionEntry);
         else if (funcName == "RtlVirtualUnwind") result = w32arity::hpFn(&win_RtlVirtualUnwind);
         else if (funcName == "RtlUnwindEx") result = w32arity::hpFn(&win_RtlUnwindEx);
+        // SEH x86 (solo invitados de 32 bits; en x64 RtlUnwind/NtContinue siguen sin tocarse).
+        else if (funcName == "RtlUnwind" && s_activeImage != nullptr && s_activeImage->is32Bit)
+            result = w32arity::hpFn(&seh32::hp_RtlUnwind32);
+        else if ((funcName == "NtContinue" || funcName == "ZwContinue") && s_activeImage != nullptr &&
+                 s_activeImage->is32Bit)
+            result = w32arity::hpFn(&seh32::hp_NtContinue32);
         else if (funcName == "RtlPcToFileHeader") result = w32arity::hpFn(&win_RtlPcToFileHeader);
         else if (funcName == "EncodePointer") result = w32arity::hpFn(&win_EncodePointer);
         else if (funcName == "DecodePointer") result = w32arity::hpFn(&win_DecodePointer);
@@ -4096,11 +4488,57 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "ShellExecuteA") result = w32arity::hpFn(&win_ShellExecuteA);
     }
 
+    // 4b. OLEAUT32: BSTR, VARIANT y IErrorInfo; el resto E_NOTIMPL con su aridad exacta (en 32 bits
+    // stdcall: una aridad equivocada desbalancea la pila del invitado).
+    if (!result && dll == "oleaut32.dll" && s_activeImage != nullptr && s_activeImage->is32Bit) {
+        using namespace oleaut;
+        if (funcName == "SysAllocString") result = w32arity::hpFn(&SysAllocString);
+        else if (funcName == "SysAllocStringLen") result = w32arity::hpFn(&SysAllocStringLen);
+        else if (funcName == "SysAllocStringByteLen") result = w32arity::hpFn(&SysAllocStringByteLen);
+        else if (funcName == "SysFreeString") result = w32arity::hpFn(&SysFreeString);
+        else if (funcName == "SysStringLen") result = w32arity::hpFn(&SysStringLen);
+        else if (funcName == "SysStringByteLen") result = w32arity::hpFn(&SysStringByteLen);
+        else if (funcName == "VariantInit") result = w32arity::hpFn(&VariantInit);
+        else if (funcName == "VariantClear") result = w32arity::hpFn(&VariantClear);
+        else if (funcName == "VariantCopy") result = w32arity::hpFn(&VariantCopy);
+        else if (funcName == "GetErrorInfo") result = w32arity::hpFn(&GetErrorInfo);
+        else if (funcName == "SetErrorInfo") result = w32arity::hpFn(&SetErrorInfo);
+        else if (funcName == "CreateErrorInfo") result = w32arity::hpFn(&CreateErrorInfo);
+        else if (funcName == "SafeArrayGetDim" || funcName == "SafeArrayGetElemsize")
+            result = w32arity::hpFn(&Zero1);
+        else if (funcName == "SafeArrayDestroy" || funcName == "SafeArrayUnaccessData" ||
+                 funcName == "SafeArrayAllocData")
+            result = w32arity::hpFn(&NotImpl1);
+        else if (funcName == "VariantCopyInd" || funcName == "SafeArrayAccessData" || funcName == "SafeArraySetRecordInfo" ||
+                 funcName == "SafeArrayGetRecordInfo" || funcName == "SafeArrayGetVartype" || funcName == "VarDecFix" ||
+                 funcName == "VarDecInt" || funcName == "VarDecFromR4" || funcName == "VarDecCmp" ||
+                 funcName == "VarR4FromDec" || funcName == "VarR8FromDec" || funcName == "VarCyFromDec" ||
+                 funcName == "GetRecordInfoFromTypeInfo")
+            result = w32arity::hpFn(&NotImpl2);
+        else if (funcName == "SafeArrayGetUBound" || funcName == "SafeArrayGetLBound" ||
+                 funcName == "SafeArrayGetElement" || funcName == "SafeArrayPutElement" ||
+                 funcName == "SafeArrayAllocDescriptorEx" || funcName == "VarDecMul" || funcName == "CreateTypeLib2" ||
+                 funcName == "LoadTypeLibEx" || funcName == "VarDecFromR8" || funcName == "VarDecFromCy" ||
+                 funcName == "VarDecRound")
+            result = w32arity::hpFn(&NotImpl3);
+        else if (funcName == "SafeArrayCreateVector") result = w32arity::hpFn(&Null3);
+        else if (funcName == "VariantChangeType") result = w32arity::hpFn(&NotImpl4);
+        else if (funcName == "VariantChangeTypeEx" || funcName == "LoadRegTypeLib" || funcName == "QueryPathOfRegTypeLib")
+            result = w32arity::hpFn(&NotImpl5);
+    }
+
     // 4b'. SHLWAPI (también expuesto vía api-ms-win-core-path / shcore)
     if (!result && (dll == "shlwapi.dll" || dll == "shcore.dll" ||
                     dll.rfind("api-ms-win-core-shlwapi", 0) == 0)) {
         if (funcName == "PathCanonicalizeW") result = w32arity::hpFn(&win_PathCanonicalizeW);
         else if (funcName == "UrlIsW") result = w32arity::hpFn(&hp_UrlIsW);
+        else if (funcName == "StrCmpW") result = w32arity::hpFn(&hp_lstrcmpW);
+        else if (funcName == "PathIsURLW") result = w32arity::hpFn(&hp_PathIsURLW);
+        else if (funcName == "PathRemoveBackslashW") result = w32arity::hpFn(&hp_PathRemoveBackslashW);
+        else if (funcName == "StrChrW") result = w32arity::hpFn(&hp_StrChrW);
+        else if (funcName == "UrlCanonicalizeW") result = w32arity::hpFn(&hp_UrlCanonicalizeW);
+        else if (funcName == "UrlUnescapeW") result = w32arity::hpFn(&hp_UrlUnescapeW);
+        else if (funcName == "StrCmpIW") result = w32arity::hpFn(&hp_lstrcmpiW);
         else if (funcName == "PathCanonicalizeA") result = w32arity::hpFn(&win_PathCanonicalizeA);
         else if (funcName == "PathCombineW") result = w32arity::hpFn(&win_PathCombineW);
         else if (funcName == "PathCombineA") result = w32arity::hpFn(&win_PathCombineA);
@@ -4154,7 +4592,13 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "RtlGenRandom") result = w32arity::hpFn(&win_SystemFunction036);
         else if (funcName == "OpenProcessToken") result = w32arity::hpFn(&win_OpenProcessToken);
         else if (funcName.compare(0, 3, "Reg") == 0 || funcName.compare(0, 5, "Event") == 0 ||
-                 funcName == "DeregisterEventSource" || funcName == "ReportEventW")
+                 funcName == "DeregisterEventSource" || funcName == "ReportEventW" ||
+                 funcName == "InitializeSecurityDescriptor" || funcName == "SetSecurityDescriptorDacl" ||
+                 funcName.find("Sid") != std::string::npos || funcName.find("Acl") != std::string::npos ||
+                 funcName.compare(0, 9, "AddAccess") == 0 || funcName == "CheckTokenMembership" ||
+                 funcName == "IsValidSecurityDescriptor" || funcName == "GetSecurityDescriptorDacl" ||
+                 funcName == "OpenThreadToken" || funcName == "GetTokenInformation" ||
+                 funcName == "ConvertStringSecurityDescriptorToSecurityDescriptorW")
             result = resolveRegistryExport(funcName);
     }
     if (!result && (dll.find("registry-l") != std::string::npos || dll.find("kernelbase") != std::string::npos)) {
@@ -4423,12 +4867,24 @@ void* NativeDllInterceptor::win_VirtualAlloc(void* lpAddress, size_t dwSize, uin
     // hay runtimes que lo dan por hecho (CoreCLR calcula `ptr & ~0xFFFF` para su tabla de bloques
     // y escribía antes del bloque). Se reserva de más y se recorta hasta la frontera de 64 KB.
     constexpr size_t kGranularity = 0x10000;
-    void* ptr = mmap(nullptr, allocSize + kGranularity, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (ptr == MAP_FAILED && (prot & PROT_EXEC) != 0) {
-        ptr = mmap(nullptr, allocSize + kGranularity, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* ptr = MAP_FAILED;
+    if (lowmem::enabled()) {
+        // Invitado de 32 bits: la dirección tiene que caber en 32 bits (antes se truncaba). Los
+        // huecos de mmapBelow4G ya están alineados a 64 KB.
+        ptr = lowmem::mmapBelow4G(allocSize, prot);
+        if (ptr == MAP_FAILED && (prot & PROT_EXEC) != 0) ptr = lowmem::mmapBelow4G(allocSize, PROT_READ | PROT_WRITE);
+        if (ptr == MAP_FAILED) {
+            win_SetLastError(8);  // ERROR_NOT_ENOUGH_MEMORY
+            return nullptr;
+        }
+    } else {
+        ptr = mmap(nullptr, allocSize + kGranularity, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (ptr == MAP_FAILED && (prot & PROT_EXEC) != 0) {
+            ptr = mmap(nullptr, allocSize + kGranularity, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        }
     }
     if (ptr == MAP_FAILED) return nullptr;
-    {
+    if (!lowmem::enabled()) {
         const uintptr_t raw = reinterpret_cast<uintptr_t>(ptr);
         const uintptr_t aligned = (raw + kGranularity - 1) & ~(kGranularity - 1);
         if (aligned > raw) munmap(ptr, aligned - raw);
@@ -6384,6 +6840,12 @@ void* NativeDllInterceptor::win_GetProcAddressCore(void* hModule, const char* lp
         sym = resolveNativeSymbol("kernel32.dll", lpProcName);
         if (sym != nullptr) return sym;
     }
+    // Seguridad (SID/ACL/descriptores): en Windows moderno vive en kernelbase y se pide a menudo
+    // por api-ms-win-security-* (que aquí es el handle de kernel32).
+    if (targetDll != "advapi32.dll") {
+        sym = resolveNativeSymbol("advapi32.dll", lpProcName);
+        if (sym != nullptr) return sym;
+    }
     if (s_activeImage != nullptr) {
         for (const auto& kv : s_activeImage->localDlls) {
             if (kv.second.peInfo.findExportRva(lpProcName) > 0) {
@@ -6880,7 +7342,11 @@ int32_t NativeDllInterceptor::win_DispatchMessageW(const void* lpMsg) {
     args[1] = message;
     std::memcpy(&args[2], b + 16, 8);
     std::memcpy(&args[3], b + 24, 8);
-    LOGI("DispatchMessageW: msg=0x%x -> WndProc %p", message, reinterpret_cast<void*>(proc));
+    // Solo los primeros: SDL/FNA despachan miles de mensajes por segundo (log de 400 MB en Celeste).
+    static std::atomic<uint32_t> s_dispatchLogs{0};
+    if (s_dispatchLogs.fetch_add(1, std::memory_order_relaxed) < 50) {
+        LOGI("DispatchMessageW: msg=0x%x -> WndProc %p", message, reinterpret_cast<void*>(proc));
+    }
     return static_cast<int32_t>(sehimpl::callGuest(proc, args, 4));
 }
 
@@ -9203,9 +9669,219 @@ void logTextsNear(uint64_t obj) {
 
 }  // namespace
 
+// =============================================================================
+// SEH de 32 bits (x86): cadena de EXCEPTION_REGISTRATION_RECORD en fs:[0] ({Next, Handler},
+// fin = 0xFFFFFFFF). Solo para invitados de 32 bits; los de 64 bits usan sehimpl (.pdata).
+//
+// Como en Windows, la fase de búsqueda corre como código del invitado (KiUserExceptionDispatcher):
+// un catch de C++ salta a su continuación (_JumpToContinuation) y abandona el despachador sin
+// dejar nada pendiente en la pila nativa. El desenrollado (RtlUnwind) es nativo: sus manejadores
+// siempre vuelven.
+// =============================================================================
+namespace seh32 {
+
+bool log() { return sehimpl::sehLog(); }
+
+uint32_t tebOf(const CpuContext& c) { return static_cast<uint32_t>(c.fsBase); }
+uint32_t rd32(uint32_t a) {
+    uint32_t v = 0;
+    std::memcpy(&v, reinterpret_cast<const void*>(static_cast<uintptr_t>(a)), 4);
+    return v;
+}
+void wr32(uint32_t a, uint32_t v) { std::memcpy(reinterpret_cast<void*>(static_cast<uintptr_t>(a)), &v, 4); }
+
+// NtContinue(CONTEXT*, BOOLEAN): reanuda el hilo en ese contexto.
+int32_t hp_NtContinue32(const uint8_t* ctx, int32_t) {
+    if (ctx == nullptr || t_thunkCtx == nullptr) return static_cast<int32_t>(0xC000000Du);
+    CpuContext c = *t_thunkCtx;
+    win32ctx::fromContext(c, ctx);
+    t_ctxOverrideValue = c;
+    t_ctxOverride = true;
+    return 0;
+}
+
+// Nombre del tipo de una excepción C++ de MSVC x86 (parámetros con punteros absolutos).
+std::string cxxTypeName(const uint8_t* rec) {
+    if (win32ctx::get32(rec, 0) != 0xE06D7363u || win32ctx::get32(rec, 0x10) < 3) return {};
+    const uint32_t throwInfo = win32ctx::get32(rec, 0x14 + 8);
+    if (throwInfo == 0 || !isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{throwInfo}), 16)) return {};
+    const uint32_t cta = rd32(throwInfo + 12);
+    if (cta == 0 || !isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{cta}), 8)) return {};
+    const uint32_t ct = rd32(cta + 4);
+    if (ct == 0 || !isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{ct}), 8)) return {};
+    const uint32_t td = rd32(ct + 4);
+    if (td == 0 || !isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{td} + 8), 64)) return {};
+    return std::string(reinterpret_cast<const char*>(uintptr_t{td} + 8), strnlen(reinterpret_cast<const char*>(uintptr_t{td} + 8), 64));
+}
+
+// Ningún marco la manejó: filtro de SetUnhandledExceptionFilter si lo hay; si no (o si pide
+// seguir buscando), se reanuda tras RaiseException como hacía el motor antes de tener SEH x86.
+int32_t hp_Unhandled32(const uint8_t* rec, uint8_t* ctx) {
+    const uint32_t code = rec != nullptr ? win32ctx::get32(rec, 0) : 0;
+    const std::string type = rec != nullptr ? cxxTypeName(rec) : std::string();
+    LOGE("[SEH32] excepción 0x%08x sin manejar en EIP=0x%x%s%s", code,
+         ctx != nullptr ? win32ctx::get32(ctx, win32ctx::kCtxEip) : 0u, type.empty() ? "" : " tipo ", type.c_str());
+    if (const uintptr_t filter = s_unhandledFilter.load(); filter != 0 && rec != nullptr && ctx != nullptr) {
+        // EXCEPTION_POINTERS {rec, ctx} en la pila del invitado, por debajo del CONTEXT.
+        const uint32_t ptrs = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ctx)) - 16;
+        wr32(ptrs, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(rec)));
+        wr32(ptrs + 4, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ctx)));
+        const uint64_t arg = ptrs;
+        const auto r = static_cast<int32_t>(sehimpl::callGuest(filter, &arg, 1));
+        LOGE("[SEH32] UnhandledExceptionFilter -> %d", r);
+        if (r == 1) {  // EXCEPTION_EXECUTE_HANDLER: el proceso termina
+            NativeDllInterceptor::win_ExitProcess(code);
+            return 0;
+        }
+    }
+    return hp_NtContinue32(ctx, 0);
+}
+
+// Código x86 del despachador (KiUserExceptionDispatcher + RtlDispatchException):
+//   [esp] = EXCEPTION_RECORD*, [esp+4] = CONTEXT*
+//   para cada marco de fs:[0]: eax = Handler(rec, marco, ctx, &dc) (cdecl)
+//     0 -> NtContinue(ctx)   1 -> siguiente marco   fin de la cadena -> Unhandled(rec, ctx)
+uint32_t dispatcherStub() {
+    static std::once_flag once;
+    static uint32_t s_stub = 0;
+    std::call_once(once, [] {
+        void* mem = lowmem::mmapBelow4G(4096);
+        if (mem == MAP_FAILED) return;
+        auto* p = static_cast<uint8_t*>(mem);
+        const auto base = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(p));
+        const auto contAlias = static_cast<uint32_t>(w32alias::lowFor(w32arity::hpFn(&hp_NtContinue32), "ntdll.dll!NtContinue"));
+        const auto unhAlias = static_cast<uint32_t>(w32alias::lowFor(w32arity::hpFn(&hp_Unhandled32), "ntdll.dll!SehUnhandled32"));
+        const uint8_t code[] = {
+            0x8B, 0x34, 0x24,                          // 00 mov esi, [esp]
+            0x8B, 0x7C, 0x24, 0x04,                    // 03 mov edi, [esp+4]
+            0x64, 0x8B, 0x1D, 0x00, 0x00, 0x00, 0x00,  // 07 mov ebx, fs:[0]
+            0x83, 0xFB, 0xFF,                          // 0E loop: cmp ebx, -1
+            0x74, 0x22,                                // 11 je unhandled (35)
+            0x85, 0xDB,                                // 13 test ebx, ebx
+            0x74, 0x1E,                                // 15 je unhandled (35)
+            0x6A, 0x00,                                // 17 push 0 (DispatcherContext)
+            0x89, 0xE0,                                // 19 mov eax, esp
+            0x50,                                      // 1B push eax
+            0x57,                                      // 1C push edi
+            0x53,                                      // 1D push ebx
+            0x56,                                      // 1E push esi
+            0xFF, 0x53, 0x04,                          // 1F call [ebx+4]
+            0x83, 0xC4, 0x14,                          // 22 add esp, 0x14
+            0x85, 0xC0,                                // 25 test eax, eax
+            0x74, 0x04,                                // 27 je cont (2D)
+            0x8B, 0x1B,                                // 29 mov ebx, [ebx]
+            0xEB, 0xE1,                                // 2B jmp loop (0E)
+            0x6A, 0x00,                                // 2D cont: push 0 (TestAlert)
+            0x57,                                      // 2F push edi
+            0xE8, 0, 0, 0, 0,                          // 30 call NtContinue
+            0x57,                                      // 35 unhandled: push edi
+            0x56,                                      // 36 push esi
+            0xE8, 0, 0, 0, 0,                          // 37 call Unhandled
+            0xCC,                                      // 3C (no vuelve: reanuda vía contexto)
+        };
+        std::memcpy(p, code, sizeof(code));
+        auto rel = [&](size_t at, uint32_t target) {
+            const uint32_t r = target - (base + static_cast<uint32_t>(at) + 5);
+            std::memcpy(p + at + 1, &r, 4);
+        };
+        rel(0x30, contAlias);
+        rel(0x37, unhAlias);
+        mprotect(mem, 4096, PROT_READ);  // código del invitado: el JIT lo traduce, nadie lo escribe
+        OryonEmitterBackend::addExecutableRangeAll(base, 4096);
+        s_stub = base;
+        LOGI("[SEH32] despachador x86 en 0x%x", base);
+    });
+    return s_stub;
+}
+
+// RaiseException de un invitado de 32 bits: EXCEPTION_RECORD y CONTEXT en su pila y salto al
+// despachador. Devuelve false si no se pudo (se sigue como antes).
+bool raise(uint32_t code, uint32_t flags, uint32_t n, const void* args) {
+    if (t_thunkCtx == nullptr) return false;
+    const uint32_t stub = dispatcherStub();
+    if (stub == 0) return false;
+    const CpuContext& c = *t_thunkCtx;
+    const auto esp = static_cast<uint32_t>(c.gpr[4]);  // apunta a la dirección de retorno
+    const uint32_t retEip = static_cast<uint32_t>(t_thunkRet);
+    const uint32_t ctxAddr = (esp - 0x300u) & ~0xFu;
+    const uint32_t recAddr = ctxAddr - 0x60u;
+    const uint32_t newEsp = recAddr - 0x10u;
+    auto* ctx = reinterpret_cast<uint8_t*>(uintptr_t{ctxAddr});
+    auto* rec = reinterpret_cast<uint8_t*>(uintptr_t{recAddr});
+    win32ctx::toContext(c, retEip, esp + 4 + 16, ctx);  // stdcall de 4 argumentos
+    std::memset(rec, 0, win32ctx::kExceptionRecordSize);
+    n = std::min<uint32_t>(n, 15);
+    win32ctx::put32(rec, 0x00, code);
+    win32ctx::put32(rec, 0x04, flags & win32ctx::kExceptionNoncontinuable);
+    win32ctx::put32(rec, 0x0C, retEip);
+    win32ctx::put32(rec, 0x10, n);
+    if (n > 0 && args != nullptr) std::memcpy(rec + 0x14, args, n * 4);
+    wr32(newEsp, recAddr);
+    wr32(newEsp + 4, ctxAddr);
+    if (log()) {
+        const std::string type = cxxTypeName(rec);
+        LOGI("[SEH32] RaiseException 0x%08x desde 0x%x%s%s; fs:[0]=0x%x", code, retEip, type.empty() ? "" : " tipo ",
+             type.c_str(), rd32(tebOf(c)));
+    }
+    CpuContext d = c;
+    d.gpr[4] = newEsp;
+    d.rip = stub;
+    t_ctxOverrideValue = d;
+    t_ctxOverride = true;
+    return true;
+}
+
+// RtlUnwind(TargetFrame, TargetIp, ExceptionRecord, ReturnValue): llama a cada manejador por
+// encima de TargetFrame con EXCEPTION_UNWINDING y lo saca de la cadena. Vuelve a quien llamó
+// con EAX = ReturnValue (en x86 TargetIp no se usa para reanudar).
+uint32_t hp_RtlUnwind32(uint32_t target, uint32_t, uint8_t* rec, uint32_t retVal) {
+    if (t_thunkCtx == nullptr) return retVal;
+    const CpuContext& c = *t_thunkCtx;
+    const uint32_t teb = tebOf(c);
+    const auto esp = static_cast<uint32_t>(c.gpr[4]);
+    // Registro, CONTEXT y DispatcherContext en la pila del invitado, dentro del margen que deja
+    // callGuestNested (2 KB) por debajo del ESP actual.
+    const uint32_t ctxAddr = (esp - 0x400u) & ~0xFu;
+    const uint32_t ownRec = ctxAddr - 0x60u;
+    const uint32_t dcAddr = ownRec - 0x10u;
+    auto* ctx = reinterpret_cast<uint8_t*>(uintptr_t{ctxAddr});
+    win32ctx::toContext(c, static_cast<uint32_t>(t_thunkRet), esp + 4 + 16, ctx);
+    if (rec == nullptr) {
+        rec = reinterpret_cast<uint8_t*>(uintptr_t{ownRec});
+        std::memset(rec, 0, win32ctx::kExceptionRecordSize);
+        win32ctx::put32(rec, 0x00, 0xC0000027u);  // STATUS_UNWIND
+        win32ctx::put32(rec, 0x0C, static_cast<uint32_t>(t_thunkRet));
+    }
+    uint32_t fl = win32ctx::get32(rec, 0x04) | win32ctx::kExceptionUnwinding;
+    if (target == 0) fl |= win32ctx::kExceptionExitUnwind;
+    win32ctx::put32(rec, 0x04, fl);
+    const auto recPtr = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(rec));
+    uint32_t frame = rd32(teb);
+    int guard = 0;
+    while (frame != 0xFFFFFFFFu && frame != 0 && frame != target && guard++ < 4096) {
+        const uint32_t handler = rd32(frame + 4);
+        if (log()) LOGI("[SEH32] RtlUnwind: marco 0x%x manejador 0x%x (destino 0x%x)", frame, handler, target);
+        wr32(dcAddr, 0);
+        const uint64_t a[4] = {recPtr, frame, ctxAddr, dcAddr};
+        sehimpl::callGuest(handler, a, 4);
+        const uint32_t next = rd32(frame);
+        wr32(teb, next);  // RtlpUnlinkHandler
+        frame = next;
+    }
+    return retVal;
+}
+
+}  // namespace seh32
+
 void NativeDllInterceptor::win_RaiseException(uint32_t dwExceptionCode, uint32_t dwExceptionFlags,
                                              uint32_t nNumberOfArguments, const void* lpArguments) {
     s_kernel32Calls.fetch_add(1);
+    // Invitado de 32 bits: SEH por la cadena fs:[0] (camino propio; el de 64 bits no cambia).
+    if (s_activeImage != nullptr && s_activeImage->is32Bit) {
+        if (seh32::raise(dwExceptionCode, dwExceptionFlags, nNumberOfArguments, lpArguments)) return;
+        LOGE("[SEH32] RaiseException 0x%08x: sin contexto de thunk", dwExceptionCode);
+        return;
+    }
     static std::atomic<int> s_raiseLogs{0};
     if (s_raiseLogs.fetch_add(1) < 200) {
         LOGW("RaiseException invocado: código 0x%08x flags=0x%x argc=%u args=%p", dwExceptionCode, dwExceptionFlags,

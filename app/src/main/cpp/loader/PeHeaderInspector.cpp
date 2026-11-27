@@ -79,6 +79,7 @@ bool PeInfo::hasImport(const std::string& dllName) const noexcept {
 }
 
 uint32_t PeInfo::findExportRva(const std::string& funcName) const {
+    if (funcName.empty()) return 0;  // las exportaciones solo por ordinal llevan nombre vacío
     for (const auto& exp : exports) {
         if (exp.name == funcName) return exp.rva;
     }
@@ -405,6 +406,24 @@ PeInfo inspectPe(const PeReader& read, uint64_t fileSize) {
                         }
                         if (!fnName.empty() && fnRva != 0) {
                             info.exports.push_back(ExportedFunction{fnName, static_cast<uint16_t>(baseOrdinal + ordIndex), fnRva});
+                        }
+                    }
+                }
+                // Exportaciones solo por ordinal (sin nombre): GetProcAddress(h, MAKEINTRESOURCE(n)).
+                // El shim mscoree/mscoreei de .NET Framework se comunica así con clr.dll (#24...).
+                if (rvaToOffset(info.sections, addrFunctionsRva, funcTableOffset)) {
+                    std::vector<bool> named(std::min<size_t>(numFunctions, kMaxTotalImportedFunctions), false);
+                    for (const auto& e : info.exports) {
+                        const size_t idx = static_cast<size_t>(e.ordinal) - baseOrdinal;
+                        if (idx < named.size()) named[idx] = true;
+                    }
+                    for (size_t idx = 0; idx < named.size(); ++idx) {
+                        if (named[idx]) continue;
+                        uint8_t fnRvaBuf[4] = {0};
+                        if (!read(funcTableOffset + idx * 4, fnRvaBuf, 4)) break;
+                        const uint32_t fnRva = rd32(fnRvaBuf);
+                        if (fnRva != 0) {
+                            info.exports.push_back(ExportedFunction{std::string(), static_cast<uint16_t>(baseOrdinal + idx), fnRva});
                         }
                     }
                 }

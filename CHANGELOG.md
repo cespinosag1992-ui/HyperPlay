@@ -6,6 +6,29 @@ section of the tagged version into the GitHub Release notes.
 Cada versión se describe primero en inglés y luego en español. El workflow de release copia la
 sección de la versión etiquetada en las notas de la Release de GitHub.
 
+## Unreleased
+
+### English
+
+- **32-bit games (DmC): the .NET Framework 4 runtime now starts.** Windows x86 exception
+  handling (the `fs:[0]` frame chain, `RtlUnwind`, `NtContinue`) is implemented, so C++ `catch`
+  blocks work in 32-bit games. 32-bit memory (`VirtualAlloc`, `MapViewOfFile`) stays below 4 GB,
+  pointer-sized out-parameters are written as 4 bytes, 64-bit arguments take two stack slots, and
+  many missing Windows functions were added (security/SID, OLEAUT32 by ordinal, URL/path helpers,
+  memory status, directories, `PUSHAD`/`POPAD`, `RDTSC`). DmC still stops while loading `mscorlib`.
+- Fixed: the window-message log wrote every message (a 400 MB log in Celeste); now only the first 50.
+
+### Español
+
+- **Juegos de 32 bits (DmC): el runtime de .NET Framework 4 ya arranca.** Se implementa el manejo
+  de excepciones de Windows x86 (cadena de marcos en `fs:[0]`, `RtlUnwind`, `NtContinue`): los
+  `catch` de C++ funcionan en juegos de 32 bits. La memoria de 32 bits (`VirtualAlloc`,
+  `MapViewOfFile`) queda por debajo de 4 GB, los parámetros de salida de tamaño puntero se escriben
+  con 4 bytes, los argumentos de 64 bits ocupan dos ranuras de pila y se añaden muchas funciones de
+  Windows que faltaban (seguridad/SID, OLEAUT32 por ordinal, URL y rutas, estado de memoria,
+  carpetas, `PUSHAD`/`POPAD`, `RDTSC`). DmC aún se para al cargar `mscorlib`.
+- Corregido: el registro de mensajes de ventana escribía cada mensaje (log de 400 MB en Celeste);
+  ahora solo los 50 primeros.
 ## 1.2.0
 
 ### English

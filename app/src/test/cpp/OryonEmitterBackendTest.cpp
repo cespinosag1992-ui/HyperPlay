@@ -3060,6 +3060,23 @@ void testMode32Program() {
                 0x64, 0xA3, 0x00, 0x00, 0x00, 0x00,                   // mov fs:[0], eax
                 0xF2, 0xC3});                                         // bnd ret
     CHECK_EQ(runCode(eh, true), 0x11223344);
+
+    // PUSHAD/POPAD: ida y vuelta de los 8 registros; ESP vuelve a su sitio (el RET final lo usa).
+    Bytes pa;
+    movRegImm32(pa, 0, 0x11);
+    movRegImm32(pa, 3, 0x22);
+    movRegImm32(pa, 7, 0x44);
+    append(pa, {0x60});                    // pushad
+    append(pa, {0x8B, 0x44, 0x24, 0x0C});  // mov eax, [esp+12] (ESP original guardado)
+    append(pa, {0x8D, 0x4C, 0x24, 0x20});  // lea ecx, [esp+32]
+    append(pa, {0x29, 0xC8});              // sub eax, ecx -> 0 si el ESP guardado es correcto
+    append(pa, {0x89, 0xC6});              // mov esi, eax
+    append(pa, {0x31, 0xC0, 0x31, 0xDB, 0x31, 0xFF});  // xor eax,eax; xor ebx,ebx; xor edi,edi
+    append(pa, {0x61});                    // popad
+    append(pa, {0x01, 0xD8});              // add eax, ebx
+    append(pa, {0x01, 0xF8});              // add eax, edi
+    append(pa, {0xC3});
+    CHECK_EQ(runCode(pa, true), 0x77);
     hyperplay::lowmem::g_enabled = false;
 }
 

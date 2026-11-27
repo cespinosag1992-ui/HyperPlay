@@ -7221,6 +7221,33 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
         }
         return finish();
     }
+    // --- PUSHAD / POPAD (60 / 61, solo 32 bits): EAX ECX EDX EBX ESP(original) EBP ESI EDI.
+    // EDI queda en la dirección más baja. POPAD descarta el ESP guardado. No tocan los flags.
+    if (mode32_ && (op == 0x60 || op == 0x61) && !prefix66) {
+        if (op == 0x60) {
+            emitMovReg(16, 4, false);           // ESP original
+            emitSubImm(4, 4, 32, true, false);
+            emitStrW(0, 4, 28);
+            emitStrW(1, 4, 24);
+            emitStrW(2, 4, 20);
+            emitStrW(3, 4, 16);
+            emitStrW(16, 4, 12);
+            emitStrW(5, 4, 8);
+            emitStrW(6, 4, 4);
+            emitStrW(7, 4, 0);
+        } else {
+            emitLdrW(7, 4, 0);
+            emitLdrW(6, 4, 4);
+            emitLdrW(5, 4, 8);
+            emitLdrW(3, 4, 16);
+            emitLdrW(2, 4, 20);
+            emitLdrW(1, 4, 24);
+            emitLdrW(0, 4, 28);
+            emitAddImm(4, 4, 32, true, false);
+        }
+        return finish();
+    }
+
     // --- PUSHF / POPF (9C / 9D): RFLAGS en pila. Los flags viven en ctx.rflags (CF ZF SF OF AF DF)
     // con PF perezoso en pfByte (PF = paridad par del byte). CoreCLR los usa en sus stubs.
     if (op == 0x9C) {
