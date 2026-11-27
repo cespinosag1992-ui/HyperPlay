@@ -21,6 +21,7 @@
 #include "LowMem.h"
 #include "Win64Context.h"
 #include "Win32Context.h"
+#include "SteamEmu32.h"
 #include "GuestSeh.h"
 #include "gfx/GuestOpenGl.h"
 #include "cpu/OryonEmitterBackend.h"
@@ -644,37 +645,62 @@ static int32_t move(const std::string& from, const std::string& to, uint32_t fla
     }
     return fail(errno);
 }
+// Rutas fuera de la carpeta del ejecutable (instalación alcanzada con ..\): nunca se borran,
+// mueven ni reemplazan. Devuelve true (y ERROR_ACCESS_DENIED) si hay que negar la operación.
+static bool deniedEscaped(const std::string& real, const char* op) {
+    if (!BionicPeLoader::lastPathEscapedGameDir()) return false;
+    LOGW("%s denegado fuera de la carpeta del juego: %s", op, real.c_str());
+    NativeDllInterceptor::win_SetLastError(5);
+    return true;
+}
 static int32_t MoveFileExW(const void* a, const void* b, uint32_t flags) {
     if (a == nullptr) return fail(ENOENT);
     if (b == nullptr) {  // destino nulo: borrar (DELAY_UNTIL_REBOOT no aplica)
-        return unlink(hostPath(a, true).c_str()) == 0 ? 1 : fail(errno);
+        const std::string del = hostPath(a, true);
+        if (deniedEscaped(del, "MoveFileExW")) return 0;
+        return unlink(del.c_str()) == 0 ? 1 : fail(errno);
     }
-    const std::string from = hostPath(a, true), to = hostPath(b, true);
+    const std::string from = hostPath(a, true);
+    if (deniedEscaped(from, "MoveFileExW")) return 0;
+    const std::string to = hostPath(b, true);
+    if (deniedEscaped(to, "MoveFileExW")) return 0;
     const int32_t r = move(from, to, flags);
     LOGI("MoveFileExW('%s' -> '%s', 0x%x) -> %d", from.c_str(), to.c_str(), flags, r);
     return r;
 }
 static int32_t MoveFileExA(const void* a, const void* b, uint32_t flags) {
     if (a == nullptr || b == nullptr) return fail(ENOENT);
-    return move(hostPath(a, false), hostPath(b, false), flags);
+    const std::string from = hostPath(a, false);
+    if (deniedEscaped(from, "MoveFileExA")) return 0;
+    const std::string to = hostPath(b, false);
+    if (deniedEscaped(to, "MoveFileExA")) return 0;
+    return move(from, to, flags);
 }
 static int32_t MoveFileW(const void* a, const void* b) { return MoveFileExW(a, b, 0x2); }
 static int32_t MoveFileA(const void* a, const void* b) { return MoveFileExA(a, b, 0x2); }
 static int32_t DeleteFileW(const void* a) {
     if (a == nullptr) return fail(ENOENT);
-    return unlink(hostPath(a, true).c_str()) == 0 ? 1 : fail(errno);
+    const std::string p = hostPath(a, true);
+    if (deniedEscaped(p, "DeleteFileW")) return 0;
+    return unlink(p.c_str()) == 0 ? 1 : fail(errno);
 }
 static int32_t DeleteFileA(const void* a) {
     if (a == nullptr) return fail(ENOENT);
-    return unlink(hostPath(a, false).c_str()) == 0 ? 1 : fail(errno);
+    const std::string p = hostPath(a, false);
+    if (deniedEscaped(p, "DeleteFileA")) return 0;
+    return unlink(p.c_str()) == 0 ? 1 : fail(errno);
 }
 static int32_t RemoveDirectoryW(const void* a) {
     if (a == nullptr) return fail(ENOENT);
-    return rmdir(hostPath(a, true).c_str()) == 0 ? 1 : fail(errno);
+    const std::string p = hostPath(a, true);
+    if (deniedEscaped(p, "RemoveDirectoryW")) return 0;
+    return rmdir(p.c_str()) == 0 ? 1 : fail(errno);
 }
 static int32_t RemoveDirectoryA(const void* a) {
     if (a == nullptr) return fail(ENOENT);
-    return rmdir(hostPath(a, false).c_str()) == 0 ? 1 : fail(errno);
+    const std::string p = hostPath(a, false);
+    if (deniedEscaped(p, "RemoveDirectoryA")) return 0;
+    return rmdir(p.c_str()) == 0 ? 1 : fail(errno);
 }
 static int32_t CopyFileW(const void* a, const void* b, int32_t failIfExists) {
     if (a == nullptr || b == nullptr) return fail(ENOENT);
@@ -693,7 +719,10 @@ static int32_t CopyFileExW(const void* a, const void* b, void*, void*, void*, ui
 static int32_t ReplaceFileW(const void* replaced, const void* replacement, const void* backup, uint32_t,
                             void*, void*) {
     if (replaced == nullptr || replacement == nullptr) return fail(ENOENT);
-    const std::string dst = hostPath(replaced, true), src = hostPath(replacement, true);
+    const std::string dst = hostPath(replaced, true);
+    if (deniedEscaped(dst, "ReplaceFileW")) return 0;
+    const std::string src = hostPath(replacement, true);
+    if (deniedEscaped(src, "ReplaceFileW")) return 0;
     if (!exists(src)) {
         NativeDllInterceptor::win_SetLastError(1177);  // ERROR_UNABLE_TO_MOVE_REPLACEMENT
         return 0;
@@ -1325,6 +1354,12 @@ int32_t win_GetDiskFreeSpaceW(const char16_t*, uint32_t* sectorsPerCluster, uint
 
 // SetFileInformationByHandle: tamaño (FileEndOfFileInfo), borrar (FileDispositionInfo) y
 // renombrar (FileRenameInfo). El resto se acepta sin cambios.
+// true si la ruta real no está dentro de la carpeta del ejecutable ni de _HyperPlaySaves.
+static bool outsideGameDir(const std::string& p) {
+    if (s_activeImage == nullptr || p.empty()) return false;
+    auto under = [&](const std::string& d) { return !d.empty() && p.compare(0, d.size(), d) == 0 && (p.size() == d.size() || p[d.size()] == '/'); };
+    return !under(s_activeImage->gameDir) && !under(s_activeImage->savesDir);
+}
 int32_t win_SetFileInformationByHandle(void* h, uint32_t infoClass, const void* info, uint32_t size) {
     const int fd = fdFromHandle(h);
     if (fd < 0 || info == nullptr) return 0;
@@ -1339,6 +1374,7 @@ int32_t win_SetFileInformationByHandle(void* h, uint32_t infoClass, const void* 
         case 4: {  // FileDispositionInfo: DeleteFile (BOOLEAN)
             if (*static_cast<const uint8_t*>(info) == 0) return 1;
             const std::string p = pathOfHandle(h);
+            if (outsideGameDir(p)) { LOGW("FileDispositionInfo denegado fuera de la carpeta del juego: %s", p.c_str()); NativeDllInterceptor::win_SetLastError(5); return 0; }
             return !p.empty() && unlink(p.c_str()) == 0 ? 1 : 0;
         }
         case 3: {  // FileRenameInfo {BOOLEAN ReplaceIfExists; HANDLE Root; DWORD Len; WCHAR Name[]}
@@ -1358,6 +1394,7 @@ int32_t win_SetFileInformationByHandle(void* h, uint32_t infoClass, const void* 
             const std::string to = BionicPeLoader::resolveVirtualPath(*s_activeImage, name);
             struct stat st{};
             if (from.empty() || to.empty() || (b[0] == 0 && stat(to.c_str(), &st) == 0)) return 0;
+            if (outsideGameDir(from) || outsideGameDir(to)) { LOGW("FileRenameInfo denegado fuera de la carpeta del juego: %s", from.c_str()); NativeDllInterceptor::win_SetLastError(5); return 0; }
             const bool ok = rename(from.c_str(), to.c_str()) == 0;
             __android_log_print(ANDROID_LOG_INFO, "HyperPlay.DllInterceptor", "SetFileInformationByHandle(rename) '%s' -> '%s' %s",
                                 from.c_str(), to.c_str(), ok ? "OK" : strerror(errno));
@@ -4828,6 +4865,15 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     // NativeSteamStub (Steam simulado); para DLL locales como CSteamworks.dll (Steamworks.NET) el
     // modo sin Steam, coherente con el P/Invoke. Lo no implementado devuelve 0 (stub dinámico).
     if (dll.find("steam_api") != std::string::npos) {
+        // Juegos de 32 bits: Steam propio de 32 bits (objetos < 4 GB, métodos thiscall). El de 64
+        // bits de abajo no cambia.
+        if (s_activeImage != nullptr && s_activeImage->is32Bit) {
+            if (void* p32 = steamemu32::resolve(funcName, s_activeImage->savesDir)) {
+                s_steamCalls.fetch_add(1);
+                registerTrampolineAddress(p32, dll + "!" + funcName);
+                return p32;
+            }
+        }
         void* p = t_resolvingLocalDllImports ? resolveSteamOffline(funcName.c_str())
                                              : NativeSteamStub::resolveSymbol(funcName);
         if (p == nullptr) p = DynamicStubManager::getOrCreateStub(dllName, funcName);
@@ -7726,6 +7772,12 @@ void* NativeDllInterceptor::win_GetProcAddressCore(void* hModule, const char* lp
     }
 
     if (hModule == kHModSteamApi) {
+        if (s_activeImage != nullptr && s_activeImage->is32Bit && (reinterpret_cast<uintptr_t>(lpProcName) >> 16) != 0) {
+            if (void* p32 = steamemu32::resolve(lpProcName, s_activeImage->savesDir)) {
+                registerTrampolineAddress(p32, std::string("steam_api.dll!") + lpProcName);
+                return p32;
+            }
+        }
         if (void* p = resolveSteamOffline(lpProcName)) {
             registerTrampolineAddress(p, std::string("steam_api64.dll!") + lpProcName);
             return p;

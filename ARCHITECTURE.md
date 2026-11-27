@@ -32,7 +32,8 @@ Instead of loading emulated Windows system DLLs or running a Wine container, `Na
   - Threads & Sync: `CreateThread`, `GetCurrentThreadId` (`gettid()`), `InitializeCriticalSection`, `EnterCriticalSection`, `LeaveCriticalSection`, `TlsAlloc`, `TlsGetValue`, `TlsSetValue`.
   - Timing: `QueryPerformanceCounter`, `QueryPerformanceFrequency`, `GetTickCount64`.
   - Windowing: `CreateWindowExW/A`, `ShowWindow`, `PeekMessageW`, `DispatchMessageW`, `DefWindowProcW`.
-- **Steam DRM Stubbing (`NativeSteamStub.cpp`):** Stubs `steam_api.dll` and `steam_api64.dll` (`SteamAPI_Init`, `SteamAPI_RestartAppIfNecessary`), allowing portable games to execute without requiring the Steam client.
+- **Steam DRM Stubbing (`NativeSteamStub.cpp`):** Stubs `steam_api.dll` and `steam_api64.dll` (`SteamAPI_Init`, `SteamAPI_RestartAppIfNecessary`), allowing portable games to execute without requiring the Steam client. 32-bit games get their own interface objects in low memory (`SteamEmu32.cpp`: Apps, User, Friends, Utils, UserStats, RemoteStorage), leaving the 64-bit path untouched.
+- **Game-folder write guard:** paths that leave the `.exe` folder through `..\` (Unreal install root) are read/create only; delete, move and replace return `ERROR_ACCESS_DENIED`.
 
 ---
 

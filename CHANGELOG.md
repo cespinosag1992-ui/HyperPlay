@@ -10,6 +10,12 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **32-bit games (DmC): Steam is emulated for 32-bit games** (`steam_api.dll`: Apps, User, Friends,
+  Utils, UserStats, RemoteStorage saved in `_HyperPlaySaves/steam_cloud`). The 64-bit Steam emulation is
+  unchanged. Added the x86 `EMMS` instruction and `FileTimeToLocalFileTime`/`LocalFileTimeToFileTime`.
+- **Safety: games can no longer delete, move or replace files outside their own folder.** Paths reached
+  with `..\` (the Unreal install root) are read and create only; delete, rename and replace return
+  "access denied".
 - **DmC: the .NET runtime now starts completely and the Unreal engine runs** until Steam initialization.
   Added: hardware exceptions for 32-bit games (vectored handlers + `fs:[0]` chain), WinRT IIDs
   (`RoGetParameterizedTypeInstanceIID`), Winsock without network, XInput/Winsock/OLEAUT32 imports by
@@ -26,6 +32,12 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Juegos de 32 bits (DmC): Steam se emula en juegos de 32 bits** (`steam_api.dll`: Apps, User, Friends,
+  Utils, UserStats y RemoteStorage guardado en `_HyperPlaySaves/steam_cloud`). La emulación de Steam de 64
+  bits no cambia. Añadidas la instrucción x86 `EMMS` y `FileTimeToLocalFileTime`/`LocalFileTimeToFileTime`.
+- **Seguridad: los juegos ya no pueden borrar, mover ni reemplazar archivos fuera de su carpeta.** Las rutas
+  con `..\` (la raíz de la instalación de Unreal) son de solo lectura y creación; borrar, renombrar y
+  reemplazar devuelven "acceso denegado".
 - **DmC: el runtime de .NET ya arranca por completo y el motor Unreal se ejecuta** hasta iniciar
   Steam. Añadido: excepciones de hardware en juegos de 32 bits (manejadores vectoriales + cadena
   `fs:[0]`), IID de WinRT (`RoGetParameterizedTypeInstanceIID`), Winsock sin red, importaciones por

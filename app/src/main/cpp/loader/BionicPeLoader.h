@@ -77,6 +77,10 @@ public:
 
     /// Resuelve rutas de disco virtual de Windows (D:\ -> carpeta del juego, guardados -> _HyperPlaySaves).
     [[nodiscard]] static std::string resolveVirtualPath(const LoadedPeImage& image, const std::string& winPath);
+    // true si la última resolveVirtualPath de este hilo salió de la carpeta del ejecutable con
+    // "..\" (instalación de Unreal). Esas rutas son de solo lectura + creación: nada de borrar,
+    // mover ni reemplazar (un juego borró así Config y Localization de su instalación).
+    [[nodiscard]] static bool lastPathEscapedGameDir() noexcept;
 
 private:
     void* allocateArena(size_t size, bool is32Bit, uint64_t preferredBase);

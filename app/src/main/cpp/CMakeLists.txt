@@ -18,6 +18,7 @@ add_library(hyperplay SHARED
     loader/GuestSeh.cpp
     loader/VulkanPassthrough.cpp
     loader/NativeSteamStub.cpp
+    loader/SteamEmu32.cpp
     loader/FramePacing.cpp
     cpu/OryonSiliconScheduler.cpp
     cpu/HyperAotCache.cpp

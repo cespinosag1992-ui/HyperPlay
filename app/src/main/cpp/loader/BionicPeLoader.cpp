@@ -803,7 +803,13 @@ void BionicPeLoader::unload(std::unique_ptr<LoadedPeImage> image) {
     image.reset();  // LoadedPeImage::~LoadedPeImage desmapea la imagen y sus DLLs
 }
 
+namespace {
+thread_local bool t_pathEscaped = false;
+}
+bool BionicPeLoader::lastPathEscapedGameDir() noexcept { return t_pathEscaped; }
+
 std::string BionicPeLoader::resolveVirtualPath(const LoadedPeImage& image, const std::string& winPath) {
+    t_pathEscaped = false;
     std::string norm;
     norm.reserve(winPath.size());
     for (char c : winPath) {
@@ -860,6 +866,7 @@ std::string BionicPeLoader::resolveVirtualPath(const LoadedPeImage& image, const
     }
     if (safe.empty()) safe = ".";
     if (ups > 0) {
+        t_pathEscaped = true;
         std::string base = image.gameDir;
         for (int i = 0; i < ups; ++i) {
             const size_t s = base.find_last_of('/');

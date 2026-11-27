@@ -6354,6 +6354,11 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
             return fail("0F 01 suboperacion no soportada");
         }
 
+        if (op2 == 0x77) {  // EMMS (0F 77): fin de un bloque MMX -> pila x87 vacía (todas las etiquetas libres)
+            emitStrW(31, 19, static_cast<int32_t>(offsetof(CpuContext, x87Tag)));  // WZR
+            return finish();
+        }
+
         if (op2 == 0x31) {  // RDTSC (0F 31): EDX:EAX = contador
             emitReadTsc();
             return finish();
