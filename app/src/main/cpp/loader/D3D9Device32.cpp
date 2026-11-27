@@ -9,12 +9,14 @@
 
 #include <android/log.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/system_properties.h>
 #include <time.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -848,9 +850,24 @@ u32 makeShader(Device* d, u32 kind, u32 func, u32 pp) {
     // Fichas de 4 bytes hasta D3DSIO_END (0x0000FFFF); los comentarios (0xFFFE) llevan su longitud.
     for (u32 i = 0; i < (1u << 20); ++i) {
         const u32 tok = rd32(func + 4 * i);
+        u32 n = 1;
+        if (i > 0 && (tok & 0xFFFFu) == 0xFFFEu) n += (tok >> 16) & 0x7FFFu;  // comentario: no se interpreta
         const uint8_t* p = G(func + 4 * i);
-        b->bytes.insert(b->bytes.end(), p, p + 4);
+        b->bytes.insert(b->bytes.end(), p, p + 4 * n);
         if (i > 0 && tok == 0x0000FFFFu) break;
+        i += n - 1;
+    }
+    // Diagnóstico: setprop debug.hyperplay.d3d9dump 1 -> files/d3d9sh/<vs|ps>_<hash>.bin (corpus del traductor).
+    static const bool s_dump = [] { char v[PROP_VALUE_MAX] = {}; return __system_property_get("debug.hyperplay.d3d9dump", v) > 0 && v[0] == '1'; }();
+    if (s_dump) {
+        uint64_t h = 1469598103934665603ull;
+        for (uint8_t c : b->bytes) h = (h ^ c) * 1099511628211ull;
+        const char* dir = "/sdcard/Android/data/com.murdoc820.hyperplay/files/d3d9sh";
+        mkdir(dir, 0775);
+        char path[160];
+        std::snprintf(path, sizeof(path), "%s/%s_%016llx.bin", dir, kind == kVertexShader ? "vs" : "ps",
+                      static_cast<unsigned long long>(h));
+        if (FILE* f = std::fopen(path, "wb")) { std::fwrite(b->bytes.data(), 1, b->bytes.size(), f); std::fclose(f); }
     }
     put32(pp, L(b));
     return kOk;

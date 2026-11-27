@@ -10,6 +10,10 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **Direct3D 9 shader translator (Shader Model 3 to SPIR-V).** First piece of the Direct3D 9 renderer for 32-bit games:
+  `vs_3_0`/`ps_3_0` bytecode is translated to Vulkan SPIR-V (arithmetic, texture sampling, structured if/loop/break,
+  emulated alpha test). All 40 DmC shaders seen so far translate and pass `spirv-val`. Shader bytecode with comment
+  blocks is now copied correctly.
 - **32-bit games: DmC now runs its game loop (60 presents per second, no crashes).** The JIT supports `XLAT`
   (the render thread died in msvcr100's x87 code). New `GetProcessMemoryInfo` (Unreal 3 calls it every frame; the
   arity-less stub shifted the stack and tripped a security-cookie check), `GetComputerName`, `SetThreadIdealProcessor`,
@@ -67,6 +71,10 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Traductor de shaders Direct3D 9 (Shader Model 3 a SPIR-V).** Primera pieza del renderizador Direct3D 9 para juegos de
+  32 bits: el bytecode `vs_3_0`/`ps_3_0` se traduce a SPIR-V de Vulkan (aritmética, muestreo de texturas, if/bucles/break
+  estructurados, prueba alfa emulada). Los 40 shaders de DmC vistos hasta ahora se traducen y pasan `spirv-val`. El
+  bytecode con bloques de comentario se copia ahora bien.
 - **Juegos de 32 bits: DmC ya ejecuta su bucle de juego (60 Present por segundo, sin fallos).** El JIT admite `XLAT`
   (el hilo de render moría en el código x87 de msvcr100). Nuevos `GetProcessMemoryInfo` (Unreal 3 lo llama cada
   fotograma; el stub sin aridad descuadraba la pila y saltaba la cookie de seguridad), `GetComputerName`,
