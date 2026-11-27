@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "D3D9Probe32.h"
+#include "gfx/D3D9GpuRenderer.h"
 #include "cpu/OryonEmitterBackend.h"
 #include "LowMem.h"
 #include "Win32Arity.h"
@@ -161,7 +162,8 @@ struct Resource : Obj {
     std::vector<Resource*> children;  // superficies/volúmenes por nivel (y cara)
     u32 level = 0, face = 0;   // superficie hija
     uint32_t priority = 0, lod = 0;
-    uint64_t generation = 0;   // cambia en cada Unlock (para la futura subida a la GPU)
+    uint64_t generation = 0;   // cambia en cada Unlock (subida a la GPU)
+    std::vector<const uint8_t*> ptrs;  // datos por subrecurso para gpu9::TexRef
 };
 
 struct Blob : Obj {  // shaders y declaraciones
@@ -224,6 +226,7 @@ void destroy(Obj* o) {
     if (o->kind == kTexture || o->kind == kCubeTexture || o->kind == kVolumeTexture || o->kind == kSurface ||
         o->kind == kVertexBuffer || o->kind == kIndexBuffer) {
         auto* r = static_cast<Resource*>(o);
+        if (o->kind != kVertexBuffer && o->kind != kIndexBuffer) gpu9::Renderer::shared().release(o);
         for (Level& l : r->mips) { freeBig(l.data, l.bytes); l.data = nullptr; }
         freeBig(r->bufData, r->size);
         r->bufData = nullptr;
@@ -323,6 +326,74 @@ u32 surfaceDesc(Resource* s, u32 desc) {
     const u32 v[8] = {s->format, s->type == 2 ? 2u : 1u, s->usage, s->pool, s->msType, s->msQuality, s->width, s->height};
     std::memcpy(G<void>(desc), v, sizeof(v));
     return kOk;
+}
+
+// --- vista para el renderizador GPU (gfx/D3D9GpuRenderer) --------------------------------------
+gpu9::TexRef texRef(Resource* r) {
+    gpu9::TexRef t;
+    if (r == nullptr) return t;
+    Resource* owner = r->container != nullptr ? static_cast<Resource*>(r->container) : r;
+    t.key = owner;
+    t.kind = owner->kind == kCubeTexture ? 1 : owner->kind == kVolumeTexture ? 2 : 0;
+    t.format = owner->format;
+    t.width = owner->width;
+    t.height = owner->height;
+    t.depth = owner->depth;
+    t.levels = owner->kind == kSurface ? 1 : owner->levels;
+    t.usage = owner->usage;
+    t.generation = owner->generation;
+    owner->ptrs.resize(owner->mips.size());
+    for (size_t i = 0; i < owner->mips.size(); ++i) owner->ptrs[i] = owner->mips[i].data;
+    t.data = owner->ptrs.data();
+    t.subresources = static_cast<uint32_t>(owner->ptrs.size());
+    if (r->container != nullptr) {
+        t.level = r->level;
+        t.face = r->face;
+    }
+    return t;
+}
+gpu9::Stream streamOf(Resource* b, u32 offset, u32 stride, u32 freq) {
+    gpu9::Stream s;
+    if (b == nullptr) return s;
+    s.key = b;
+    s.data = b->bufData;
+    s.size = b->size;
+    s.generation = b->generation;
+    s.offset = offset;
+    s.stride = stride;
+    s.freq = freq;
+    s.dynamic = (b->usage & 0x200u) != 0;  // D3DUSAGE_DYNAMIC
+    return s;
+}
+void fillDrawState(Device* d, gpu9::DrawState& s) {
+    if (d->vs != 0) {
+        auto* b = static_cast<Blob*>(O(d->vs));
+        s.vsKey = b;
+        s.vsTokens = reinterpret_cast<const uint32_t*>(b->bytes.data());
+        s.vsCount = b->bytes.size() / 4;
+    }
+    if (d->ps != 0) {
+        auto* b = static_cast<Blob*>(O(d->ps));
+        s.psKey = b;
+        s.psTokens = reinterpret_cast<const uint32_t*>(b->bytes.data());
+        s.psCount = b->bytes.size() / 4;
+    }
+    s.vsF = d->vsF; s.vsI = d->vsI; s.vsB = d->vsB;
+    s.psF = d->psF; s.psI = d->psI; s.psB = d->psB;
+    if (d->vdecl != 0) s.decl = static_cast<Blob*>(O(d->vdecl))->bytes.data();
+    for (u32 i = 0; i < 16; ++i)
+        if (d->streams[i] != 0) s.streams[i] = streamOf(static_cast<Resource*>(O(d->streams[i])), d->streamOffset[i],
+                                                         d->streamStride[i], d->streamFreq[i]);
+    s.renderState = d->renderState;
+    s.samplerState = d->samplerState;
+    for (u32 i = 0; i < 20; ++i)
+        if (d->textures[i] != 0) s.textures[i] = texRef(static_cast<Resource*>(O(d->textures[i])));
+    for (u32 i = 0; i < 4; ++i) s.targets[i] = texRef(d->renderTargets[i]);
+    s.depth = texRef(d->depthStencil);
+    std::memcpy(s.viewport, d->viewport, 16);
+    std::memcpy(&s.minZ, d->viewport + 16, 4);
+    std::memcpy(&s.maxZ, d->viewport + 20, 4);
+    std::memcpy(s.scissor, d->scissor, 16);
 }
 
 // ===========================================================================================
@@ -629,7 +700,8 @@ u32 Dev_Reset(u32 t, u32 pp) {
     return kOk;
 }
 u32 present(Device* d) {
-    // Etapa 1: sin imagen; se mantiene el ritmo de 60 Hz para que el juego no gire en vacío.
+    // Backbuffer a la pantalla por Vulkan; el ritmo de 60 Hz se mantiene aquí.
+    gpu9::Renderer::shared().present(texRef(d->backBuffer));
     using clock = std::chrono::steady_clock;
     const auto now = clock::now();
     if (d->nextFrame.time_since_epoch().count() == 0 || now > d->nextFrame + std::chrono::milliseconds(100)) d->nextFrame = now;
@@ -712,12 +784,53 @@ u32 Dev_CreateDepthStencilSurface(u32 t, u32 w, u32 h, u32 fmt, u32 ms, u32 msq,
     put32(pp, L(s));
     return s ? kOk : kOutOfVideoMemory;
 }
-u32 Dev_UpdateSurface(u32, u32, u32, u32, u32) { return kOk; }
-u32 Dev_UpdateTexture(u32, u32, u32) { return kOk; }
+// Copia en CPU del nivel `index` de src en dst (mismas dimensiones de nivel).
+void copyLevel(Resource* src, u32 sIdx, Resource* dst, u32 dIdx, u32 w, u32 h, u32 depth) {
+    Level* a = levelMem(src, sIdx, w, h, depth);
+    Level* b = levelMem(dst, dIdx, w, h, depth);
+    if (a == nullptr || b == nullptr) return;
+    std::memcpy(b->data, a->data, std::min(a->bytes, b->bytes));
+}
+u32 Dev_UpdateSurface(u32, u32 src, u32 srcRect, u32 dst, u32 dstPoint) {
+    if (src == 0 || dst == 0) return kInvalidCall;
+    Resource* s = R(src);
+    Resource* d = R(dst);
+    if (srcRect != 0 || dstPoint != 0 || s->width != d->width || s->height != d->height) return kOk;  // parcial: sin soporte
+    Resource* so = s->container ? static_cast<Resource*>(s->container) : s;
+    Resource* dO = d->container ? static_cast<Resource*>(d->container) : d;
+    copyLevel(so, s->container ? s->face * so->levels + s->level : 0, dO, d->container ? d->face * dO->levels + d->level : 0,
+              s->width, s->height, 1);
+    ++dO->generation;
+    return kOk;
+}
+u32 Dev_UpdateTexture(u32, u32 src, u32 dst) {
+    if (src == 0 || dst == 0) return kInvalidCall;
+    Resource* s = R(src);
+    Resource* d = R(dst);
+    const u32 faces = s->kind == kCubeTexture ? 6 : 1;
+    // Los niveles de destino se alinean por tamaño con los de origen.
+    u32 skip = 0;
+    while (skip < s->levels && levelDim(s->width, skip) > d->width) ++skip;
+    for (u32 f = 0; f < faces; ++f)
+        for (u32 l = 0; l + skip < s->levels && l < d->levels; ++l)
+            copyLevel(s, f * s->levels + l + skip, d, f * d->levels + l, levelDim(d->width, l), levelDim(d->height, l),
+                      levelDim(d->depth, l));
+    ++d->generation;
+    return kOk;
+}
 u32 Dev_GetRenderTargetData(u32, u32, u32) { return kOk; }
 u32 Dev_GetFrontBufferData(u32, u32, u32) { return kOk; }
-u32 Dev_StretchRect(u32, u32, u32, u32, u32, u32) { return kOk; }
-u32 Dev_ColorFill(u32, u32, u32, u32) { return kOk; }
+u32 Dev_StretchRect(u32, u32 src, u32 srcRect, u32 dst, u32 dstRect, u32 filter) {
+    if (src == 0 || dst == 0) return kInvalidCall;
+    gpu9::Renderer::shared().stretchRect(texRef(R(src)), srcRect ? G<int32_t>(srcRect) : nullptr, texRef(R(dst)),
+                                         dstRect ? G<int32_t>(dstRect) : nullptr, filter);
+    return kOk;
+}
+u32 Dev_ColorFill(u32, u32 surf, u32 rect, u32 color) {
+    if (surf == 0) return kInvalidCall;
+    gpu9::Renderer::shared().colorFill(texRef(R(surf)), rect ? G<int32_t>(rect) : nullptr, color);
+    return kOk;
+}
 u32 Dev_CreateOffscreenPlainSurface(u32 t, u32 w, u32 h, u32 fmt, u32 pool, u32 pp, u32) {
     Resource* s = makeSurface(D(t), w, h, fmt, 0, pool, 0, 0);
     put32(pp, L(s));
@@ -756,7 +869,16 @@ u32 Dev_GetDepthStencilSurface(u32 t, u32 pp) {
 }
 u32 Dev_BeginScene(u32) { return kOk; }
 u32 Dev_EndScene(u32) { return kOk; }
-u32 Dev_Clear(u32, u32, u32, u32, u32, u32, u32) { return kOk; }
+u32 Dev_Clear(u32 t, u32 count, u32 rects, u32 flags, u32 color, u32 zBits, u32 stencil) {
+    Device* d = D(t);
+    gpu9::DrawState s;
+    fillDrawState(d, s);
+    float z = 1.0f;
+    std::memcpy(&z, &zBits, 4);
+    gpu9::Renderer::shared().clear(s, rects != 0 ? count : 0, rects != 0 ? G<int32_t>(rects) : nullptr, flags, color, z,
+                                   stencil);
+    return kOk;
+}
 u32 Dev_SetTransform(u32, u32, u32) { return kOk; }
 u32 Dev_GetTransform(u32, u32, u32 m) {
     if (m == 0) return kInvalidCall;
@@ -820,10 +942,70 @@ u32 Dev_SetSoftwareVertexProcessing(u32 t, u32 b) { D(t)->softwareVp = b; return
 u32 Dev_GetSoftwareVertexProcessing(u32 t) { return D(t)->softwareVp; }
 u32 Dev_SetNPatchMode(u32 t, u32 f) { std::memcpy(&D(t)->npatch, &f, 4); return kOk; }
 u32 Dev_GetNPatchMode(u32 t) { u32 v; std::memcpy(&v, &D(t)->npatch, 4); return v; }
-u32 Dev_DrawPrimitive(u32, u32, u32, u32) { return kOk; }
-u32 Dev_DrawIndexedPrimitive(u32, u32, u32, u32, u32, u32, u32) { return kOk; }
-u32 Dev_DrawPrimitiveUP(u32, u32, u32, u32, u32) { return kOk; }
-u32 Dev_DrawIndexedPrimitiveUP(u32, u32, u32, u32, u32, u32, u32, u32, u32) { return kOk; }
+u32 primVertices(u32 prim, u32 n) {
+    switch (prim) {
+        case 1: return n;
+        case 2: return n * 2;
+        case 3: return n + 1;
+        case 4: return n * 3;
+        case 5: case 6: return n + 2;
+        default: return 0;
+    }
+}
+u32 instanceCount(Device* d) { return (d->streamFreq[0] & 0x40000000u) ? std::max<u32>(1, d->streamFreq[0] & 0x3FFFFFu) : 1; }
+u32 Dev_DrawPrimitive(u32 t, u32 type, u32 start, u32 count) {
+    Device* d = D(t);
+    gpu9::DrawState s;
+    fillDrawState(d, s);
+    gpu9::Renderer::shared().draw(s, type, count, false, 0, start, instanceCount(d));
+    return kOk;
+}
+u32 Dev_DrawIndexedPrimitive(u32 t, u32 type, u32 baseVertex, u32, u32, u32 startIndex, u32 count) {
+    Device* d = D(t);
+    if (d->indices == 0) return kInvalidCall;
+    gpu9::DrawState s;
+    fillDrawState(d, s);
+    Resource* ib = R(d->indices);
+    s.indices = streamOf(ib, 0, 0, 1);
+    s.indexFormat = ib->format;
+    gpu9::Renderer::shared().draw(s, type, count, true, static_cast<int32_t>(baseVertex), startIndex, instanceCount(d));
+    return kOk;
+}
+// Datos de usuario: D3D9 deja después la fuente 0 (y los índices en la variante indexada) a NULL.
+u32 Dev_DrawPrimitiveUP(u32 t, u32 type, u32 count, u32 data, u32 stride) {
+    Device* d = D(t);
+    if (data == 0 || stride == 0) return kInvalidCall;
+    gpu9::DrawState s;
+    fillDrawState(d, s);
+    s.streams[0] = {};
+    s.streams[0].data = G(data);
+    s.streams[0].size = primVertices(type, count) * stride;
+    s.streams[0].stride = stride;
+    gpu9::Renderer::shared().draw(s, type, count, false, 0, 0, 1);
+    setRef(d->streams[0], 0);
+    d->streamOffset[0] = d->streamStride[0] = 0;
+    return kOk;
+}
+u32 Dev_DrawIndexedPrimitiveUP(u32 t, u32 type, u32 minIndex, u32 numVerts, u32 count, u32 idx, u32 idxFmt, u32 data,
+                               u32 stride) {
+    Device* d = D(t);
+    if (data == 0 || idx == 0 || stride == 0) return kInvalidCall;
+    gpu9::DrawState s;
+    fillDrawState(d, s);
+    s.streams[0] = {};
+    s.streams[0].data = G(data);
+    s.streams[0].size = (minIndex + numVerts) * stride;
+    s.streams[0].stride = stride;
+    s.indices = {};
+    s.indices.data = G(idx);
+    s.indices.size = primVertices(type, count) * (idxFmt == 102 ? 4 : 2);
+    s.indexFormat = idxFmt;
+    gpu9::Renderer::shared().draw(s, type, count, true, 0, 0, 1);
+    setRef(d->streams[0], 0);
+    d->streamOffset[0] = d->streamStride[0] = 0;
+    setRef(d->indices, 0);
+    return kOk;
+}
 u32 Dev_ProcessVertices(u32, u32, u32, u32, u32, u32, u32) { return kOk; }
 
 u32 Dev_CreateVertexDeclaration(u32 t, u32 elems, u32 pp) {
@@ -1065,9 +1247,23 @@ uint32_t createDevice(const CreateParams& p) {
     d->renderState[22] = 3;    // CULLMODE = CCW
     d->renderState[23] = 4;    // ZFUNC = LESSEQUAL
     d->renderState[168] = 0xF; // COLORWRITEENABLE
-    for (auto& s : d->samplerState) { s[1] = 1; s[2] = 1; s[3] = 1; s[5] = 1; s[6] = 1; s[7] = 0; }  // WRAP, POINT
+    d->renderState[8] = 3;     // FILLMODE = SOLID
+    d->renderState[19] = 2;    // SRCBLEND = ONE
+    d->renderState[20] = 1;    // DESTBLEND = ZERO
+    d->renderState[25] = 8;    // ALPHAFUNC = ALWAYS
+    d->renderState[53] = d->renderState[54] = d->renderState[55] = 1;  // STENCIL* = KEEP
+    d->renderState[56] = 8;    // STENCILFUNC = ALWAYS
+    d->renderState[58] = d->renderState[59] = 0xFFFFFFFFu;
+    d->renderState[186] = d->renderState[187] = d->renderState[188] = 1;
+    d->renderState[189] = 8;   // CCW_STENCILFUNC
+    d->renderState[190] = d->renderState[191] = d->renderState[192] = 0xF;
+    d->renderState[171] = 1;   // BLENDOP = ADD
+    d->renderState[193] = 0xFFFFFFFFu;  // BLENDFACTOR
+    d->renderState[207] = 2; d->renderState[208] = 1; d->renderState[209] = 1;
+    for (auto& s : d->samplerState) { s[1] = 1; s[2] = 1; s[3] = 1; s[5] = 1; s[6] = 1; s[7] = 0; s[10] = 1; }  // WRAP, POINT
     for (u32 i = 0; i < 16; ++i) d->streamFreq[i] = 1;
     createBackBuffers(d);
+    d->renderState[7] = d->autoDepth != nullptr ? 1 : 0;  // ZENABLE = D3DZB_TRUE solo con profundidad automática
     std::memcpy(G<void>(p.presentParams), d->pp, sizeof(d->pp));  // tamaños por defecto rellenados
     Obj* sc = make<Obj>(kSwapChain, d);
     d->swapChain = sc;

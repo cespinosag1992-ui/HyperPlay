@@ -28,6 +28,7 @@ add_library(hyperplay SHARED
     cpu/HyperAotCache.cpp
     cpu/GuestProfiler.cpp
     gfx/D3D11GpuRenderer.cpp
+    gfx/D3D9GpuRenderer.cpp
     cpu/OryonCpuTranslator.cpp
     cpu/OryonEmitterBackend.cpp
     gfx/TurnipLoader.cpp

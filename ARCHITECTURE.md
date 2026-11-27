@@ -67,6 +67,7 @@ Exedra64 implements its own native translation engine in C++20 registered by def
 
 **English**
 - **GPU Direct3D 11 (`gfx/D3D11GpuRenderer`, `gfx/DxbcToSpirv`, `gfx/SpirvBuilder`, `loader/D3D11ResourceModel`):** D3D11 calls are recorded and drawn on the Adreno with Vulkan; DXBC shaders are translated to SPIR-V. `loader/DxbcVm` and `loader/SoftRaster` are the CPU fallback.
+- **GPU Direct3D 9 for 32-bit games (`loader/D3D9Device32`, `gfx/D3D9GpuRenderer`, `gfx/D3D9ShaderToSpirv`):** the IDirect3DDevice9 keeps the D3D9 state and every draw, clear and present is recorded with Vulkan; Shader Model 3 bytecode is translated to SPIR-V.
 - **Games with their own Vulkan (`loader/VulkanPassthrough`, `gfx/GuestSwapchain`):** the game draws into virtual swapchain images; every present is copied (or scaled, aspect-preserved, with black bars) to the real swapchain, which always has the native screen size.
 - **HyperFG frame generation (`gfx/HyperFrameGen`):** motion-interpolated frames between real ones (for example 60 -> 120 FPS), with thermal protection.
 - **Display (`gfx/PresentOptions`, `loader/Win32DisplayInfo`, `loader/WidescreenPatch`):** games always run at the native resolution, full screen and undistorted. Resolution, window mode and frame limit come from each game's own video options: `EnumDisplaySettings` and DXGI `GetDisplayModeList` report a list of real modes (720p, 900p, 1080p, fractions of the screen and native).
@@ -79,6 +80,7 @@ Exedra64 implements its own native translation engine in C++20 registered by def
 
 **Español**
 - **Direct3D 11 en la GPU (`gfx/D3D11GpuRenderer`, `gfx/DxbcToSpirv`, `gfx/SpirvBuilder`, `loader/D3D11ResourceModel`):** las llamadas D3D11 se graban y se dibujan en la Adreno con Vulkan; los shaders DXBC se traducen a SPIR-V. `loader/DxbcVm` y `loader/SoftRaster` son la alternativa por CPU.
+- **Direct3D 9 en la GPU para juegos de 32 bits (`loader/D3D9Device32`, `gfx/D3D9GpuRenderer`, `gfx/D3D9ShaderToSpirv`):** el IDirect3DDevice9 guarda el estado D3D9 y cada draw, clear y present se graba con Vulkan; el bytecode Shader Model 3 se traduce a SPIR-V.
 - **Juegos con Vulkan propio (`loader/VulkanPassthrough`, `gfx/GuestSwapchain`):** el juego dibuja en imágenes virtuales; cada present se copia (o se escala conservando la proporción, con bandas negras) al swapchain real, que siempre tiene el tamaño nativo de la pantalla.
 - **Generación de fotogramas HyperFG (`gfx/HyperFrameGen`):** fotogramas interpolados por movimiento entre los reales (por ejemplo, de 60 a 120 FPS), con protección térmica.
 - **Pantalla (`gfx/PresentOptions`, `loader/Win32DisplayInfo`, `loader/WidescreenPatch`):** los juegos van siempre a la resolución nativa, a pantalla completa y sin deformarse. La resolución, el modo de ventana y el límite de fotogramas se eligen en las opciones de vídeo de cada juego: `EnumDisplaySettings` y `GetDisplayModeList` de DXGI ofrecen una lista de modos reales (720p, 900p, 1080p, fracciones de la pantalla y la nativa).
@@ -118,7 +120,7 @@ Exedra64/
         │   │   │             Win32KnownFolders, Win32PathUtils, Win32Registry, WinSafeHeap
         │   │   ├── cpu/      OryonEmitterBackend, OryonCpuTranslator, HyperAotCache,
         │   │   │             OryonSiliconScheduler, GuestProfiler
-        │   │   ├── gfx/      DirectVulkanBridge, D3D11GpuRenderer, DxbcToSpirv, SpirvBuilder,
+        │   │   ├── gfx/      DirectVulkanBridge, D3D11GpuRenderer, D3D9GpuRenderer, DxbcToSpirv, SpirvBuilder,
         │   │   │             GuestSwapchain, HyperFrameGen, GuestOpenGl, PresentOptions,
         │   │   │             FsrUpscalePass, TurnipLoader (+ SPIR-V headers)
         │   │   ├── audio/    DirectAAudioEngine, FmodStudioHost, FmodBank, FsbVorbis

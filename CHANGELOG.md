@@ -10,6 +10,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **Direct3D 9 renderer (Vulkan) for 32-bit games: DmC shows its title screen at about 60 FPS.** New `gfx/D3D9GpuRenderer`:
+  D3D9 textures (DXT/BC, 8/16-bit, float and depth formats with the D3D9 channel order), render targets with depth/stencil,
+  vertex declarations, instancing, blend/depth/stencil/cull/scissor states, sampler states, `Clear`, `StretchRect`,
+  `ColorFill`, `UpdateTexture`/`UpdateSurface` and `Present` through the existing Vulkan swapchain. Shaders use the
+  new SM3 translator. Full D3D9 default render states.
 - **Direct3D 9 shader translator (Shader Model 3 to SPIR-V).** First piece of the Direct3D 9 renderer for 32-bit games:
   `vs_3_0`/`ps_3_0` bytecode is translated to Vulkan SPIR-V (arithmetic, texture sampling, structured if/loop/break,
   emulated alpha test). All 40 DmC shaders seen so far translate and pass `spirv-val`. Shader bytecode with comment
@@ -71,6 +76,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Renderizador Direct3D 9 (Vulkan) para juegos de 32 bits: DmC muestra su pantalla de título a unos 60 FPS.** Nuevo
+  `gfx/D3D9GpuRenderer`: texturas D3D9 (DXT/BC, formatos de 8/16 bits, flotantes y de profundidad con el orden de canales de
+  D3D9), render targets con profundidad/stencil, declaraciones de vértices, instancias, estados de mezcla/profundidad/stencil/
+  culling/tijera, estados de sampler, `Clear`, `StretchRect`, `ColorFill`, `UpdateTexture`/`UpdateSurface` y `Present`
+  por el swapchain Vulkan existente. Los shaders usan el nuevo traductor SM3. Estados por defecto de D3D9 completos.
 - **Traductor de shaders Direct3D 9 (Shader Model 3 a SPIR-V).** Primera pieza del renderizador Direct3D 9 para juegos de
   32 bits: el bytecode `vs_3_0`/`ps_3_0` se traduce a SPIR-V de Vulkan (aritmética, muestreo de texturas, if/bucles/break
   estructurados, prueba alfa emulada). Los 40 shaders de DmC vistos hasta ahora se traducen y pasan `spirv-val`. El
