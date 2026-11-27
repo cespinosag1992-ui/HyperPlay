@@ -960,6 +960,28 @@ bool s_tlsSetupDone = false;
 std::unordered_set<const void*> s_tlsModuleBases;
 }  // namespace
 
+// Bloque TLS estático de un módulo para un hilo. En 32 bits el vector TLS (TEB+0x800 -> ThreadLocalStoragePointer)
+// tiene entradas de 4 bytes y los bloques deben estar < 4 GB: antes se guardaba ahí un puntero de 8 bytes de calloc,
+// el invitado leía sus 32 bits bajos como dirección y escribía su TLS en memoria ajena (montón de DmC corrupto).
+static void* allocTlsBlock(bool mode32, size_t size, std::vector<void*>& owned) {
+    if (!mode32) {
+        void* b = std::calloc(1, size);
+        if (b != nullptr) owned.push_back(b);
+        return b;
+    }
+    void* b = lowmem::mmapBelow4G(size);  // a cero; vive mientras viva el proceso
+    return b == MAP_FAILED ? nullptr : b;
+}
+static void setTlsSlot(void* teb, bool mode32, uint32_t index, void* block) {
+    auto* t = static_cast<uint8_t*>(teb) + 0x800;
+    if (mode32) {
+        const uint32_t p = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(block));
+        std::memcpy(t + 4 * index, &p, 4);
+    } else {
+        reinterpret_cast<void**>(t)[index] = block;
+    }
+}
+
 void OryonEmitterBackend::setupImageTls(void* mainBase, const PeInfo& mainPe,
                                         const std::unordered_map<std::string, LocalDllRegion>& localDlls,
                                         const std::string& exeFilePath) {
@@ -1069,13 +1091,14 @@ void OryonEmitterBackend::setupImageTls(void* mainBase, const PeInfo& mainPe,
             }
             tlsTemplates_.push_back(std::move(tmpl));
 
-            void* block = std::calloc(1, alignUp(totalSize, 16));
+            void* block = allocTlsBlock(true, alignUp(totalSize, 16), allocatedTlsBlocks_);
             if (block) {
-                allocatedTlsBlocks_.push_back(block);
                 if (rawSize > 0 && tlsDir->startAddressOfRawData != 0) {
                     std::memcpy(block, reinterpret_cast<const void*>(static_cast<uintptr_t>(tlsDir->startAddressOfRawData)), rawSize);
                 }
-                tlsVector[assigned] = block;
+                setTlsSlot(teb_, true, assigned, block);
+                LOGI("TLS (32 bits): %s índice %u, %zu bytes (plantilla %zu) en 0x%lx", name.c_str(), assigned, totalSize, rawSize,
+                     static_cast<unsigned long>(reinterpret_cast<uintptr_t>(block)));
             }
         }
     };
@@ -1099,12 +1122,10 @@ void OryonEmitterBackend::setupImageTls(void* mainBase, const PeInfo& mainPe,
 void OryonEmitterBackend::installTlsTemplate(const TlsModuleTemplate& tmpl) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (teb_ == nullptr || tmpl.index >= 64) return;
-    void** tlsVector = reinterpret_cast<void**>(static_cast<uint8_t*>(teb_) + 0x800);
-    void* block = std::calloc(1, alignUp(tmpl.totalSize, 16));
+    void* block = allocTlsBlock(mode32_, alignUp(tmpl.totalSize, 16), allocatedTlsBlocks_);
     if (block == nullptr) return;
-    allocatedTlsBlocks_.push_back(block);
     if (!tmpl.rawData.empty()) std::memcpy(block, tmpl.rawData.data(), tmpl.rawData.size());
-    tlsVector[tmpl.index] = block;
+    setTlsSlot(teb_, mode32_, tmpl.index, block);
     tlsTemplates_.push_back(tmpl);
 }
 
@@ -1148,17 +1169,15 @@ void OryonEmitterBackend::cloneTlsFrom(const OryonEmitterBackend& parent) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!allocateTeb()) return;
     auto* t = static_cast<uint8_t*>(teb_);
-    void** tlsVector = reinterpret_cast<void**>(t + 0x800);
     tlsTemplates_ = parent.tlsTemplates_;
     for (const auto& tmpl : tlsTemplates_) {
         if (tmpl.index >= 64) continue;
-        void* block = std::calloc(1, alignUp(tmpl.totalSize, 16));
+        void* block = allocTlsBlock(mode32_, alignUp(tmpl.totalSize, 16), allocatedTlsBlocks_);
         if (block) {
-            allocatedTlsBlocks_.push_back(block);
             if (!tmpl.rawData.empty()) {
                 std::memcpy(block, tmpl.rawData.data(), tmpl.rawData.size());
             }
-            tlsVector[tmpl.index] = block;
+            setTlsSlot(teb_, mode32_, tmpl.index, block);
         }
     }
     if (parent.teb_ != nullptr) {

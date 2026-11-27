@@ -253,6 +253,17 @@ HP_JNI(jint, nativeDirectLaunch)(JNIEnv*, jclass) {
                  name.c_str(), dllEntry, region.peInfo.entryPointRva);
             const int64_t dllRes = directTranslator().callDllEntry(dllEntry, region.base);
             LOGI("DllMain de %s finalizo con resultado: %ld", name.c_str(), static_cast<long>(dllRes));
+            // EXPERIMENTO (setprop debug.hyperplay.nosse2copy 1): msvcr100 x86 sin su copia SSE2
+            // (__sse2_available = 0 en RVA 0xB4638): memcpy/memset usan rep movsd.
+            if (name == "msvcr100.dll") {
+                char nb[PROP_VALUE_MAX] = {};
+                if (__system_property_get("debug.hyperplay.nosse2copy", nb) > 0 && nb[0] == '1') {
+                    auto* flag = static_cast<uint8_t*>(region.base) + 0xB4638;
+                    const uint32_t zero = 0;
+                    std::memcpy(flag, &zero, 4);
+                    LOGW("msvcr100: copia SSE2 desactivada (experimento)");
+                }
+            }
             if (dllRes < 0) {
                 LOGW("DllMain de %s devolvio codigo %ld (continuando ejecucion)",
                      name.c_str(), static_cast<long>(dllRes));

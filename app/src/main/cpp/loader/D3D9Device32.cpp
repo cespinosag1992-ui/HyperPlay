@@ -589,7 +589,7 @@ u32 Dev_QI(u32 t, u32 riid, u32 ppv) {
     return kNoInterface;
 }
 u32 Dev_TestCooperativeLevel(u32) { return kOk; }
-u32 Dev_GetAvailableTextureMem(u32) { return 0x7FF00000u; }
+u32 Dev_GetAvailableTextureMem(u32) { return 0x20000000u; }  // 512 MB (valor típico de una GPU de 2013)
 u32 Dev_EvictManagedResources(u32) { return kOk; }
 u32 Dev_GetDirect3D(u32 t, u32 pp) { put32(pp, D(t)->direct3d); return kOk; }
 u32 Dev_GetDeviceCaps(u32 t, u32 caps) { d3d9probe32::fillCaps(D(t)->deviceType, caps); return kOk; }

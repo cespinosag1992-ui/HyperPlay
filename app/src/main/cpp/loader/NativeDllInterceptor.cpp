@@ -1583,6 +1583,7 @@ int32_t win_GetCurrentPackageId(uint32_t* len, void*) {
 
 // QueryDepthSList / InterlockedPushListSListEx (cabecera: +0 primer nodo, +8 profundidad).
 uint16_t win_QueryDepthSList(const uint64_t* head) {
+    if (head != nullptr && lowmem::enabled()) return reinterpret_cast<const uint16_t*>(head)[2];  // x86: Depth en +4
     return head != nullptr ? static_cast<uint16_t>(head[1] & 0xFFFFu) : 0;
 }
 std::mutex& slistLock(const void* head);  // definido junto a InterlockedPushEntrySList
@@ -1590,6 +1591,17 @@ std::mutex& slistLock(const void* head);  // definido junto a InterlockedPushEnt
 // Inserta la cadena ya enlazada list..listEnd delante de la cabecera, de forma atómica.
 void* win_InterlockedPushListSListEx(void* head, void* list, void* listEnd, uint32_t count) {
     if (head == nullptr || list == nullptr || listEnd == nullptr) return nullptr;
+    if (lowmem::enabled()) {
+        auto* h32 = static_cast<uint32_t*>(head);
+        std::lock_guard<std::mutex> lock(slistLock(head));
+        const uint32_t old = h32[0];
+        std::memcpy(listEnd, &old, 4);
+        h32[0] = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(list));
+        auto* ds = reinterpret_cast<uint16_t*>(h32 + 1);
+        ds[0] = static_cast<uint16_t>(ds[0] + count);
+        ++ds[1];
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(old));
+    }
     auto* h = static_cast<uint64_t*>(head);
     std::lock_guard<std::mutex> lock(slistLock(head));
     const uint64_t old = h[0];
@@ -7544,7 +7556,9 @@ void NativeDllInterceptor::win_InitializeCriticalSection(void* lpCriticalSection
 void NativeDllInterceptor::win_EnterCriticalSection(void* lpCriticalSection) {
     s_kernel32Calls.fetch_add(1);
     if (!lpCriticalSection) return;
-    if (pthread_mutex_t* m = csMutex(lpCriticalSection)) pthread_mutex_lock(m);
+    if (pthread_mutex_t* m = csMutex(lpCriticalSection)) { pthread_mutex_lock(m); return; }
+    static std::atomic<int> s_nulls{0};
+    if (s_nulls.fetch_add(1) < 5) LOGW("EnterCriticalSection(%p): sin mutex (CS no inicializada)", lpCriticalSection);
 }
 
 void NativeDllInterceptor::win_LeaveCriticalSection(void* lpCriticalSection) {
@@ -8277,6 +8291,22 @@ void NativeDllInterceptor::setGuestTeb(void* teb, bool is64Bit) noexcept {
     }
 }
 
+namespace {
+// TlsExpansionSlots de un TEB de 32 bits (+0xF94): puntero de 4 bytes a 1024 entradas de 4 bytes en memoria
+// baja. Antes se guardaba un puntero de 8 bytes de calloc (pisaba +0xF98 y no cabía en 32 bits).
+uint32_t* tlsExp32(uint8_t* teb, bool create) {
+    uint32_t p = 0;
+    std::memcpy(&p, teb + 0x0F94, 4);
+    if (p == 0 && create) {
+        void* m = lowmem::mmapBelow4G(4096);
+        if (m == MAP_FAILED) return nullptr;
+        p = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(m));
+        std::memcpy(teb + 0x0F94, &p, 4);
+    }
+    return reinterpret_cast<uint32_t*>(static_cast<uintptr_t>(p));
+}
+}  // namespace
+
 uint32_t NativeDllInterceptor::win_TlsAlloc() {
     s_kernel32Calls.fetch_add(1);
     std::lock_guard<std::mutex> lock(s_tlsAllocMutex);
@@ -8354,7 +8384,7 @@ int32_t NativeDllInterceptor::win_TlsFree(uint32_t dwTlsIndex) {
                 if (dwTlsIndex < 64) {
                     *reinterpret_cast<uint32_t*>(teb + 0x0E10 + dwTlsIndex * 4) = 0;
                 } else {
-                    uint32_t* exp32 = *reinterpret_cast<uint32_t**>(teb + 0x0F94);
+                    uint32_t* exp32 = tlsExp32(teb, false);
                     if (exp32 != nullptr) exp32[dwTlsIndex - 64] = 0;
                 }
             }
@@ -8387,7 +8417,7 @@ void* NativeDllInterceptor::win_TlsGetValue(uint32_t dwTlsIndex) {
                 uint32_t v32 = *reinterpret_cast<uint32_t*>(teb + 0x0E10 + dwTlsIndex * 4);
                 if (v32 != 0) result = reinterpret_cast<void*>(static_cast<uintptr_t>(v32));
             } else {
-                uint32_t* exp32 = *reinterpret_cast<uint32_t**>(teb + 0x0F94);
+                uint32_t* exp32 = tlsExp32(teb, false);
                 if (exp32 != nullptr && exp32[dwTlsIndex - 64] != 0) {
                     result = reinterpret_cast<void*>(static_cast<uintptr_t>(exp32[dwTlsIndex - 64]));
                 }
@@ -8428,11 +8458,7 @@ int32_t NativeDllInterceptor::win_TlsSetValue(uint32_t dwTlsIndex, void* lpTlsVa
             if (dwTlsIndex < 64) {
                 *reinterpret_cast<uint32_t*>(teb + 0x0E10 + dwTlsIndex * 4) = val32;
             } else {
-                uint32_t* exp32 = *reinterpret_cast<uint32_t**>(teb + 0x0F94);
-                if (exp32 == nullptr) {
-                    exp32 = static_cast<uint32_t*>(std::calloc(1024, sizeof(uint32_t)));
-                    *reinterpret_cast<uint32_t**>(teb + 0x0F94) = exp32;
-                }
+                uint32_t* exp32 = tlsExp32(teb, true);
                 if (exp32 != nullptr) {
                     exp32[dwTlsIndex - 64] = val32;
                 }
@@ -11270,6 +11296,19 @@ bool NativeDllInterceptor::prepareGuestException32(CpuContext& ctx, uint32_t cod
                 mem += w;
             }
             LOGI("[SEH32]   [ESI]:%s", mem.c_str());
+            // Nodos a los que apunta [ESI+4..] (árbol de dlmalloc): 24 palabras desde nodo-0x10.
+            for (uint32_t k = 1; k < 33; ++k) {
+                if (!isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{esiv + 4 * k}), 4)) break;
+                const uint32_t node = seh32::rd32(esiv + 4 * k);
+                if (node < 0x10000 || !isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{node - 0x10}), 0x60)) continue;
+                std::string nm;
+                for (uint32_t q = 0; q < 24; ++q) {
+                    char w[12];
+                    std::snprintf(w, sizeof(w), " %08x", seh32::rd32(node - 0x10 + 4 * q));
+                    nm += w;
+                }
+                LOGI("[SEH32]   nodo[%u]=0x%x desde -0x10:%s", k - 1, node, nm.c_str());
+            }
         }
         // Mapeos de /proc/self/maps que contienen ESI/EAX (de dónde sale la memoria del fallo).
         static std::atomic<int> s_mapDumps{0};
@@ -12602,6 +12641,19 @@ std::mutex& slistLock(const void* head) {
 void* NativeDllInterceptor::win_InterlockedPushEntrySList(void* ListHead, void* ListEntry) {
     s_kernel32Calls.fetch_add(1);
     if (!ListHead || !ListEntry) return nullptr;
+    if (lowmem::enabled()) {
+        // x86: SLIST_HEADER = {Next (4), Depth (2), Sequence (2)}; SLIST_ENTRY.Next de 4 bytes. Con el
+        // formato x64 se escribían 8 bytes en la entrada y 8 más tras la cabecera (montón corrupto en DmC).
+        auto* h = static_cast<uint32_t*>(ListHead);
+        std::lock_guard<std::mutex> lock(slistLock(ListHead));
+        const uint32_t old = h[0];
+        std::memcpy(ListEntry, &old, 4);
+        h[0] = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ListEntry));
+        auto* ds = reinterpret_cast<uint16_t*>(h + 1);
+        ++ds[0];
+        ++ds[1];
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(old));
+    }
     auto* h = static_cast<uintptr_t*>(ListHead);
     std::lock_guard<std::mutex> lock(slistLock(ListHead));
     const uintptr_t old = h[0];
@@ -12614,6 +12666,19 @@ void* NativeDllInterceptor::win_InterlockedPushEntrySList(void* ListHead, void* 
 void* NativeDllInterceptor::win_InterlockedPopEntrySList(void* ListHead) {
     s_kernel32Calls.fetch_add(1);
     if (!ListHead) return nullptr;
+    if (lowmem::enabled()) {
+        auto* h = static_cast<uint32_t*>(ListHead);
+        std::lock_guard<std::mutex> lock(slistLock(ListHead));
+        const uint32_t first = h[0];
+        if (first == 0) return nullptr;
+        uint32_t next = 0;
+        std::memcpy(&next, reinterpret_cast<const void*>(static_cast<uintptr_t>(first)), 4);
+        h[0] = next;
+        auto* ds = reinterpret_cast<uint16_t*>(h + 1);
+        if (ds[0] != 0) --ds[0];
+        ++ds[1];
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(first));
+    }
     auto* h = static_cast<uintptr_t*>(ListHead);
     std::lock_guard<std::mutex> lock(slistLock(ListHead));
     const uintptr_t first = h[0];
@@ -12626,6 +12691,14 @@ void* NativeDllInterceptor::win_InterlockedPopEntrySList(void* ListHead) {
 void* NativeDllInterceptor::win_InterlockedFlushSList(void* ListHead) {
     s_kernel32Calls.fetch_add(1);
     if (!ListHead) return nullptr;
+    if (lowmem::enabled()) {
+        auto* h = static_cast<uint32_t*>(ListHead);
+        std::lock_guard<std::mutex> lock(slistLock(ListHead));
+        const uint32_t first = h[0];
+        h[0] = 0;
+        reinterpret_cast<uint16_t*>(h + 1)[0] = 0;
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(first));
+    }
     auto* h = static_cast<uintptr_t*>(ListHead);
     std::lock_guard<std::mutex> lock(slistLock(ListHead));
     const uintptr_t first = h[0];
@@ -13322,13 +13395,18 @@ int32_t NativeDllInterceptor::win_TryEnterCriticalSection(void* lpCriticalSectio
     // (Silksong: pantalla negra al arrancar, 1 de cada ~5 veces).
     if (lpCriticalSection == nullptr) return 0;
     pthread_mutex_t* m = lpCriticalSection != nullptr ? csMutex(lpCriticalSection) : nullptr;
+    {   // EXPERIMENTO (debug.hyperplay.trylockwait 1): en 32 bits TryEnter espera como Enter.
+        static const bool s_wait = [] { char b[PROP_VALUE_MAX] = {}; return __system_property_get("debug.hyperplay.trylockwait", b) > 0 && b[0] == '1'; }();
+        if (s_wait && lowmem::enabled() && m != nullptr) { pthread_mutex_lock(m); return 1; }
+    }
+    if (m == nullptr) { static std::atomic<int> s_nulls{0}; if (s_nulls.fetch_add(1) < 5) LOGW("TryEnterCriticalSection(%p): sin mutex (CS no inicializada)", lpCriticalSection); }
     return m != nullptr && pthread_mutex_trylock(m) == 0 ? 1 : 0;
 }
 
 void NativeDllInterceptor::win_InitializeSRWLock(void* srwLock) {
     s_kernel32Calls.fetch_add(1);
     if (srwLock != nullptr) {
-        *reinterpret_cast<uintptr_t*>(srwLock) = 0;
+        lowmem::storePtr(srwLock, uint64_t{0});  // SRWLOCK: 4 bytes en 32 bits
     }
 }
 

@@ -10,6 +10,10 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **32-bit games: pointer-size fixes in Windows synchronization and thread data.** `SLIST` operations used the
+  64-bit layout (they wrote 8 bytes into each 4-byte entry and past the 8-byte header), `InitializeSRWLock` wrote 8 bytes,
+  TLS expansion slots stored a 64-bit pointer in the 32-bit TEB, and static TLS blocks of new threads were stored as
+  64-bit pointers in a table of 4-byte entries. All now use the x86 layout. The 64-bit path is unchanged.
 - **32-bit games: Direct3D 9 device (stage 1, no drawing yet).** `IDirect3DDevice9` with all 119 methods and
   its resources (textures, cube/volume textures, surfaces, vertex/index buffers, shaders, declarations, queries,
   swap chain) in low memory with real `Lock`/`Unlock` memory; `Present` keeps a 60 Hz pace. DmC now creates
@@ -54,6 +58,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Juegos de 32 bits: tamaño de puntero en la sincronización de Windows y los datos por hilo.** Las `SLIST` usaban el
+  formato de 64 bits (escribían 8 bytes en cada entrada de 4 y más allá de la cabecera de 8), `InitializeSRWLock`
+  escribía 8 bytes, las ranuras TLS de expansión guardaban un puntero de 64 bits en el TEB de 32 bits y los bloques TLS
+  estáticos de los hilos nuevos se guardaban como punteros de 64 bits en una tabla de entradas de 4 bytes. Todo usa
+  ahora el formato x86. La ruta de 64 bits no cambia.
 - **Juegos de 32 bits: dispositivo Direct3D 9 (etapa 1, aún sin dibujar).** `IDirect3DDevice9` con sus 119 métodos
   y sus recursos (texturas, cubos/volúmenes, superficies, búferes de vértices/índices, shaders, declaraciones,
   consultas, cadena de intercambio) en memoria baja con memoria real en `Lock`/`Unlock`; `Present` mantiene
