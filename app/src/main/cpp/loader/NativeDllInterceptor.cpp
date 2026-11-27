@@ -8824,6 +8824,9 @@ void* NativeDllInterceptor::win_SetActiveWindow(void*) {
 
 void* NativeDllInterceptor::win_GetFocus() {
     s_otherCalls.fetch_add(1);
+    // 32 bits: la cola de mensajes propia (msg32) no pasa por wndq; la ventana del juego siempre tiene el foco
+    // (Unreal 3 solo lee teclado/mando si GetFocus() es su ventana).
+    if (lowmem::enabled()) return reinterpret_cast<void*>(0xCAFE1000);
     return reinterpret_cast<void*>(wndq::s_activated.load() ? 0xCAFE1000 : 1);
 }
 

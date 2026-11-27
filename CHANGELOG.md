@@ -10,6 +10,8 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **32-bit games: controller input reaches the game (DmC opens its main menu).** `GetFocus` now returns the game window for
+  32-bit games; Unreal 3 only reads the keyboard and controller while its window has the focus.
 - **Direct3D 9 renderer (Vulkan) for 32-bit games: DmC shows its title screen at about 60 FPS.** New `gfx/D3D9GpuRenderer`:
   D3D9 textures (DXT/BC, 8/16-bit, float and depth formats with the D3D9 channel order), render targets with depth/stencil,
   vertex declarations, instancing, blend/depth/stencil/cull/scissor states, sampler states, `Clear`, `StretchRect`,
@@ -76,6 +78,8 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Juegos de 32 bits: el mando llega al juego (DmC abre su menú principal).** `GetFocus` devuelve ahora la ventana del
+  juego en 32 bits; Unreal 3 solo lee teclado y mando mientras su ventana tiene el foco.
 - **Renderizador Direct3D 9 (Vulkan) para juegos de 32 bits: DmC muestra su pantalla de título a unos 60 FPS.** Nuevo
   `gfx/D3D9GpuRenderer`: texturas D3D9 (DXT/BC, formatos de 8/16 bits, flotantes y de profundidad con el orden de canales de
   D3D9), render targets con profundidad/stencil, declaraciones de vértices, instancias, estados de mezcla/profundidad/stencil/
