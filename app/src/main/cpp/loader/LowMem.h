@@ -8,10 +8,14 @@
 #include <android/log.h>
 #include <sys/mman.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 namespace hyperplay::lowmem {
 
@@ -30,17 +34,55 @@ void traceMap(void* p, size_t len, int prot, void* caller);  // NativeDllInterce
 // Vigía relativo: se llama al crear un bloque grande del montón (diagnóstico, puede ser nullptr).
 inline void (*g_largeBlockHook)(void* block, size_t total) = nullptr;
 
+// Direcciones (alineadas a 64 KB) donde cabe `len` en los huecos libres entre 0x15000000 y 0xEF000000, de la
+// más alta a la más baja (el extremo superior de cada hueco).
+inline std::vector<uintptr_t> gapsBelow4G(size_t len) {
+    constexpr uintptr_t kLo = 0x15000000u, kHi = 0xEF000000u;
+    std::vector<std::pair<uintptr_t, uintptr_t>> used;
+    if (FILE* f = std::fopen("/proc/self/maps", "r")) {
+        char line[512];
+        while (std::fgets(line, sizeof(line), f) != nullptr) {
+            unsigned long long a = 0, b = 0;
+            if (std::sscanf(line, "%llx-%llx", &a, &b) != 2) continue;
+            if (a >= kHi) break;  // ordenado de menor a mayor
+            used.emplace_back(static_cast<uintptr_t>(a), static_cast<uintptr_t>(b));
+        }
+        std::fclose(f);
+    }
+    std::vector<uintptr_t> out;
+    uintptr_t gapEnd = kHi;
+    for (size_t i = used.size() + 1; i-- > 0;) {
+        const uintptr_t gapStart = i == 0 ? kLo : std::max(kLo, used[i - 1].second);
+        if (i < used.size()) gapEnd = std::min(gapEnd, used[i].first);
+        const uintptr_t start = (gapStart + 0xFFFFu) & ~uintptr_t{0xFFFF};
+        if (gapEnd > start && gapEnd - start >= len) out.push_back((gapEnd - len) & ~uintptr_t{0xFFFF});
+        if (i > 0) gapEnd = used[i - 1].first;
+        if (gapEnd <= kLo || out.size() >= 64) break;
+    }
+    return out;
+}
+
 inline void* mmapBelow4G(size_t size, int prot = PROT_READ | PROT_WRITE, int extraFlags = 0) {
     static std::mutex s_m;
     static uintptr_t s_next = 0xEF000000u;
     const size_t len = (size + 0xFFFF) & ~size_t{0xFFFF};
     if (len == 0 || len > 0x80000000u) return MAP_FAILED;
     std::lock_guard<std::mutex> lk(s_m);
+    // Candidatos: primero justo debajo de la última reserva (unos pocos intentos); si no, los huecos reales de
+    // /proc/self/maps de arriba abajo entre 0xEF000000 y 0x15000000 (por encima de la imagen del ejecutable).
+    // Antes se probaba cada 64 KB con mmap: con la memoria baja fragmentada eran decenas de miles de llamadas.
+    std::vector<uintptr_t> cands;
+    for (int i = 0; i < 16 && s_next >= 0x15000000u + len + 0x10000u * i; ++i) cands.push_back(s_next - len - 0x10000u * i);
     for (int pass = 0; pass < 2; ++pass) {
-        for (uintptr_t top = s_next; top >= 0x60000000u + len; top -= 0x10000) {
-            void* p = mmap(reinterpret_cast<void*>(top - len), len, prot,
+        if (pass == 1) {
+            cands = gapsBelow4G(len);
+            if (cands.empty()) break;
+        }
+        for (const uintptr_t at : cands) {
+            void* p = mmap(reinterpret_cast<void*>(at), len, prot,
                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | extraFlags, -1, 0);
             if (p == MAP_FAILED) continue;
+            if (reinterpret_cast<uintptr_t>(p) != at) { munmap(p, len); continue; }  // núcleo sin NOREPLACE
             s_next = reinterpret_cast<uintptr_t>(p);
             if (g_traceMaps.load(std::memory_order_relaxed) > 0) traceMap(p, len, prot, __builtin_return_address(0));
             const uintptr_t wlo = g_watchPageLo.load(), whi = g_watchPageHi.load();
@@ -56,7 +98,6 @@ inline void* mmapBelow4G(size_t size, int prot = PROT_READ | PROT_WRITE, int ext
             }
             return p;
         }
-        s_next = 0xEF000000u;  // segunda vuelta: huecos liberados
     }
     return MAP_FAILED;
 }

@@ -173,6 +173,7 @@ uint8_t* region() {
         std::memset(p, 0xCC, kRegionSize);  // INT3
         mprotect(p, kRegionSize, PROT_READ);
         s_region = static_cast<uint8_t*>(p);
+        OryonEmitterBackend::fast32AliasBase.store(reinterpret_cast<uintptr_t>(p));  // CALL indirectos rápidos
         __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "Alias de 32 bits en %p (%zu entradas)", p, kRegionSize / kEntry);
         break;
     }
@@ -350,6 +351,19 @@ struct WinSemaphoreObj {
     std::condition_variable cv;
     int32_t count{0};
     int32_t maxCount{0x7FFFFFFF};
+    // Mutex (CreateMutex): tiene dueño y es recursivo para él, como en Windows. Antes era un semáforo binario y
+    // un hilo que volvía a pedir su propio mutex se bloqueaba (Bink en DmC al empezar los créditos).
+    bool isMutex = false;
+    int ownerTid = 0;
+    int32_t recursion = 0;
+    bool available(int tid) const { return count > 0 || (isMutex && ownerTid == tid); }
+    void take(int tid) {
+        if (!isMutex) { --count; return; }
+        if (ownerTid == tid) { ++recursion; return; }
+        ownerTid = tid;
+        recursion = 1;
+        count = 0;
+    }
 };
 static std::mutex s_semMutex;
 static std::unordered_map<uintptr_t, std::shared_ptr<WinSemaphoreObj>> s_semaphores;
@@ -2069,6 +2083,27 @@ void NativeDllInterceptor::init(LoadedPeImage* image) {
         fast(&win_WakeByAddress, false);
         fast(&win_WakeByAddressAll, false);
         fast(&win_WaitOnAddress, true);
+        // 32 bits: la IAT guarda alias bajos; solo se aceptan stdcall con aridad conocida y sin argumentos de 64 bits.
+        OryonEmitterBackend::fast32Host.store([](uintptr_t a) -> uintptr_t {
+            return w32alias::isAlias(a) ? w32alias::hostFor(a) : 0;
+        });
+        OryonEmitterBackend::fast32Indirect.store([](CpuContext* ctx, uint32_t target, uint32_t nextRip) -> uint32_t {
+            // CALL indirecto desde el bloque traducido: se apila el retorno y se atiende como cualquier thunk.
+            thread_local OryonEmitterBackend* t_self = OryonEmitterBackend::forThread(static_cast<int>(gettid()));
+            const uint32_t esp = static_cast<uint32_t>(ctx->gpr[4]) - 4;
+            std::memcpy(reinterpret_cast<void*>(static_cast<uintptr_t>(esp)), &nextRip, 4);
+            ctx->gpr[4] = esp;
+            if (!NativeDllInterceptor::dispatchThunk(t_self, target, *ctx)) {
+                ctx->rip = target;  // no es un thunk: llamada normal al código invitado
+                return 1;
+            }
+            return ctx->rip == nextRip ? 0u : 1u;
+        });
+        OryonEmitterBackend::fast32Slots.store([](uintptr_t h) -> int {
+            w32arity::Arity ar{};
+            if (!w32arity::lookup(reinterpret_cast<const void*>(h), ar) || ar.variadic || ar.wideMask != 0) return -1;
+            return ar.slots;
+        });
     }
     if (image) {
         prof::startIfRequested(image->gameDir + "/_HyperPlaySaves");  // setprop debug.hyperplay.prof <s>
@@ -2255,6 +2290,14 @@ struct ThunkInfo {
     bool noisy = false;
     bool isVoid = false;
     mutable std::atomic<uint32_t> calls{0};
+    // Llamada de 32 bits ya resuelta (se calcula una vez por función; antes, en cada llamada: nombre en minúsculas,
+    // búsquedas de aridad y de stub... y el hilo de render de DmC hace >200 000 llamadas D3D9 por segundo).
+    mutable std::atomic<bool> d32Ready{false};
+    mutable uintptr_t d32Host = 0;
+    mutable w32arity::Arity d32Ar{};
+    mutable bool d32Known = false, d32Stdcall = false;
+    mutable const std::string* d32Stub = nullptr;
+    mutable uint32_t d32StubRet = 0;
     mutable std::atomic<uint64_t> total{0};      // llamadas totales (diagnóstico de rendimiento)
     mutable uint64_t lastReported = 0;
 };
@@ -2676,7 +2719,11 @@ static void logTopThunks(uint64_t elapsedMs) {
     }
     std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
     std::string line;
-    for (size_t i = 0; i < top.size() && i < 12; ++i) {
+    static const size_t s_topN = [] {  // setprop debug.hyperplay.thunktop N (por defecto 12)
+        char v[PROP_VALUE_MAX] = {};
+        return __system_property_get("debug.hyperplay.thunktop", v) > 0 ? static_cast<size_t>(std::atoi(v)) : size_t{12};
+    }();
+    for (size_t i = 0; i < top.size() && i < s_topN; ++i) {
         char buf[160];
         std::snprintf(buf, sizeof(buf), " %s=%llu/s", top[i].second->name.c_str(),
                       static_cast<unsigned long long>(top[i].first * 1000 / elapsedMs));
@@ -2787,7 +2834,6 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
 
     // --- Invitado de 32 bits (WoW64 propio): argumentos en la pila y limpieza stdcall ---------------
     if (ctx.mode32 != 0) {
-        const uintptr_t host = w32alias::hostFor(target);
         const uint32_t esp = static_cast<uint32_t>(ctx.gpr[4]);
         if (esp == 0) return false;
         uint32_t ret32 = 0;
@@ -2795,16 +2841,37 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
         const ThunkInfo* info = thunkInfoFor(target);
         info->total.fetch_add(1, std::memory_order_relaxed);
         const std::string& name = info->name;
+        sampleThunkCaller(name, target, ret32);  // informe [Llamantes] (1 de cada 64)
         const size_t bang = name.rfind('!');
-        const std::string dll = toLower(bang == std::string::npos ? std::string() : name.substr(0, bang));
-        // CRT y variádicas: cdecl (limpia el llamador). El resto de la API de Windows: stdcall.
-        const bool crtDll = dll.find("msvcr") != std::string::npos || dll.find("msvcp") != std::string::npos ||
-                            dll.find("ucrtbase") != std::string::npos || dll.find("api-ms-win-crt") != std::string::npos ||
-                            dll == "msvcrt.dll" || dll.find("steam_api") != std::string::npos;
-        w32arity::Arity ar{};
-        const bool known = w32arity::lookup(reinterpret_cast<const void*>(host), ar);
-        const std::string* stubName = info->stubName != nullptr ? info->stubName : DynamicStubManager::findStubName(host);
-        if (!known || stubName != nullptr) {
+        if (!info->d32Ready.load(std::memory_order_acquire)) {
+            const uintptr_t h = w32alias::hostFor(target);
+            const std::string dllName = toLower(bang == std::string::npos ? std::string() : name.substr(0, bang));
+            // CRT y variádicas: cdecl (limpia el llamador). El resto de la API de Windows: stdcall.
+            const bool crt = dllName.find("msvcr") != std::string::npos || dllName.find("msvcp") != std::string::npos ||
+                             dllName.find("ucrtbase") != std::string::npos || dllName.find("api-ms-win-crt") != std::string::npos ||
+                             dllName == "msvcrt.dll" || dllName.find("steam_api") != std::string::npos;
+            w32arity::Arity a{};
+            const bool k = w32arity::lookup(reinterpret_cast<const void*>(h), a);
+            const std::string* sn = info->stubName != nullptr ? info->stubName : DynamicStubManager::findStubName(h);
+            bool sc = k && sn == nullptr && !a.variadic && !crt;
+            uint32_t ss = 0, sr = 0;
+            if (sn != nullptr && !crt && stub32Arity(bang == std::string::npos ? name : name.substr(bang + 1), ss, sr)) {
+                sc = true;
+                a.slots = static_cast<uint8_t>(ss);
+            }
+            info->d32Host = h;
+            info->d32Ar = a;
+            info->d32Known = k;
+            info->d32Stdcall = sc;
+            info->d32Stub = sn;
+            info->d32StubRet = sr;
+            info->d32Ready.store(true, std::memory_order_release);
+        }
+        const uintptr_t host = info->d32Host;
+        w32arity::Arity ar = info->d32Ar;
+        const bool known = info->d32Known;
+        const std::string* stubName = info->d32Stub;
+        if ((!known || stubName != nullptr) && info->calls.load(std::memory_order_relaxed) == 0) {
             static std::mutex s_m;
             static std::unordered_set<std::string> s_warned;
             std::lock_guard<std::mutex> lk(s_m);
@@ -2825,20 +2892,27 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
             }
             args[i] = (static_cast<uint64_t>(hi) << 32) | lo;
         }
-        bool stdcall = known && stubName == nullptr && !ar.variadic && !crtDll;
-        // Stubs de la API de sistema sin implementar: aridad stdcall conocida (si no, el llamador queda con
-        // la pila descuadrada) y valor de retorno de "fallo limpio".
-        uint32_t stubSlots = 0, stubRet = 0;
-        if (stubName != nullptr && !crtDll && stub32Arity(bang == std::string::npos ? name : name.substr(bang + 1), stubSlots, stubRet)) {
-            stdcall = true;
-            ar.slots = static_cast<uint8_t>(stubSlots);
-        }
+        // Stubs de la API de sistema sin implementar: aridad stdcall de la tabla (ver stub32Arity) y retorno de
+        // "fallo limpio"; ya resueltos en d32*.
+        const bool stdcall = info->d32Stdcall;
+        const uint32_t stubRet = info->d32StubRet;
         // Llamadas registradas por función (setprop debug.hyperplay.thunklog N; por defecto 4).
         static const uint32_t s_logMax = [] {
             char v[PROP_VALUE_MAX] = {};
             return __system_property_get("debug.hyperplay.thunklog", v) > 0 ? static_cast<uint32_t>(std::atoi(v)) : 4u;
         }();
-        if (info->calls.fetch_add(1, std::memory_order_relaxed) < s_logMax) {
+        // Además, todas las llamadas desde un rango de código (setprop debug.hyperplay.thunkrange lo,hi en hex; máx. 40000).
+        static const std::pair<uint32_t, uint32_t> s_range = [] {
+            char v[PROP_VALUE_MAX] = {};
+            if (__system_property_get("debug.hyperplay.thunkrange", v) <= 0) return std::pair<uint32_t, uint32_t>{0, 0};
+            char* e = nullptr;
+            const uint32_t lo = static_cast<uint32_t>(std::strtoul(v, &e, 16));
+            const uint32_t hi = (e != nullptr && *e == ',') ? static_cast<uint32_t>(std::strtoul(e + 1, nullptr, 16)) : 0;
+            return std::pair<uint32_t, uint32_t>{lo, hi};
+        }();
+        static std::atomic<int> s_rangeLogs{0};
+        const bool inRange = ret32 >= s_range.first && ret32 < s_range.second && s_rangeLogs.fetch_add(1) < 40000;
+        if (info->calls.fetch_add(1, std::memory_order_relaxed) < s_logMax || inRange) {
             LOGI("[NativeThunk32] %s(0x%llx, 0x%llx, 0x%llx, 0x%llx) desde EIP=0x%x (%s, %u slots)", name.c_str(),
                  static_cast<unsigned long long>(args[0]), static_cast<unsigned long long>(args[1]),
                  static_cast<unsigned long long>(args[2]), static_cast<unsigned long long>(args[3]), ret32,
@@ -2871,7 +2945,7 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
                 return true;
             }
         }
-        if (info->calls.load(std::memory_order_relaxed) <= s_logMax) {
+        if (info->calls.load(std::memory_order_relaxed) <= s_logMax || inRange) {
             LOGI("[NativeThunk32] %s -> 0x%llx%s", name.c_str(), static_cast<unsigned long long>(ret),
                  ret > 0xFFFFFFFFull && !info->isVoid ? " (¡>4GB: truncado!)" : "");
         }
@@ -2881,6 +2955,13 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
         }
         ctx.gpr[4] = static_cast<uint64_t>(esp) + 4 + (stdcall ? 4u * ar.slots : 0u);
         ctx.rip = ret32;
+        if (t_exitThreadRequested) {
+            // ExitThread no vuelve (como en 64 bits): RIP=0 termina el hilo con el código en EAX. Antes el hilo
+            // seguía tras la llamada, caía en el relleno int3 y quien esperaba su handle no despertaba (PhysX en DmC).
+            t_exitThreadRequested = false;
+            ctx.gpr[0] = t_exitThreadCode;
+            ctx.rip = 0;
+        }
         return true;
     }
 
@@ -8402,6 +8483,11 @@ constexpr size_t kMaxWinTlsSlots = 1088;
 std::mutex s_tlsAllocMutex;
 std::bitset<kMaxWinTlsSlots> s_tlsAllocatedBits;
 thread_local void* t_winTlsValues[kMaxWinTlsSlots] = {nullptr};
+// Generación de cada índice: TlsFree la incrementa. En Windows TlsFree pone el valor a 0 en TODOS los hilos;
+// aquí cada hilo recuerda con qué generación guardó su valor y lo ignora si el índice se liberó después (el
+// índice reutilizado devolvía el objeto viejo de otro módulo: PhysX en DmC al cargar un nivel).
+std::atomic<uint32_t> s_tlsGen[kMaxWinTlsSlots];
+thread_local uint32_t t_tlsGen[kMaxWinTlsSlots] = {0};
 thread_local void* t_guestTeb = nullptr;
 thread_local bool t_isGuest64 = true;
 thread_local void* t_unityTempAllocBuffer = nullptr;
@@ -8546,6 +8632,7 @@ int32_t NativeDllInterceptor::win_TlsFree(uint32_t dwTlsIndex) {
     if (dwTlsIndex < kMaxWinTlsSlots) {
         std::lock_guard<std::mutex> lock(s_tlsAllocMutex);
         s_tlsAllocatedBits.reset(dwTlsIndex);
+        s_tlsGen[dwTlsIndex].fetch_add(1);
         t_winTlsValues[dwTlsIndex] = nullptr;
         if (t_guestTeb != nullptr) {
             auto* teb = static_cast<uint8_t*>(t_guestTeb);
@@ -8577,6 +8664,9 @@ void* NativeDllInterceptor::win_TlsGetValue(uint32_t dwTlsIndex) {
         return nullptr;
     }
     void* result = nullptr;
+    if (t_tlsGen[dwTlsIndex] != s_tlsGen[dwTlsIndex].load(std::memory_order_relaxed)) {
+        win_TlsSetValue(dwTlsIndex, nullptr);  // liberado y reasignado desde que este hilo lo escribió
+    }
     if (t_guestTeb != nullptr) {
         auto* teb = static_cast<uint8_t*>(t_guestTeb);
         if (t_isGuest64) {
@@ -8614,6 +8704,7 @@ int32_t NativeDllInterceptor::win_TlsSetValue(uint32_t dwTlsIndex, void* lpTlsVa
     }
     ensureUnityTempAllocatorProvisioned(lpTlsValue, dwTlsIndex, t_isGuest64);
     t_winTlsValues[dwTlsIndex] = lpTlsValue;
+    t_tlsGen[dwTlsIndex] = s_tlsGen[dwTlsIndex].load(std::memory_order_relaxed);
     if (t_guestTeb != nullptr) {
         auto* teb = static_cast<uint8_t*>(t_guestTeb);
         if (t_isGuest64) {
@@ -12215,11 +12306,18 @@ void* NativeDllInterceptor::win_OpenSemaphoreW(uint32_t, int32_t, const wchar_t*
 }
 
 void* NativeDllInterceptor::win_CreateMutexW(void* lpMutexAttributes, int32_t bInitialOwner, const wchar_t* lpName) {
-    return win_CreateSemaphoreW(lpMutexAttributes, bInitialOwner ? 0 : 1, 1, lpName);
+    void* h = win_CreateSemaphoreW(lpMutexAttributes, bInitialOwner ? 0 : 1, 1, lpName);
+    std::lock_guard<std::mutex> lk(s_semMutex);
+    auto it = s_semaphores.find(reinterpret_cast<uintptr_t>(h));
+    if (it != s_semaphores.end()) {
+        it->second->isMutex = true;
+        if (bInitialOwner) { it->second->ownerTid = static_cast<int>(gettid()); it->second->recursion = 1; }
+    }
+    return h;
 }
 
 void* NativeDllInterceptor::win_CreateMutexA(void* lpMutexAttributes, int32_t bInitialOwner, const char*) {
-    return win_CreateSemaphoreW(lpMutexAttributes, bInitialOwner ? 0 : 1, 1, nullptr);
+    return win_CreateMutexW(lpMutexAttributes, bInitialOwner, nullptr);
 }
 
 void* NativeDllInterceptor::win_CreateMutexExW(void* lpMutexAttributes, const wchar_t* lpName, uint32_t dwFlags, uint32_t) {
@@ -12233,7 +12331,22 @@ void* NativeDllInterceptor::win_CreateMutexExA(void* lpMutexAttributes, const ch
 }
 
 int32_t NativeDllInterceptor::win_ReleaseMutex(void* hMutex) {
-    return win_ReleaseSemaphore(hMutex, 1, nullptr);
+    s_kernel32Calls.fetch_add(1);
+    std::shared_ptr<WinSemaphoreObj> sem;
+    {
+        std::lock_guard<std::mutex> lk(s_semMutex);
+        auto it = s_semaphores.find(reinterpret_cast<uintptr_t>(hMutex));
+        if (it != s_semaphores.end()) sem = it->second;
+    }
+    if (!sem) { win_SetLastError(6); return 0; }
+    if (!sem->isMutex) return win_ReleaseSemaphore(hMutex, 1, nullptr);
+    std::unique_lock<std::mutex> lock(sem->mtx);
+    if (sem->ownerTid != static_cast<int>(gettid())) { win_SetLastError(288); return 0; }  // ERROR_NOT_OWNER
+    if (--sem->recursion > 0) return 1;
+    sem->ownerTid = 0;
+    sem->count = 1;
+    sem->cv.notify_one();
+    return 1;
 }
 
 void* NativeDllInterceptor::win_OpenMutexW(uint32_t, int32_t, const wchar_t*) {
@@ -12284,18 +12397,19 @@ uint32_t NativeDllInterceptor::win_WaitForSingleObject(void* hHandle, uint32_t d
     }
     if (sem) {
         std::unique_lock<std::mutex> lock(sem->mtx);
-        if (sem->count > 0) {
-            sem->count--;
+        const int tid = static_cast<int>(gettid());
+        if (sem->available(tid)) {
+            sem->take(tid);
             return 0; // WAIT_OBJECT_0
         }
         if (dwMilliseconds == 0) return 0x102; // WAIT_TIMEOUT
         if (dwMilliseconds == 0xFFFFFFFF) {
-            sem->cv.wait(lock, [&]() { return sem->count > 0; });
-            sem->count--;
+            sem->cv.wait(lock, [&]() { return sem->available(tid); });
+            sem->take(tid);
             return 0; // WAIT_OBJECT_0
         }
-        if (sem->cv.wait_for(lock, std::chrono::milliseconds(dwMilliseconds), [&]() { return sem->count > 0; })) {
-            sem->count--;
+        if (sem->cv.wait_for(lock, std::chrono::milliseconds(dwMilliseconds), [&]() { return sem->available(tid); })) {
+            sem->take(tid);
             return 0; // WAIT_OBJECT_0
         }
         return 0x102; // WAIT_TIMEOUT
@@ -12360,8 +12474,9 @@ uint32_t NativeDllInterceptor::win_WaitForMultipleObjects(uint32_t nCount, void*
             auto it = s_semaphores.find(handle);
             if (it != s_semaphores.end()) {
                 std::lock_guard<std::mutex> slock(it->second->mtx);
-                if (it->second->count > 0) {
-                    it->second->count--;
+                const int tid = static_cast<int>(gettid());
+                if (it->second->available(tid)) {
+                    it->second->take(tid);
                     return true;
                 }
                 return false;
@@ -12398,7 +12513,7 @@ uint32_t NativeDllInterceptor::win_WaitForMultipleObjects(uint32_t nCount, void*
                 if (!ready) {
                     std::lock_guard<std::mutex> lk(s_semMutex);
                     auto it = s_semaphores.find(handle);
-                    if (it != s_semaphores.end() && it->second->count > 0) ready = true;
+                    if (it != s_semaphores.end() && it->second->available(static_cast<int>(gettid()))) ready = true;
                 }
                 if (!ready) {
                     std::lock_guard<std::mutex> lk(s_threadMutex);
@@ -14433,6 +14548,23 @@ int32_t NativeDllInterceptor::win_WideCharToMultiByte(uint32_t codePage, uint32_
         return 0;
     }
     auto* in = static_cast<const char16_t*>(lpWideCharStr);
+    {   // Diagnóstico: setprop debug.hyperplay.w2mlog N -> registra los N textos siguientes (ASCII) con su llamador.
+        // La propiedad se relee cada 4096 llamadas: se puede activar en mitad de la partida (setprop ... 50, luego '').
+        static std::atomic<int> s_left{0};
+        static std::atomic<uint32_t> s_calls{0};
+        static std::atomic<int> s_lastProp{0};
+        if ((s_calls.fetch_add(1, std::memory_order_relaxed) & 4095) == 0) {
+            char v[PROP_VALUE_MAX] = {};
+            const int p = __system_property_get("debug.hyperplay.w2mlog", v) > 0 ? std::atoi(v) : 0;
+            if (p != s_lastProp.exchange(p)) s_left.store(p);
+        }
+        if (s_left.load(std::memory_order_relaxed) > 0 && s_left.fetch_sub(1) > 0) {
+            std::string a;
+            for (size_t k = 0; k < 200 && in[k] != 0 && (cchWideChar < 0 || k < static_cast<size_t>(cchWideChar)); ++k)
+                a.push_back(in[k] < 0x80 ? static_cast<char>(in[k]) : '?');
+            LOGI("[W2M] desde 0x%llx: %s", static_cast<unsigned long long>(t_thunkRet), a.c_str());
+        }
+    }
     size_t inLen = 0;
     if (cchWideChar < 0) {
         while (in[inLen] != 0) ++inLen;

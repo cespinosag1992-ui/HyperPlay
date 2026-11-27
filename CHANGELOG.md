@@ -10,6 +10,12 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **32-bit games: DmC now reaches gameplay.** Windows-correct mutexes (owner + recursion; Bink deadlocked on the opening
+  credits), `TlsFree` clears the slot for every thread (PhysX reused stale TLS objects), `ExitThread` really ends 32-bit
+  threads, low (below 4 GB) memory gaps are found from `/proc/self/maps` and small Direct3D 9 allocations share pooled
+  blocks (DmC ran out of low memory while loading a level), and a thread exiting no longer deadlocks JIT range updates.
+  First speed-ups: per-function cached call data and direct native calls from translated 32-bit code (IAT and COM
+  vtable calls). Still slow (about 4-15 FPS).
 - **Overlay: FPS colours show playability, not distance to the cap.** Green from 55 FPS, amber from 30, red only below 30
   (with a low cap such as 30 FPS, green near the cap). A game at 90 FPS with a 120 FPS cap is no longer shown in red.
 - **Branding: the game start screen said "HYPERPLAY".** It now shows the Exedra64 name like the rest of the app.
@@ -81,6 +87,12 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Juegos de 32 bits: DmC ya llega a la partida.** Mutex como en Windows (dueño y recursión; Bink se bloqueaba en los créditos
+  iniciales), `TlsFree` vacía la ranura en todos los hilos (PhysX reutilizaba objetos TLS viejos), `ExitThread` termina de verdad
+  los hilos de 32 bits, los huecos de memoria por debajo de 4 GB se buscan en `/proc/self/maps` y las reservas pequeñas de
+  Direct3D 9 comparten bloques (DmC se quedaba sin memoria baja al cargar un nivel), y un hilo que termina ya no bloquea al
+  JIT. Primeras mejoras de velocidad: datos de llamada en caché por función y llamadas nativas directas desde el código
+  traducido de 32 bits (IAT y vtables COM). Aún va lento (unos 4-15 FPS).
 - **Overlay: los colores de FPS indican si el juego es jugable, no lo lejos que está del tope.** Verde desde 55 FPS, ámbar
   desde 30 y rojo solo por debajo de 30 (con un tope bajo, como 30 FPS, verde cerca del tope). Un juego a 90 FPS con tope 120
   ya no sale en rojo.

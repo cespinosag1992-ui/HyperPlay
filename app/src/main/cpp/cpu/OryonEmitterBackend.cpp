@@ -2772,6 +2772,121 @@ bool OryonEmitterBackend::lookupFastNative(uintptr_t fn, bool& blocking) {
     return true;
 }
 
+std::atomic<uintptr_t> OryonEmitterBackend::fast32AliasBase{0};
+std::atomic<uint32_t (*)(CpuContext*, uint32_t, uint32_t)> OryonEmitterBackend::fast32Indirect{nullptr};
+
+// CALL indirecto de 32 bits a la zona de alias (W16 = destino): guarda el estado invitado en ctx, llama a
+// fast32Indirect(ctx, destino, siguiente) con el hilo marcado "en nativo" (puede esperar), recarga el estado y, si
+// la función nativa cambió el flujo (devuelve != 0: RIP ya en ctx) o se pidió suspender, sale al despachador.
+void OryonEmitterBackend::emitFastIndirect32(uintptr_t nextRip) {
+    const int32_t simdOffset = static_cast<int32_t>(offsetof(CpuContext, simd));
+    for (uint8_t i = 0; i < 8; ++i) {
+        emitStrQ(i, 19, simdOffset + static_cast<int32_t>(i * 16));
+        emitStrQ(static_cast<uint8_t>(i + 16), 19, simdOffset + static_cast<int32_t>((i + 8) * 16));
+    }
+    for (uint8_t i = 0; i < 8; ++i) {
+        emitStpX(static_cast<uint8_t>(i * 2), static_cast<uint8_t>(i * 2 + 1), 19, static_cast<int32_t>(i * 16));
+    }
+    emitCtxRelAddr(17, &runState_);
+    emitMovImm64(0, kInNative);
+    emitWord(0x889FFE20u);  // STLR W0, [X17]
+    emitMovReg(0, 19, true);
+    emitMovReg(1, 16, false);
+    emitMovImm64(2, nextRip);
+    emitMovHostAddr(16, reinterpret_cast<uintptr_t>(fast32Indirect.load(std::memory_order_relaxed)), kJitRelocFastNativeBlocking);
+    emitStpPre(29, 30, 31, -2);
+    emitBlr(16);
+    emitLdpPost(29, 30, 31, 2);
+    emitMovReg(17, 0, false);  // resultado
+    emitCtxRelAddr(16, &runState_);
+    emitMovImm64(0, kRunning);
+    emitWord(0x889FFE00u);  // STLR W0, [X16]
+    for (uint8_t i = 0; i < 8; ++i) {
+        emitLdpX(static_cast<uint8_t>(i * 2), static_cast<uint8_t>(i * 2 + 1), 19, static_cast<int32_t>(i * 16));
+    }
+    for (uint8_t i = 0; i < 8; ++i) {
+        emitLdrQ(i, 19, simdOffset + static_cast<int32_t>(i * 16));
+        emitLdrQ(static_cast<uint8_t>(i + 16), 19, simdOffset + static_cast<int32_t>((i + 8) * 16));
+    }
+    // Flujo cambiado por la función nativa: salida con el RIP que dejó en ctx.
+    const size_t cont = wordPos();
+    emitWord(0x34000011u);  // CBZ W17, sigue (se parchea)
+    flagEvents_.push_back({FlagEventKind::Read, 0, 0});
+    pendingExits_.push_back({wordPos(), false, false});
+    emitWord(0x14000000u);  // B epílogo
+    patchImm19(cont, wordPos());
+    // ¿Suspensión pedida mientras estaba en nativo?
+    emitCtxRelAddr(16, &suspendCount_);
+    emitWord(0x88DFFE10u);  // LDAR W16, [X16]
+    const size_t cbz = wordPos();
+    emitWord(0x34000010u);  // CBZ W16, sigue (se parchea)
+    emitWriteRipImm(nextRip);
+    lastExitDynamic_ = false;
+    pendingExits_.push_back({wordPos(), false, false});
+    emitWord(0x14000000u);  // B epílogo
+    patchImm19(cbz, wordPos());
+}
+
+// 32 bits: la IAT guarda el alias bajo de la función nativa; el interceptor da la función real y su número de
+// palabras stdcall (-1 si no es stdcall con aridad conocida).
+std::atomic<uintptr_t (*)(uintptr_t)> OryonEmitterBackend::fast32Host{nullptr};
+std::atomic<int (*)(uintptr_t)> OryonEmitterBackend::fast32Slots{nullptr};
+
+// call [IAT] de 32 bits -> función de la lista rápida (ver emitFastNativeCall). Los argumentos están en la pila
+// invitada ([ESP], [ESP+4]...: aún no hay dirección de retorno), X0..X3 = esas palabras extendidas con ceros; al
+// volver, EAX = W0 y ESP += 4 * slots (stdcall: limpia la función). Equivale a CALL + RET del huésped.
+void OryonEmitterBackend::emitFastNativeCall32(uintptr_t fn, bool blocking, uintptr_t nextRip, uint32_t slots) {
+    const uint8_t fnKind = blocking ? kJitRelocFastNativeBlocking : kJitRelocFastNative;
+    const int32_t simdOffset = static_cast<int32_t>(offsetof(CpuContext, simd));
+    for (uint8_t i = 0; i < 8; ++i) {
+        emitStrQ(i, 19, simdOffset + static_cast<int32_t>(i * 16));
+        emitStrQ(static_cast<uint8_t>(i + 16), 19, simdOffset + static_cast<int32_t>((i + 8) * 16));
+    }
+    for (uint8_t i = 0; i < 8; ++i) {
+        emitStpX(static_cast<uint8_t>(i * 2), static_cast<uint8_t>(i * 2 + 1), 19, static_cast<int32_t>(i * 16));
+    }
+    if (blocking) {
+        emitMovHostAddr(16, fn, fnKind);
+        emitStrX(16, 19, static_cast<int32_t>(offsetof(CpuContext, nativeFn)));
+        emitCtxRelAddr(16, &runState_);
+        emitMovImm64(17, kInNative);
+        emitWord(0x889FFE11u);  // STLR W17, [X16]
+    }
+    // Argumentos desde [ESP] (X4 = ESP, ya extendido con ceros). LDR Wn también extiende con ceros.
+    emitMovReg(17, 4, true);
+    for (uint8_t i = 0; i < 4; ++i) {
+        if (i < slots) emitLdrW(i, 17, static_cast<int32_t>(4 * i));
+        else emitMovImm64(i, 0);
+    }
+    emitMovHostAddr(16, fn, fnKind);
+    emitStpPre(29, 30, 31, -2);
+    emitBlr(16);
+    emitLdpPost(29, 30, 31, 2);
+    emitMovReg(0, 0, false);  // EAX = W0 (mitad alta a cero)
+    emitStrX(0, 19, static_cast<int32_t>(offsetof(CpuContext, gpr)));
+    if (blocking) {
+        emitCtxRelAddr(16, &runState_);
+        emitMovImm64(17, kRunning);
+        emitWord(0x889FFE11u);  // STLR W17, [X16]
+    }
+    for (uint8_t i = 0; i < 8; ++i) {
+        emitLdpX(static_cast<uint8_t>(i * 2), static_cast<uint8_t>(i * 2 + 1), 19, static_cast<int32_t>(i * 16));
+    }
+    for (uint8_t i = 0; i < 8; ++i) {
+        emitLdrQ(i, 19, simdOffset + static_cast<int32_t>(i * 16));
+        emitLdrQ(static_cast<uint8_t>(i + 16), 19, simdOffset + static_cast<int32_t>((i + 8) * 16));
+    }
+    if (slots > 0) emitAddImm(4, 4, static_cast<uint16_t>(4 * slots), false);  // stdcall: ESP += argumentos
+    emitCtxRelAddr(16, &suspendCount_);
+    emitWord(0x88DFFE10u);  // LDAR W16, [X16]
+    const size_t cbz = wordPos();
+    emitWord(0x34000010u);  // CBZ W16, sigue (se parchea)
+    emitWriteRipImm(nextRip);
+    pendingExits_.push_back({wordPos(), false, false});
+    emitWord(0x14000000u);  // B epílogo
+    patchImm19(cbz, wordPos());
+}
+
 // call [IAT] -> función nativa de la lista rápida, sin salir al despachador:
 //   guarda el estado invitado en ctx, (bloqueante: runState = en nativo), X0..X3 = RCX, RDX,
 //   R8, R9, BLR, RAX = X0, (runState = ejecutando), recarga el estado y, si alguien pidió
@@ -9783,6 +9898,24 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
                     return finish();  // no termina el bloque: sigue la siguiente instrucción
                 }
             }
+            // 32 bits: call dword ptr [IAT] (dirección absoluta) a una función rápida: BLR directo.
+            if (mode32_ && m.isMemory && m.absolute && !m.hasBase && !m.hasIndex && currentSegPrefix_ == 0 &&
+                fastNativeCalls.load(std::memory_order_relaxed)) {
+                auto hostOf = fast32Host.load(std::memory_order_acquire);
+                auto slotsOf = fast32Slots.load(std::memory_order_acquire);
+                const uintptr_t slot = static_cast<uintptr_t>(static_cast<uint32_t>(m.disp));
+                uint32_t alias = 0;
+                iovec local{&alias, 4};
+                iovec remote{reinterpret_cast<void*>(slot), 4};
+                if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != 4) alias = 0;
+                const uintptr_t host = (alias != 0 && hostOf != nullptr) ? hostOf(alias) : 0;
+                bool blocking = false;
+                const int slots = (host != 0 && slotsOf != nullptr) ? slotsOf(host) : -1;
+                if (host != 0 && slots >= 0 && slots <= 4 && lookupFastNative(host, blocking)) {
+                    emitFastNativeCall32(host, blocking, nextRip(), static_cast<uint32_t>(slots));
+                    return finish();
+                }
+            }
             // call reg justo tras "mov reg, imm64" con una función rápida (icalls de Mono).
             if (!mode32_ && !m.isMemory && movImmSeq_ + 1 == instrSeq_ && movImmReg_ == m.rm &&
                 fastNativeCalls.load(std::memory_order_relaxed)) {
@@ -9801,6 +9934,31 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
                 }
             } else {
                 emitMovReg(16, m.rm, operand64);
+            }
+            // 32 bits: CALL indirecto (vtables COM, punteros a función) a una función nativa (zona de alias): se
+            // atiende desde el propio bloque con fast32Indirect, sin salir al despachador (D3D9 en DmC hace
+            // cientos de miles de llamadas por segundo así).
+            if (mode32_ && fastNativeCalls.load(std::memory_order_relaxed) &&
+                fast32AliasBase.load(std::memory_order_relaxed) != 0 &&
+                fast32Indirect.load(std::memory_order_relaxed) != nullptr) {
+                emitMovImm64(17, fast32AliasBase.load(std::memory_order_relaxed));
+                emitSubReg(17, 16, 17, false, false);  // W17 = destino - base
+                emitWord(0x53147E31u);                 // LSR W17, W17, #20 (zona de 1 MB)
+                const size_t notAlias = wordPos();
+                emitWord(0x35000011u);                 // CBNZ W17, normal (se parchea)
+                emitFastIndirect32(nextRip());
+                const size_t done = wordPos();
+                emitWord(0x14000000u);                 // B fin (se parchea)
+                patchImm19(notAlias, wordPos());
+                emitSubImm(4, 4, stackSize, true, false);
+                emitMovImm64(17, nextRip());
+                emitStrW(17, 4, 0);
+                flagEvents_.push_back({FlagEventKind::Read, 0, 0});  // salida: los flags quedan vivos
+                emitStrW(16, 19, static_cast<int32_t>(offsetof(CpuContext, rip)));
+                pendingExits_.push_back({wordPos(), false, false});
+                emitWord(0x14000000u);                 // salida al despachador con RIP = destino
+                patchImm26(done, wordPos());
+                return finish();
             }
             emitSubImm(4, 4, stackSize, true, false);
             emitMovImm64(17, nextRip());
@@ -10442,6 +10600,21 @@ void OryonEmitterBackend::logIfWatchedRip(uintptr_t guestRip) {
     logGuestStackChain("[Watch]");
 }
 
+// ¿v cae en la sección de código de algún módulo PE mapeado? (cabeceras leídas con process_vm_readv; diagnóstico)
+static bool probeModuleText(uint32_t v) {
+    auto baseOf = s_moduleBaseOf.load(std::memory_order_acquire);
+    if (baseOf == nullptr) return false;
+    const uint64_t base = baseOf(v);
+    if (base == 0) return v >= 0x12001000u && v < 0x13F1D000u;
+    uint32_t lfanew = 0;
+    if (!probeReadable(base + 0x3C, 4)) return false;
+    std::memcpy(&lfanew, reinterpret_cast<const void*>(base + 0x3C), 4);
+    uint32_t codeBase = 0, codeSize = 0;
+    if (lfanew > 0x1000 || !probeReadable(base + lfanew + 0x2C, 4)) return false;
+    std::memcpy(&codeSize, reinterpret_cast<const void*>(base + lfanew + 0x1C), 4);  // SizeOfCode
+    std::memcpy(&codeBase, reinterpret_cast<const void*>(base + lfanew + 0x2C), 4);  // BaseOfCode
+    return v >= base + codeBase && v < base + codeBase + codeSize;
+}
 void OryonEmitterBackend::logGuestStackChain(const char* tag) const {
     // Candidatos a dirección de retorno: qwords de la pila que caen en imágenes PE típicas
     // (0x140000000..0x1FFFFFFFF). Sirve para reconstruir la cadena de llamadas sin depurador.
@@ -10458,6 +10631,18 @@ void OryonEmitterBackend::logGuestStackChain(const char* tag) const {
         iovec local{words, want * 8};
         iovec remote{reinterpret_cast<void*>(rsp), want * 8};
         if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(want * 8)) count = want;
+    }
+    if (mode32_) {
+        // 32 bits: palabras de 4 bytes; candidatas las que caen en código (ejecutable y DLL, por debajo del alias
+        // de funciones nativas 0x7F000000).
+        const auto* w32 = reinterpret_cast<const uint32_t*>(words);
+        for (size_t i = 0; i < count * 2 && len + 16 < sizeof(chain); ++i) {
+            const uint32_t v = w32[i];
+            if (v >= 0x10000000u && v < 0x7F000000u && probeModuleText(v))
+                len += static_cast<size_t>(std::snprintf(chain + len, sizeof(chain) - len, " +%x:%x", static_cast<unsigned>(i * 4), v));
+        }
+        LOGE("%s pila (ESP=0x%llx):%s", tag, static_cast<unsigned long long>(rsp), chain);
+        return;
     }
     for (size_t i = 0; i < count && len + 24 < sizeof(chain); ++i) {
         const uint64_t v = words[i];
@@ -11107,11 +11292,12 @@ void OryonEmitterBackend::processSmcDirty() {
 }
 
 void OryonEmitterBackend::forEachBackend(const std::function<void(OryonEmitterBackend&)>& fn) {
+    // El registro se mantiene bloqueado durante el recorrido: un hilo que termina (unregisterCurrentThread)
+    // espera a que acabe en vez de destruir su backend mientras otro hilo lo está usando (con el ExitThread de
+    // 32 bits, VirtualFree se quedaba bloqueado en el mutex de un backend ya destruido: DmC al cargar un nivel).
+    std::lock_guard<std::mutex> lock(s_threadRegistryMutex);
     std::vector<OryonEmitterBackend*> all;
-    {
-        std::lock_guard<std::mutex> lock(s_threadRegistryMutex);
-        for (const auto& kv : s_threadRegistry) all.push_back(kv.second);
-    }
+    for (const auto& kv : s_threadRegistry) all.push_back(kv.second);
     if (s_activeBackend != nullptr && std::find(all.begin(), all.end(), s_activeBackend) == all.end()) {
         all.push_back(s_activeBackend);
     }

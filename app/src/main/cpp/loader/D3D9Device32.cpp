@@ -76,21 +76,65 @@ void* lowSmall(size_t n) {
     return r;
 }
 size_t pageRound(size_t n) { return (n + 0xFFF) & ~size_t{0xFFF}; }
+// Reservas pequeñas (niveles de mip, búferes chicos) en clases de potencia de dos dentro de bloques de 1 MB: con un
+// mmap por nivel cada uno ocupaba 64 KB de espacio bajo 4 GB (un mip 1x1 = 64 KB) y DmC agotaba la memoria baja al
+// cargar un nivel. Las liberadas se reutilizan por clase.
+constexpr size_t kSmallMax = 32768;
+struct SmallPool {
+    std::mutex m;
+    std::vector<uint8_t*> freeList[12];  // 16 B .. 32 KB
+    uint8_t* cur = nullptr;
+    size_t left = 0;
+};
+SmallPool& smallPool() { static SmallPool p; return p; }
+int smallClass(size_t n) {
+    int c = 0;
+    for (size_t s = 16; s < n; s <<= 1) ++c;
+    return c;
+}
+uint8_t* smallAlloc(size_t n) {
+    SmallPool& p = smallPool();
+    const int c = smallClass(n);
+    const size_t sz = size_t{16} << c;
+    std::lock_guard<std::mutex> lk(p.m);
+    if (!p.freeList[c].empty()) {
+        uint8_t* r = p.freeList[c].back();
+        p.freeList[c].pop_back();
+        std::memset(r, 0, sz);
+        return r;
+    }
+    if (p.left < sz) {
+        void* m = lowmem::mmapBelow4G(1u << 20);
+        if (m == MAP_FAILED) return nullptr;
+        p.cur = static_cast<uint8_t*>(m);  // el resto del bloque anterior se pierde (< 32 KB)
+        p.left = 1u << 20;
+    }
+    uint8_t* r = p.cur;
+    p.cur += sz;
+    p.left -= sz;
+    return r;  // memoria nueva de mmap: ya a cero
+}
+void smallFree(uint8_t* ptr, size_t n) {
+    SmallPool& p = smallPool();
+    std::lock_guard<std::mutex> lk(p.m);
+    p.freeList[smallClass(n)].push_back(ptr);
+}
 uint8_t* lowBig(size_t n) {
+    if (n <= kSmallMax) return smallAlloc(std::max<size_t>(n, 1));
     void* p = lowmem::mmapBelow4G(pageRound(std::max<size_t>(n, 1)));
     static std::atomic<int> s_logs{0};
     static const int s_max = [] { char v[PROP_VALUE_MAX] = {}; return __system_property_get("debug.hyperplay.d3d9memlog", v) > 0 ? std::atoi(v) : 0; }();
     if (p != MAP_FAILED && s_logs.fetch_add(1) < s_max) LOGI("memoria de recurso 0x%lx..0x%lx", static_cast<unsigned long>(reinterpret_cast<uintptr_t>(p)), static_cast<unsigned long>(reinterpret_cast<uintptr_t>(p) + n));
     return p == MAP_FAILED ? nullptr : static_cast<uint8_t*>(p);
 }
-// Libera la memoria física pero deja la dirección reservada y sin acceso: si el juego aún guarda un
-// puntero (p. ej. un búfer que sigue escribiendo), falla ahí mismo en vez de corromper lo que otro
-// mmap pondría en esa dirección.
+// Libera la memoria de un recurso (como Windows al destruirlo).
 void freeBig(uint8_t* p, size_t n) {
     if (p == nullptr) return;
+    if (n <= kSmallMax) { smallFree(p, std::max<size_t>(n, 1)); return; }
     const size_t len = pageRound(std::max<size_t>(n, 1));
-    madvise(p, len, MADV_DONTNEED);
-    mprotect(p, len, PROT_NONE);
+    // Se devuelve también el espacio de direcciones: por debajo de 4 GB no sobra (DmC agotaba la memoria baja
+    // al cargar un nivel con todas las texturas liberadas aún reservadas).
+    munmap(p, len);
     static std::atomic<uint64_t> s_freed{0};
     const uint64_t total = s_freed.fetch_add(len) + len;
     if ((total >> 26) != ((total - len) >> 26)) LOGI("memoria de recursos liberada: %llu MB", static_cast<unsigned long long>(total >> 20));

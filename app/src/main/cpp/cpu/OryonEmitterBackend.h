@@ -577,6 +577,8 @@ private:
     void emitProbeCall(uintptr_t rip);
     void emitFastNativeCall(uintptr_t fn, bool blocking, uintptr_t nextRip, bool tailCall = false,
                             uintptr_t iatSlot = 0);
+    void emitFastNativeCall32(uintptr_t fn, bool blocking, uintptr_t nextRip, uint32_t slots);
+    void emitFastIndirect32(uintptr_t nextRip);
 
 public:
     /// Función nativa (wrapper Win32 de HyperPlay) que el JIT puede llamar directamente desde el
@@ -590,6 +592,13 @@ public:
     static bool lookupFastNative(uintptr_t fn, bool& blocking);
     // Llamadas nativas directas (setprop debug.hyperplay.fastnative 0 las desactiva).
     static inline std::atomic<bool> fastNativeCalls{true};
+    // 32 bits: alias de la IAT -> función nativa y su número de palabras stdcall (-1 si no aplica). Los fija el interceptor.
+    static std::atomic<uintptr_t (*)(uintptr_t)> fast32Host;
+    static std::atomic<int (*)(uintptr_t)> fast32Slots;
+    // CALL indirecto a la zona de alias (1 MB desde fast32AliasBase): fast32Indirect(ctx, destino, siguiente) hace
+    // la llamada nativa completa; devuelve 0 si se sigue en la instrucción siguiente.
+    static std::atomic<uintptr_t> fast32AliasBase;
+    static std::atomic<uint32_t (*)(CpuContext*, uint32_t, uint32_t)> fast32Indirect;
 
 private:
     void linkExit(uint64_t site, const void* targetHost, uintptr_t targetRip);
