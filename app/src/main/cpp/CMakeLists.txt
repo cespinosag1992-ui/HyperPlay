@@ -20,6 +20,7 @@ add_library(hyperplay SHARED
     loader/NativeSteamStub.cpp
     loader/SteamEmu32.cpp
     loader/D3D9Probe32.cpp
+    loader/D3D9Device32.cpp
     loader/DirectSound32.cpp
     loader/DirectInput32.cpp
     loader/FramePacing.cpp

@@ -463,8 +463,8 @@ u32 Dev_CreateSoundBuffer(u32, u32 desc, u32 ppBuf, u32) {
 }
 u32 Dev_GetCaps(u32, u32 caps) {
     if (caps == 0) return kPointer;
-    const u32 size = rd32(caps);
-    std::memset(G<void>(caps + 4), 0, (size >= 8 ? size : 96) - 4);
+    // DSCAPS mide 96 bytes; no se confía en dwSize (puede venir sin inicializar).
+    std::memset(G<void>(caps + 4), 0, 92);
     put32(caps + 4, 0xF1Fu);  // PRIMARY/SECONDARY MONO|STEREO|8BIT|16BIT, CONTINUOUSRATE
     put32(caps + 8, 100);     // dwMinSecondarySampleRate
     put32(caps + 12, 200000); // dwMaxSecondarySampleRate

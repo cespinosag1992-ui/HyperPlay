@@ -59,6 +59,7 @@
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -1958,6 +1959,7 @@ void NativeDllInterceptor::init(LoadedPeImage* image) {
     // raíz y el .exe se presenta en D:\Binaries\Win32\. Unreal colapsa "<base>\..\..\" y con la base en D:\
     // perdía la unidad ("DevilGame\CookedPCConsole\Core.upk" relativo). 64 bits: sin cambios.
     BionicPeLoader::setExeSubdir({});
+    if (image != nullptr && image->is32Bit) OryonEmitterBackend::armWriteWatchFromProperty();
     if (image != nullptr && image->is32Bit &&
         access((image->gameDir + "/../../Engine/Config/BaseEngine.ini").c_str(), F_OK) == 0) {
         const size_t s1 = image->gameDir.find_last_of('/');
@@ -3805,6 +3807,39 @@ static int32_t hp_UrlUnescapeW(char16_t* url, char16_t* out, uint32_t* cch, uint
 // Resto de importaciones de clr.dll (.NET Framework 4, 32 bits). Firmas exactas: en stdcall una
 // aridad equivocada desbalancea la pila. Solo se resuelven para invitados de 32 bits.
 // ---------------------------------------------------------------------------------------------
+// Cola de mensajes por hilo para invitados de 32 bits (PostThreadMessage / GetMessage). Unreal 3 tiene
+// un hilo que espera en GetMessage las órdenes de instalar/quitar su gancho de teclado.
+namespace threadmsg {
+struct Msg { uint32_t hwnd, message, wParam, lParam; };
+std::mutex g_m;
+std::condition_variable g_cv;
+std::unordered_map<uint32_t, std::deque<Msg>> g_queues;
+bool post(uint32_t tid, uint32_t msg, uint32_t w, uint32_t l) {
+    {
+        std::lock_guard<std::mutex> lk(g_m);
+        g_queues[tid].push_back({0, msg, w, l});
+    }
+    g_cv.notify_all();
+    return true;
+}
+// Bloquea hasta que haya un mensaje para este hilo; devuelve 0 con WM_QUIT.
+int32_t get(uint32_t lpMsg) {
+    const uint32_t tid = static_cast<uint32_t>(gettid());
+    std::unique_lock<std::mutex> lk(g_m);
+    g_cv.wait(lk, [&] { auto it = g_queues.find(tid); return it != g_queues.end() && !it->second.empty(); });
+    const Msg m = g_queues[tid].front();
+    g_queues[tid].pop_front();
+    lk.unlock();
+    if (lpMsg != 0) {
+        const uint32_t out[7] = {m.hwnd, m.message, m.wParam, m.lParam, static_cast<uint32_t>(monoMs()), 0, 0};
+        std::memcpy(reinterpret_cast<void*>(static_cast<uintptr_t>(lpMsg)), out, sizeof(out));
+    }
+    return m.message == 0x0012 ? 0 : 1;  // WM_QUIT
+}
+// ShowCursor: contador de visualización (empieza en 0: hay "ratón").
+std::atomic<int32_t> g_cursorCount{0};
+}  // namespace threadmsg
+
 namespace w32more {
 constexpr int32_t kENotImpl = static_cast<int32_t>(0x80004001u);
 constexpr int32_t kEInvalidArg = static_cast<int32_t>(0x80070057u);
@@ -4543,6 +4578,21 @@ uint32_t InetTrue4(uint32_t, uint32_t, uint32_t, uint32_t) { return 1; }
 uint32_t InetClose1(uint32_t) { return 1; }
 uint32_t InetCallback2(uint32_t, uint32_t) { return 0; }
 // Consola (stdcall): sin ventana de consola; OutputDebugStringA va a logcat.
+// PIX (d3d9.dll!D3DPERF_*, stdcall): sin herramienta de perfilado, como en un PC normal.
+uint32_t PerfBeginEvent(uint32_t, uint32_t) { return 0; }
+uint32_t PerfEndEvent() { return 0; }
+void PerfMarker(uint32_t, uint32_t) {}
+void PerfSetOptions(uint32_t) {}
+uint32_t PerfZero0() { return 0; }
+// PostThreadMessageW/A(idThread, msg, wParam, lParam): los mensajes a hilos no se entregan todavía.
+uint32_t PostThreadMessage4(uint32_t tid, uint32_t msg, uint32_t w, uint32_t l) { return threadmsg::post(tid, msg, w, l) ? 1u : 0u; }
+// GetCursorInfo(PCURSORINFO): cursor oculto en (0,0).
+uint32_t GetCursorInfo1(uint32_t info) {
+    if (info == 0) return 0;
+    auto* p = reinterpret_cast<uint32_t*>(static_cast<uintptr_t>(info));
+    p[1] = 0; p[2] = 0; p[3] = 0; p[4] = 0;  // flags, hCursor, ptScreenPos
+    return 1;
+}
 uint32_t GetConsoleWindow0() { return 0; }
 uint32_t GetConsoleScreenBufferInfo2(uint32_t, uint32_t) { NativeDllInterceptor::win_SetLastError(6); return 0; }
 void OutputDebugStringA1(const char* s) {
@@ -4563,6 +4613,12 @@ void* resolve(const std::string& dll, const std::string& fn) {
         {"InternetReadFile", w32arity::hpFn(&InetFalse4)}, {"InternetQueryOptionW", w32arity::hpFn(&InetFalse4)},
         {"InternetCrackUrlW", w32arity::hpFn(&InetFalse4)}, {"InternetSetOptionW", w32arity::hpFn(&InetTrue4)},
         {"InternetCloseHandle", w32arity::hpFn(&InetClose1)},
+        {"D3DPERF_BeginEvent", w32arity::hpFn(&PerfBeginEvent)}, {"D3DPERF_EndEvent", w32arity::hpFn(&PerfEndEvent)},
+        {"D3DPERF_SetMarker", w32arity::hpFn(&PerfMarker)}, {"D3DPERF_SetRegion", w32arity::hpFn(&PerfMarker)},
+        {"D3DPERF_SetOptions", w32arity::hpFn(&PerfSetOptions)}, {"D3DPERF_QueryRepeatFrame", w32arity::hpFn(&PerfZero0)},
+        {"D3DPERF_GetStatus", w32arity::hpFn(&PerfZero0)},
+        {"PostThreadMessageW", w32arity::hpFn(&PostThreadMessage4)}, {"PostThreadMessageA", w32arity::hpFn(&PostThreadMessage4)},
+        {"GetCursorInfo", w32arity::hpFn(&GetCursorInfo1)},
         {"GetConsoleWindow", w32arity::hpFn(&GetConsoleWindow0)},
         {"GetConsoleScreenBufferInfo", w32arity::hpFn(&GetConsoleScreenBufferInfo2)},
         {"OutputDebugStringA", w32arity::hpFn(&OutputDebugStringA1)},
@@ -4952,6 +5008,27 @@ void* resolve(const std::string& fn) {
 static void* resolvePeExport(void* base, const PeInfo& pe, const char* lpProcName, int depth);
 static void ensureGuestGl();
 
+
+
+// Funciones de mensajes de ventana con la firma de 32 bits (stdcall, WPARAM/LPARAM de 4 bytes).
+namespace msg32 {
+uint32_t Post4(uint32_t, uint32_t, uint32_t, uint32_t) { return 1; }
+uint32_t Send4(uint32_t, uint32_t, uint32_t, uint32_t) { return 0; }
+uint32_t CallProc5(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return 0; }
+uint32_t SendTimeout7(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t result) {
+    if (result != 0) { const uint32_t z = 0; std::memcpy(reinterpret_cast<void*>(static_cast<uintptr_t>(result)), &z, 4); }
+    return 1;
+}
+void* resolve(const std::string& fn) {
+    if (fn == "PostMessageW" || fn == "PostMessageA" || fn == "SendNotifyMessageW" || fn == "SendNotifyMessageA")
+        return w32arity::hpFn(&Post4);
+    if (fn == "SendMessageW" || fn == "SendMessageA" || fn == "DefWindowProcW" || fn == "DefWindowProcA")
+        return w32arity::hpFn(&Send4);
+    if (fn == "CallWindowProcW" || fn == "CallWindowProcA") return w32arity::hpFn(&CallProc5);
+    if (fn == "SendMessageTimeoutW" || fn == "SendMessageTimeoutA") return w32arity::hpFn(&SendTimeout7);
+    return nullptr;
+}
+}  // namespace msg32
 namespace guestcwd {  // definido más abajo
 uint32_t SetCurrentDirectoryA(const char* p);
 uint32_t GetCurrentDirectoryA(uint32_t len, char* buf);
@@ -5352,7 +5429,9 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     }
 
     // 4. User32 (Windows & Messages)
-    if (!result && dll == "user32.dll") {
+    // 32 bits: WPARAM/LPARAM miden 4 bytes. Las versiones de 64 bits (uint64_t/int64_t) sacaban 2 huecos
+    // de pila por cada uno (PostMessageW de Unreal 3 dejaba ESP 4 bytes desplazado: fallo /GS).
+    if (!result && s_activeImage != nullptr && s_activeImage->is32Bit && dll == "user32.dll") result = msg32::resolve(funcName);    if (!result && dll == "user32.dll") {
         s_otherCalls.fetch_add(1);
         if (funcName == "CreateWindowExW") result = w32arity::hpFn(&win_CreateWindowExW);
         else if (funcName == "LoadStringW") result = w32arity::hpFn(&win_LoadStringW);
@@ -5722,7 +5801,9 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         ensureGuestGl();
         result = guestgl::glProcAddr(funcName.c_str());
     }
-    if (!result && dll == "user32.dll") {
+    // 32 bits: WPARAM/LPARAM miden 4 bytes. Las versiones de 64 bits (uint64_t/int64_t) sacaban 2 huecos
+    // de pila por cada uno (PostMessageW de Unreal 3 dejaba ESP 4 bytes desplazado: fallo /GS).
+    if (!result && s_activeImage != nullptr && s_activeImage->is32Bit && dll == "user32.dll") result = msg32::resolve(funcName);    if (!result && dll == "user32.dll") {
         ensureGuestGl();
         result = guestgl::user32ProcAddr(funcName.c_str());
     }
@@ -6058,6 +6139,7 @@ int32_t NativeDllInterceptor::win_VirtualFree(void* lpAddress, size_t dwSize, ui
             if (s_unknownFrees.fetch_add(1) < 20) LOGW("VirtualFree(MEM_RELEASE) de %p no registrado: se ignora", lpAddress);
             return 1;
         }
+        OryonEmitterBackend::noteUnmap(reinterpret_cast<uintptr_t>(unmapBase), size, "VirtualFree(MEM_RELEASE)", t_thunkRet);
         if (munmap(unmapBase, size) != 0) return 0;
         erasePageProt(reinterpret_cast<uintptr_t>(unmapBase), size);
         if (auto* b = OryonEmitterBackend::activeBackend(); b != nullptr) {
@@ -6795,6 +6877,7 @@ int32_t NativeDllInterceptor::win_UnmapViewOfFile(const void* lpBaseAddress) {
         }
     }
     if (sizeToUnmap > 0) {
+        OryonEmitterBackend::noteUnmap(addr, sizeToUnmap, "UnmapViewOfFile", t_thunkRet);
         ::munmap(const_cast<void*>(lpBaseAddress), sizeToUnmap);
         return 1;
     }
@@ -8608,8 +8691,10 @@ void* NativeDllInterceptor::win_SetCursor(void* hCursor) {
     return hCursor;
 }
 
-int32_t NativeDllInterceptor::win_ShowCursor(int32_t) {
+int32_t NativeDllInterceptor::win_ShowCursor(int32_t bShow) {
     s_otherCalls.fetch_add(1);
+    // 32 bits: contador real (Unreal 3 hace while (ShowCursor(FALSE) >= 0) para ocultarlo).
+    if (s_activeImage != nullptr && s_activeImage->is32Bit) return bShow ? ++threadmsg::g_cursorCount : --threadmsg::g_cursorCount;
     return 0;
 }
 
@@ -8992,8 +9077,10 @@ int32_t NativeDllInterceptor::win_TranslateMessage(const void*) {
     return 1;
 }
 
-int32_t NativeDllInterceptor::win_GetMessageW(void*, void*, uint32_t, uint32_t) {
+int32_t NativeDllInterceptor::win_GetMessageW(void* lpMsg, void*, uint32_t, uint32_t) {
     s_otherCalls.fetch_add(1);
+    // 32 bits: espera real en la cola del hilo (antes devolvía 1 al instante: bucle al 100 % de CPU).
+    if (s_activeImage != nullptr && s_activeImage->is32Bit) return threadmsg::get(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(lpMsg)));
     return 1;
 }
 
@@ -11154,6 +11241,18 @@ bool NativeDllInterceptor::prepareGuestException32(CpuContext& ctx, uint32_t cod
     static std::atomic<int> s_logs{0};
     if (s_logs.fetch_add(1) < 40) {
         LOGI("[SEH32] fallo hardware 0x%08x en EIP=0x%x dir=0x%x -> despachador", code, eip, address);
+        // Pila en el fallo: direcciones de retorno candidatas (para saber quién llamó).
+        std::string words;
+        for (uint32_t k = 0; k < 24; ++k) {
+            if (!isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{esp + 4 * k}), 4)) break;
+            char w[12];
+            std::snprintf(w, sizeof(w), " %08x", seh32::rd32(esp + 4 * k));
+            words += w;
+        }
+        LOGI("[SEH32]   EAX=%x EBX=%x ECX=%x EDX=%x ESI=%x EDI=%x EBP=%x ESP=%x pila:%s",
+             static_cast<uint32_t>(ctx.gpr[0]), static_cast<uint32_t>(ctx.gpr[3]), static_cast<uint32_t>(ctx.gpr[1]),
+             static_cast<uint32_t>(ctx.gpr[2]), static_cast<uint32_t>(ctx.gpr[6]), static_cast<uint32_t>(ctx.gpr[7]),
+             static_cast<uint32_t>(ctx.gpr[5]), esp, words.c_str());
     }
     ctx.gpr[4] = newEsp;
     ctx.rip = stub;

@@ -10828,10 +10828,92 @@ void OryonEmitterBackend::landFromFault() {
     std::longjmp(*faultJmp_, 1);
 }
 
+// --- Vigía de escritura (diagnóstico) -------------------------------------------------------
+namespace {
+std::atomic<uintptr_t> s_watchLo{0}, s_watchHi{0}, s_watchExactLo{0}, s_watchExactHi{0};
+std::atomic<bool> s_watchArmed{false};
+std::atomic<int> s_watchLogs{0};
+std::atomic<uint64_t> s_watchHits{0}, s_watchArms{0};
+}  // namespace
+
+void OryonEmitterBackend::armWriteWatchFromProperty() {
+#if defined(__ANDROID__)
+    char buf[PROP_VALUE_MAX] = {};
+    if (__system_property_get("debug.hyperplay.wwatch", buf) <= 0) return;
+    char* end = nullptr;
+    const uintptr_t addr = std::strtoull(buf, &end, 16);
+    const size_t len = (end != nullptr && *end == ',') ? std::strtoull(end + 1, nullptr, 16) : 0x1000;
+    if (addr == 0 || len == 0) return;
+    const uintptr_t lo = addr & ~uintptr_t{0xFFF};
+    const uintptr_t hi = (addr + len + 0xFFF) & ~uintptr_t{0xFFF};
+    s_watchLo.store(lo);
+    s_watchHi.store(hi);
+    s_watchExactLo.store(addr);
+    s_watchExactHi.store(addr + len);
+    LOGI("[Vigía] escrituras en 0x%lx..0x%lx", static_cast<unsigned long>(lo), static_cast<unsigned long>(hi));
+    std::thread([] {
+        for (int i = 0; i < 200000; ++i) {  // ~60 s
+            // La página puede no existir aún: se reintenta hasta que mprotect funcione.
+            if (!s_watchArmed.load() &&
+                mprotect(reinterpret_cast<void*>(s_watchLo.load()), s_watchHi.load() - s_watchLo.load(), PROT_READ) == 0) {
+                s_watchArmed.store(true);
+                if (s_watchArms.fetch_add(1) == 0) LOGI("[Vigía] armado");
+            }
+            if ((i % 3333) == 0) {
+                // ¿Sigue protegida? (un VirtualAlloc/mmap encima la desprotege sin avisar)
+                LOGI("[Vigía] armados=%llu escrituras=%llu", static_cast<unsigned long long>(s_watchArms.load()),
+                     static_cast<unsigned long long>(s_watchHits.load()));
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(300));
+        }
+        mprotect(reinterpret_cast<void*>(s_watchLo.load()), s_watchHi.load() - s_watchLo.load(), PROT_READ | PROT_WRITE);
+        s_watchLo.store(0);
+        s_watchHi.store(0);
+    }).detach();
+#endif
+}
+
+void OryonEmitterBackend::noteUnmap(uint64_t base, uint64_t size, const char* who, uint64_t rip) {
+    // Rango propio: setprop debug.hyperplay.uwatch <dir>,<bytes> (sin proteger páginas).
+    static const std::pair<uint64_t, uint64_t> s_range = [] {
+        char buf[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.uwatch", buf) <= 0) return std::pair<uint64_t, uint64_t>{0, 0};
+        char* end = nullptr;
+        const uint64_t a = std::strtoull(buf, &end, 16);
+        const uint64_t l = (end != nullptr && *end == ',') ? std::strtoull(end + 1, nullptr, 16) : 0x1000;
+        return std::pair<uint64_t, uint64_t>{a, a + l};
+    }();
+    const uint64_t lo = s_range.first, hi = s_range.second;
+    if (lo == 0 || base + size <= lo || base >= hi) return;
+    LOGI("[Vigía] %s libera 0x%llx..0x%llx (contiene la zona vigilada) desde RIP=0x%llx", who,
+         static_cast<unsigned long long>(base), static_cast<unsigned long long>(base + size), static_cast<unsigned long long>(rip));
+    s_watchArmed.store(false);
+}
+
+bool OryonEmitterBackend::handleWriteWatch(uint64_t address, uint64_t rip) {
+    const uintptr_t lo = s_watchLo.load(), hi = s_watchHi.load();
+    if (lo == 0 || address < lo || address >= hi) return false;
+    s_watchHits.fetch_add(1);
+    if (address >= s_watchExactLo.load() && address < s_watchExactHi.load() && s_watchLogs.fetch_add(1) < 400)
+        LOGI("[Vigía] escritura en 0x%llx desde RIP=0x%llx", static_cast<unsigned long long>(address),
+             static_cast<unsigned long long>(rip));
+    mprotect(reinterpret_cast<void*>(lo), hi - lo, PROT_READ | PROT_WRITE);
+    s_watchArmed.store(false);
+    return true;
+}
+
 bool OryonEmitterBackend::deliverPendingFault() {
     if (!pendingFault_.valid) return false;
     const PendingFault f = pendingFault_;
     pendingFault_.valid = false;
+    // Vigía de escritura: se registra y se repite la instrucción (la página ya es escribible).
+    if (f.access == 1 && handleWriteWatch(f.address, f.rip)) {
+        std::memcpy(ctx_.gpr, f.gpr, sizeof(ctx_.gpr));
+        std::memcpy(ctx_.simd, f.simd, sizeof(ctx_.simd));
+        ctx_.rip = f.rip;
+        if (mode32_) for (int i = 0; i < 16; ++i) ctx_.gpr[i] &= 0xFFFFFFFFull;
+        return true;
+    }
     if (exceptionDepth_ >= 8) return false;  // excepciones anidadas sin fin
     struct DepthGuard {
         int& d;

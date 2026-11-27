@@ -119,8 +119,8 @@ u32 DI_ConfigureDevices(u32, u32, u32, u32, u32) { return kUnsupported; }
 // --- IDirectInputDevice8W ---
 u32 D_GetCapabilities(u32 t, u32 caps) {
     if (caps == 0) return 0x80004003u;
-    const u32 size = rd32(caps);
-    if (size >= 44) std::memset(G<void>(caps + 4), 0, size - 4);
+    // DIDEVCAPS mide 44 bytes; no se confía en dwSize.
+    std::memset(G<void>(caps + 4), 0, 40);
     put32(caps + 4, 0x1);  // DIDC_ATTACHED
     put32(caps + 8, G<Obj>(t)->kind == 1 ? 0x13 : 0x12);  // DI8DEVTYPE_KEYBOARD / MOUSE
     put32(caps + 12, G<Obj>(t)->kind == 1 ? 0 : 3);       // dwAxes

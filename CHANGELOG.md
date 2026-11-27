@@ -10,6 +10,13 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **32-bit games: Direct3D 9 device (stage 1, no drawing yet).** `IDirect3DDevice9` with all 119 methods and
+  its resources (textures, cube/volume textures, surfaces, vertex/index buffers, shaders, declarations, queries,
+  swap chain) in low memory with real `Lock`/`Unlock` memory; `Present` keeps a 60 Hz pace. DmC now creates
+  its D3D9 device. Also for 32-bit games: window-message functions with 4-byte `WPARAM`/`LPARAM` (`PostMessageW`
+  shifted the stack), a real `ShowCursor` counter, a per-thread message queue (`PostThreadMessage`/`GetMessage`
+  no longer spin), PIX/cursor stubs with exact signatures. New diagnostics: write watch (`debug.hyperplay.wwatch`)
+  and unmap watch (`debug.hyperplay.uwatch`).
 - **32-bit games: audio and input foundations (DmC).** New DirectSound 8 over AAudio and 32-bit proxies for
   the WASAPI device objects (Wwise in DmC), and a minimal DirectInput 8 (keyboard/mouse devices without data;
   controllers keep using XInput). Fixed `CoCreateInstance` clearing 8 bytes of a 32-bit out-pointer (it
@@ -47,6 +54,13 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Juegos de 32 bits: dispositivo Direct3D 9 (etapa 1, aún sin dibujar).** `IDirect3DDevice9` con sus 119 métodos
+  y sus recursos (texturas, cubos/volúmenes, superficies, búferes de vértices/índices, shaders, declaraciones,
+  consultas, cadena de intercambio) en memoria baja con memoria real en `Lock`/`Unlock`; `Present` mantiene
+  60 Hz. DmC ya crea su dispositivo D3D9. Además, en 32 bits: funciones de mensajes de ventana con `WPARAM`/`LPARAM`
+  de 4 bytes (`PostMessageW` desplazaba la pila), contador real de `ShowCursor`, cola de mensajes por hilo
+  (`PostThreadMessage`/`GetMessage` ya no giran en vacío) y stubs de PIX/cursor con firma exacta. Nuevos
+  diagnósticos: vigía de escrituras (`debug.hyperplay.wwatch`) y de liberaciones (`debug.hyperplay.uwatch`).
 - **Juegos de 32 bits: base de audio y entrada (DmC).** Nuevo DirectSound 8 sobre AAudio y proxies de 32 bits
   para los objetos de dispositivo WASAPI (Wwise en DmC), y un DirectInput 8 mínimo (teclado/ratón sin datos;
   los mandos siguen por XInput). Corregido `CoCreateInstance`, que borraba 8 bytes de un puntero de salida de

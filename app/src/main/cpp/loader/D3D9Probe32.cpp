@@ -5,6 +5,8 @@
 // El orden de la vtable es el de d3d9.h (IDirect3D9, 17 métodos).
 
 #include "D3D9Probe32.h"
+#include "D3D9Device32.h"
+#include "cpu/OryonEmitterBackend.h"
 
 #include <android/log.h>
 #include <sys/mman.h>
@@ -142,10 +144,20 @@ u32 GetDeviceCaps(u32, u32 adapter, u32 deviceType, u32 out) {
     return kOk;
 }
 u32 GetAdapterMonitor(u32, u32 adapter) { return adapter == 0 ? g_display.monitor : 0; }
-u32 CreateDevice(u32, u32, u32, u32, u32, u32, u32 ppDevice) {
-    if (ppDevice != 0) std::memset(P(ppDevice), 0, 4);
-    LOGW("IDirect3D9::CreateDevice: sin dispositivo D3D9 (el juego debe usar Direct3D 11)");
-    return kNotAvailable;
+u32 CreateDevice(u32 self, u32 adapter, u32 type, u32 hwnd, u32 flags, u32 pp, u32 ppDevice) {
+    if (ppDevice == 0 || pp == 0) return kInvalidCall;
+    d3d9dev32::CreateParams cp;
+    cp.direct3d = self;
+    cp.adapter = adapter;
+    cp.deviceType = type;
+    cp.focusWindow = hwnd;
+    cp.behaviorFlags = flags;
+    cp.presentParams = pp;
+    cp.screenWidth = g_display.width;
+    cp.screenHeight = g_display.height;
+    const u32 dev = d3d9dev32::createDevice(cp);
+    std::memcpy(P(ppDevice), &dev, 4);
+    return dev != 0 ? kOk : kNotAvailable;
 }
 
 u32 buildObject() {
@@ -194,6 +206,9 @@ u32 Direct3DCreate9(u32 sdkVersion) {
 }
 
 }  // namespace
+
+void fillCaps(uint32_t deviceType, uint32_t out) { (void)GetDeviceCaps(0, 0, deviceType, out); }
+Display display() { return g_display; }
 
 void* resolve(const std::string& name, const Display& display) {
     g_display = display;

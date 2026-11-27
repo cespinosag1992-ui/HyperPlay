@@ -256,6 +256,12 @@ public:
     // Rangos ejecutables del PROCESO (VirtualAlloc/VirtualProtect/VirtualFree): se aplican a
     // todos los backends de hilo, no solo al principal.
     static void addExecutableRangeAll(uintptr_t base, size_t size);
+    // Diagnóstico (setprop debug.hyperplay.wwatch <dir>,<bytes>): protege esas páginas del invitado como solo
+    // lectura y registra cada escritura del invitado (RIP y dirección) antes de dejarla pasar.
+    static void armWriteWatchFromProperty();
+    static bool handleWriteWatch(uint64_t address, uint64_t rip);
+    // Aviso si un VirtualFree/UnmapViewOfFile libera la zona vigilada (quién la desmapea).
+    static void noteUnmap(uint64_t base, uint64_t size, const char* who, uint64_t rip);
     static void removeExecutableRangeAll(uintptr_t base, size_t size);
     static void invalidateCodeRangeAll(uintptr_t base, size_t size);
     /// Base del módulo PE que contiene una dirección (lo da el cargador; para la sonda de diagnóstico).

@@ -18,4 +18,10 @@ struct Display {
 // Exportación de d3d9.dll para un invitado de 32 bits (nullptr si no está implementada).
 void* resolve(const std::string& name, const Display& display);
 
+// D3DCAPS9 (304 bytes) en memoria del invitado (lo usa también IDirect3DDevice9::GetDeviceCaps).
+void fillCaps(uint32_t deviceType, uint32_t out);
+
+// Pantalla actual (modo de escritorio) para el dispositivo.
+Display display();
+
 }  // namespace hyperplay::d3d9probe32
