@@ -7336,6 +7336,14 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
         else emitStrW(16, 4, 0);
         return finish();
     }
+    // --- XLAT (D7): AL = [rBX + AL sin signo]. msvcr100 lo usa para clasificar valores x87 (FXAM).
+    if (op == 0xD7) {
+        emitUbfx(16, 0, 0, 8);
+        emitAddReg(16, 3, 16, false, !mode32_);
+        emitLdrB(16, 16, 0);
+        emitBfi(0, 16, 0, 8);
+        return finish();
+    }
     // --- LAHF (9F): AH = SF ZF 0 AF 0 PF 1 CF.  SAHF (9E): SF ZF AF PF CF = AH (OF y DF no cambian).
     // Los usa el código que genera el JIT de .NET Framework (comparaciones de coma flotante x87).
     if (op == 0x9F) {

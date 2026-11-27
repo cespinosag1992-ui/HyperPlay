@@ -2725,6 +2725,61 @@ static bool unityHookLogBudget() {
     return s_count.fetch_add(1, std::memory_order_relaxed) < 300;
 }
 
+// Aridad stdcall (palabras de 32 bits; DWORD64 = 2) y retorno de los stubs de 32 bits de funciones de sistema
+// que no implementamos. Un stub "cdecl" en una función stdcall deja la pila del llamador descuadrada.
+static bool stub32Arity(const std::string& fn, uint32_t& slots, uint32_t& ret) {
+    struct E { uint8_t slots; uint32_t ret; };
+    constexpr uint32_t kInvalid = 0xFFFFFFFFu, kFail = 0x80004005u;
+    static const std::unordered_map<std::string, E> s_table = {
+        // KERNEL32
+        {"SetConsoleTitleW", {1, 1}}, {"SetConsoleTitleA", {1, 1}}, {"PulseEvent", {1, 1}}, {"TerminateThread", {2, 1}},
+        {"CreateProcessW", {10, 0}}, {"CreateProcessA", {10, 0}}, {"SetDllDirectoryW", {1, 1}}, {"SetDllDirectoryA", {1, 1}},
+        {"ReadDirectoryChangesW", {8, 0}}, {"GetTempFileNameW", {4, 0}}, {"GetTempFileNameA", {4, 0}},
+        {"SetProcessAffinityMask", {2, 1}}, {"FindFirstFileA", {2, kInvalid}}, {"FindNextFileA", {2, 0}},
+        {"SetConsoleTextAttribute", {2, 1}}, {"AllocConsole", {0, 0}}, {"FreeConsole", {0, 1}},
+        {"SetConsoleScreenBufferSize", {2, 1}}, {"CompareStringA", {6, 2}}, {"SetPriorityClass", {2, 1}},
+        {"GetPriorityClass", {1, 0x20}}, {"GetFileTime", {4, 0}}, {"RtlCaptureStackBackTrace", {4, 0}},
+        {"GetFullPathNameA", {4, 0}}, {"GlobalSize", {1, 0}},
+        // GDI32
+        {"GetTextMetricsW", {2, 0}}, {"CreateSolidBrush", {1, 0}}, {"GetGlyphOutlineW", {7, kInvalid}}, {"BitBlt", {9, 0}},
+        {"GetDIBits", {7, 0}}, {"SetTextColor", {2, 0}}, {"TextOutW", {5, 0}}, {"GetTextExtentPoint32W", {4, 0}},
+        {"SetBkMode", {2, 0}}, {"CreateFontW", {14, 0}}, {"GetStockObject", {1, 0}}, {"CreateFontIndirectW", {1, 0}},
+        {"GetGlyphIndicesW", {5, kInvalid}}, {"SetBkColor", {2, kInvalid}}, {"GetPixel", {3, kInvalid}},
+        {"CreateCompatibleBitmap", {3, 0}},
+        // ole32
+        {"StringFromCLSID", {2, kFail}}, {"CoSetProxyBlanket", {8, 0}}, {"OleGetClipboard", {1, kFail}},
+        {"ReleaseStgMedium", {1, 0}},
+        // dbghelp (solo informes de fallo)
+        {"SymGetSymFromAddr64", {5, 0}}, {"SymGetLineFromAddr64", {5, 0}}, {"SymGetModuleInfo64", {4, 0}},
+        {"SymSetSearchPath", {2, 0}}, {"SymGetModuleBase64", {3, 0}}, {"SymLoadModule64", {7, 0}}, {"SymSetOptions", {1, 0}},
+        {"SymFunctionTableAccess64", {3, 0}}, {"StackWalk64", {9, 0}}, {"SymInitialize", {3, 0}},
+        {"MiniDumpWriteDump", {7, 0}}, {"SymGetOptions", {0, 0}},
+        // CRYPT32, SHELL32, ADVAPI32, IPHLPAPI
+        {"CryptProtectData", {7, 0}}, {"CryptUnprotectData", {7, 0}}, {"Shell_NotifyIconW", {2, 0}},
+        {"RegEnumKeyExA", {8, 259}}, {"RegConnectRegistryA", {3, 2}}, {"RegQueryInfoKeyA", {12, 2}},
+        {"RegEnumValueA", {8, 259}}, {"GetNamedSecurityInfoA", {8, 2}}, {"LookupAccountSidA", {7, 0}},
+        {"GetUserNameW", {2, 0}}, {"GetUserNameA", {2, 0}}, {"GetAdaptersInfo", {2, 232}},  // ERROR_NO_DATA
+        // USER32
+        {"ShowOwnedPopups", {2, 1}}, {"SendInput", {3, 0}}, {"GetDlgItem", {2, 0}}, {"UnregisterHotKey", {2, 1}},
+        {"RegisterClipboardFormatA", {1, 0xC000}}, {"BringWindowToTop", {1, 1}}, {"EnableWindow", {2, 0}},
+        {"RegisterHotKey", {4, 1}}, {"GetTopWindow", {1, 0}}, {"FindWindowExA", {4, 0}}, {"MapWindowPoints", {4, 0}},
+        {"SetRectEmpty", {1, 1}}, {"EndPaint", {2, 1}}, {"DrawStateW", {10, 1}}, {"BeginPaint", {2, 0}},
+        {"GetWindowThreadProcessId", {2, 0}}, {"GetWindow", {2, 0}}, {"IsWindow", {1, 1}}, {"FillRect", {3, 1}},
+        {"GetCapture", {0, 0}}, {"DrawFocusRect", {2, 1}}, {"InflateRect", {3, 1}}, {"ChangeDisplaySettingsW", {2, 0}},
+        {"GetKeyboardLayoutNameA", {1, 0}}, {"ActivateKeyboardLayout", {2, 0}}, {"GetKeyboardLayoutList", {2, 0}},
+        {"GetWindowInfo", {2, 0}}, {"ToUnicodeEx", {7, 0}}, {"GetKeyboardState", {1, 0}},
+        // d3dx9_43 (WINAPI): sin compilador HLSL ni utilidades de malla
+        {"D3DXDebugMute", {1, 0}}, {"D3DXPreprocessShader", {6, kFail}}, {"D3DXCompileShader", {10, kFail}},
+        {"D3DXCreateMesh", {6, kFail}}, {"D3DXCreateBuffer", {2, kFail}}, {"D3DXDisassembleShader", {4, kFail}},
+        {"D3DXCleanMesh", {7, kFail}},
+    };
+    const auto it = s_table.find(fn);
+    if (it == s_table.end()) return false;
+    slots = it->second.slots;
+    ret = it->second.ret;
+    return true;
+}
+
 bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContext& ctx) {
     if (!isRegisteredTrampoline(target)) {
         return false;
@@ -2770,7 +2825,14 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
             }
             args[i] = (static_cast<uint64_t>(hi) << 32) | lo;
         }
-        const bool stdcall = known && stubName == nullptr && !ar.variadic && !crtDll;
+        bool stdcall = known && stubName == nullptr && !ar.variadic && !crtDll;
+        // Stubs de la API de sistema sin implementar: aridad stdcall conocida (si no, el llamador queda con
+        // la pila descuadrada) y valor de retorno de "fallo limpio".
+        uint32_t stubSlots = 0, stubRet = 0;
+        if (stubName != nullptr && !crtDll && stub32Arity(bang == std::string::npos ? name : name.substr(bang + 1), stubSlots, stubRet)) {
+            stdcall = true;
+            ar.slots = static_cast<uint8_t>(stubSlots);
+        }
         // Llamadas registradas por función (setprop debug.hyperplay.thunklog N; por defecto 4).
         static const uint32_t s_logMax = [] {
             char v[PROP_VALUE_MAX] = {};
@@ -2784,7 +2846,7 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
         }
         uint64_t ret = 0;
         if (stubName != nullptr) {
-            ret = 0;
+            ret = stubRet;
         } else {
             t_dispatchBackend = static_cast<OryonEmitterBackend*>(user);
             CpuContext* const prevThunkCtx = t_thunkCtx;
@@ -4855,6 +4917,90 @@ static void* hp_RemovePropA(void* h, const void* n) { return removeProp(h, n, fa
 
 // --- Locale y PSAPI que pide Mono x64 (mono.exe / mono-2.0-sgen.dll) ------------------------
 static std::string guestModulePath(void* hModule);
+static int32_t win_GetProcessMemoryInfo(void*, void* counters, uint32_t cb);
+
+// --- IMM32 (editor de métodos de entrada) para juegos de 32 bits: no hay IME. Funciones stdcall con aridad
+// exacta (un stub sin aridad descuadra la pila del llamador). Unreal 3 las importa para el texto asiático.
+namespace imm32 {
+using u32 = uint32_t;
+u32 GetConversionStatus(u32, u32 a, u32 b) {
+    if (a != 0) *reinterpret_cast<u32*>(static_cast<uintptr_t>(a)) = 0;
+    if (b != 0) *reinterpret_cast<u32*>(static_cast<uintptr_t>(b)) = 0;
+    return 0;
+}
+u32 IsUIMessageW(u32, u32, u32, u32) { return 0; }
+u32 GetDefaultIMEWnd(u32) { return 0; }
+u32 ReleaseContext(u32, u32) { return 1; }
+u32 AssociateContext(u32, u32) { return 0; }
+u32 CreateContext() { return 0x1C0; }
+u32 GetContext(u32) { return 0; }
+u32 DestroyContext(u32) { return 1; }
+u32 GetCompositionStringW(u32, u32, u32, u32) { return 0; }
+u32 GetOpenStatus(u32) { return 0; }
+u32 GetIMEFileNameA(u32, u32, u32) { return 0; }
+u32 SetConversionStatus(u32, u32, u32) { return 1; }
+u32 SetOpenStatus(u32, u32) { return 1; }
+u32 NotifyIME(u32, u32, u32, u32) { return 0; }
+u32 SetCandidateWindow(u32, u32) { return 1; }
+u32 SetCompositionWindow(u32, u32) { return 1; }
+u32 GetProperty(u32, u32) { return 0; }
+u32 GetCandidateListW(u32, u32, u32, u32) { return 0; }
+u32 GetVirtualKey(u32) { return 0; }
+u32 AssociateContextEx(u32, u32, u32) { return 1; }
+u32 SetCompositionStringW(u32, u32, u32, u32, u32, u32) { return 0; }
+
+void* resolve(const std::string& f) {
+    if (f.rfind("Imm", 0) != 0) return nullptr;
+    const std::string n = f.substr(3);
+    if (n == "GetConversionStatus") return w32arity::hpFn(&GetConversionStatus);
+    if (n == "IsUIMessageW" || n == "IsUIMessageA") return w32arity::hpFn(&IsUIMessageW);
+    if (n == "GetDefaultIMEWnd") return w32arity::hpFn(&GetDefaultIMEWnd);
+    if (n == "ReleaseContext") return w32arity::hpFn(&ReleaseContext);
+    if (n == "AssociateContext") return w32arity::hpFn(&AssociateContext);
+    if (n == "CreateContext") return w32arity::hpFn(&CreateContext);
+    if (n == "GetContext") return w32arity::hpFn(&GetContext);
+    if (n == "DestroyContext") return w32arity::hpFn(&DestroyContext);
+    if (n == "GetCompositionStringW" || n == "GetCompositionStringA") return w32arity::hpFn(&GetCompositionStringW);
+    if (n == "GetOpenStatus") return w32arity::hpFn(&GetOpenStatus);
+    if (n == "GetIMEFileNameA" || n == "GetIMEFileNameW") return w32arity::hpFn(&GetIMEFileNameA);
+    if (n == "SetConversionStatus") return w32arity::hpFn(&SetConversionStatus);
+    if (n == "SetOpenStatus") return w32arity::hpFn(&SetOpenStatus);
+    if (n == "NotifyIME") return w32arity::hpFn(&NotifyIME);
+    if (n == "SetCandidateWindow") return w32arity::hpFn(&SetCandidateWindow);
+    if (n == "SetCompositionWindow") return w32arity::hpFn(&SetCompositionWindow);
+    if (n == "GetProperty") return w32arity::hpFn(&GetProperty);
+    if (n == "GetCandidateListW" || n == "GetCandidateListA") return w32arity::hpFn(&GetCandidateListW);
+    if (n == "GetVirtualKey") return w32arity::hpFn(&GetVirtualKey);
+    if (n == "AssociateContextEx") return w32arity::hpFn(&AssociateContextEx);
+    if (n == "SetCompositionStringW" || n == "SetCompositionStringA") return w32arity::hpFn(&SetCompositionStringW);
+    return nullptr;
+}
+}  // namespace imm32
+
+// GetComputerNameW/A(lpBuffer, lpnSize) (stdcall). Nombre fijo; ERROR_BUFFER_OVERFLOW si no cabe.
+static constexpr char kComputerName[] = "EXEDRA64";
+static int32_t win_GetComputerNameW(uint16_t* buf, uint32_t* size) {
+    constexpr uint32_t n = sizeof(kComputerName) - 1;
+    if (size == nullptr) return 0;
+    if (buf == nullptr || *size < n + 1) { *size = n + 1; return 0; }
+    for (uint32_t i = 0; i <= n; ++i) buf[i] = static_cast<uint8_t>(kComputerName[i]);
+    *size = n;
+    return 1;
+}
+static int32_t win_GetComputerNameA(char* buf, uint32_t* size) {
+    constexpr uint32_t n = sizeof(kComputerName) - 1;
+    if (size == nullptr) return 0;
+    if (buf == nullptr || *size < n + 1) { *size = n + 1; return 0; }
+    std::memcpy(buf, kComputerName, n + 1);
+    *size = n;
+    return 1;
+}
+// SetThreadIdealProcessor(hThread, dwIdealProcessor) (stdcall): el planificador de Android decide; devuelve
+// el "ideal" anterior (0).
+static uint32_t win_SetThreadIdealProcessor(void*, uint32_t) { return 0; }
+// SetThreadAffinityMask(hThread, mask) (stdcall): sin efecto (el planificador fija los núcleos); devuelve la máscara
+// anterior, distinta de 0 = éxito.
+static uintptr_t win_SetThreadAffinityMask(void*, uintptr_t) { return 0xFF; }
 
 static uint32_t hp_GetThreadLocale() { return 0x0409; }  // en-US
 
@@ -5214,6 +5360,8 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "GetFileAttributesExW") result = w32arity::hpFn(&win_GetFileAttributesExW);
         else if (funcName == "GetFileAttributesExA") result = w32arity::hpFn(&win_GetFileAttributesExA);
         else if (funcName == "GetModuleFileNameW") result = w32arity::hpFn(&win_GetModuleFileNameW);
+        else if (funcName == "K32GetProcessMemoryInfo" || funcName == "GetProcessMemoryInfo")
+            result = w32arity::hpFn(&win_GetProcessMemoryInfo);
         else if (funcName == "K32EnumProcessModules" || funcName == "EnumProcessModules" ||
                  funcName == "K32EnumProcessModulesEx" || funcName == "EnumProcessModulesEx")
             result = w32arity::hpFn(&win_EnumProcessModules);
@@ -5236,6 +5384,10 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "SetConsoleCtrlHandler") result = w32arity::hpFn(&win_SetConsoleCtrlHandler);
         else if (funcName == "ExitProcess") result = w32arity::hpFn(&win_ExitProcess);
         else if (funcName == "TerminateProcess") result = w32arity::hpFn(&win_TerminateProcess);
+        else if (funcName == "GetComputerNameW") result = w32arity::hpFn(&win_GetComputerNameW);
+        else if (funcName == "GetComputerNameA") result = w32arity::hpFn(&win_GetComputerNameA);
+        else if (funcName == "SetThreadIdealProcessor") result = w32arity::hpFn(&win_SetThreadIdealProcessor);
+        else if (funcName == "SetThreadAffinityMask") result = w32arity::hpFn(&win_SetThreadAffinityMask);
         else if (funcName == "IsProcessorFeaturePresent") result = w32arity::hpFn(&win_IsProcessorFeaturePresent);
         else if (funcName == "IsDebuggerPresent") result = w32arity::hpFn(&win_IsDebuggerPresent);
         else if (funcName == "GetNativeSystemInfo") result = w32arity::hpFn(&win_GetSystemInfo);
@@ -5810,6 +5962,7 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     }
     if (!result && dll == "dsound.dll" && s_activeImage != nullptr && s_activeImage->is32Bit) result = dsound32::resolve(funcName);
     if (!result && dll == "dinput8.dll" && s_activeImage != nullptr && s_activeImage->is32Bit) result = dinput32::resolve(funcName);
+    if (!result && dll == "imm32.dll" && s_activeImage != nullptr && s_activeImage->is32Bit) result = imm32::resolve(funcName);
     if (!result && dll == "d3d9.dll") {
         s_d3dCalls.fetch_add(1);
         if (s_activeImage != nullptr && s_activeImage->is32Bit) {
@@ -7556,7 +7709,24 @@ void NativeDllInterceptor::win_InitializeCriticalSection(void* lpCriticalSection
 void NativeDllInterceptor::win_EnterCriticalSection(void* lpCriticalSection) {
     s_kernel32Calls.fetch_add(1);
     if (!lpCriticalSection) return;
-    if (pthread_mutex_t* m = csMutex(lpCriticalSection)) { pthread_mutex_lock(m); return; }
+    if (pthread_mutex_t* m = csMutex(lpCriticalSection)) {
+        if (!lowmem::enabled()) { pthread_mutex_lock(m); return; }
+        // 32 bits: CRITICAL_SECTION x86 = {DebugInfo, LockCount, RecursionCount, OwningThread, ...}.
+        // Se mantienen RecursionCount/OwningThread como Windows (código y diagnóstico los leen).
+        auto* f = static_cast<int32_t*>(lpCriticalSection);
+        if (pthread_mutex_trylock(m) != 0) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += 10;
+            if (pthread_mutex_timedlock(m, &ts) != 0) {
+                LOGW("EnterCriticalSection(%p): más de 10 s esperando; dueño tid=%d recursión=%d", lpCriticalSection,
+                     __atomic_load_n(&f[3], __ATOMIC_RELAXED), __atomic_load_n(&f[2], __ATOMIC_RELAXED));
+                pthread_mutex_lock(m);
+            }
+        }
+        if (f[2]++ == 0) __atomic_store_n(&f[3], static_cast<int32_t>(gettid()), __ATOMIC_RELAXED);
+        return;
+    }
     static std::atomic<int> s_nulls{0};
     if (s_nulls.fetch_add(1) < 5) LOGW("EnterCriticalSection(%p): sin mutex (CS no inicializada)", lpCriticalSection);
 }
@@ -7564,7 +7734,13 @@ void NativeDllInterceptor::win_EnterCriticalSection(void* lpCriticalSection) {
 void NativeDllInterceptor::win_LeaveCriticalSection(void* lpCriticalSection) {
     s_kernel32Calls.fetch_add(1);
     if (!lpCriticalSection) return;
-    if (pthread_mutex_t* m = csMutex(lpCriticalSection)) pthread_mutex_unlock(m);
+    if (pthread_mutex_t* m = csMutex(lpCriticalSection)) {
+        if (lowmem::enabled()) {
+            auto* f = static_cast<int32_t*>(lpCriticalSection);
+            if (f[2] > 0 && --f[2] == 0) __atomic_store_n(&f[3], 0, __ATOMIC_RELAXED);
+        }
+        pthread_mutex_unlock(m);
+    }
 }
 
 void NativeDllInterceptor::win_DeleteCriticalSection(void* lpCriticalSection) {
@@ -10128,6 +10304,32 @@ int32_t NativeDllInterceptor::win_EnumProcessModules(void*, void** lphModule, ui
         for (size_t i = 0; i < fit; ++i) lowmem::storePtr(out + i * ps, mods[i].first);
     }
     LOGI("EnumProcessModules -> %zu módulos (cb=%u)", mods.size(), cb);
+    return 1;
+}
+
+// GetProcessMemoryInfo(hProcess, PROCESS_MEMORY_COUNTERS[_EX]*, cb) (stdcall). DWORD cb, DWORD PageFaultCount y
+// después campos SIZE_T: 4 bytes en 32 bits (40/44 bytes), 8 en 64 (72/80). Unreal 3 lo llama cada fotograma
+// para sus estadísticas; sin él caía en un stub sin aridad y descuadraba la pila (fallo de cookie GS en DmC).
+static int32_t win_GetProcessMemoryInfo(void*, void* counters, uint32_t cb) {
+    if (counters == nullptr || cb < 8) return 0;
+    uint64_t rss = 0, hwm = 0, vm = 0;
+    if (FILE* f = std::fopen("/proc/self/status", "r")) {
+        char line[128];
+        while (std::fgets(line, sizeof(line), f) != nullptr) {
+            unsigned long long kb = 0;
+            if (std::sscanf(line, "VmRSS: %llu", &kb) == 1) rss = kb * 1024;
+            else if (std::sscanf(line, "VmHWM: %llu", &kb) == 1) hwm = kb * 1024;
+            else if (std::sscanf(line, "VmData: %llu", &kb) == 1) vm = kb * 1024;
+        }
+        std::fclose(f);
+    }
+    const size_t ps = lowmem::guestPtrSize();
+    const uint64_t cap = ps == 4 ? 0xFFFFFFFFull : ~0ull;
+    const uint64_t vals[9] = {hwm, rss, 0, 0, 0, 0, vm, vm, vm};  // ...PagefileUsage, PeakPagefileUsage, PrivateUsage
+    auto* out = static_cast<uint8_t*>(counters);
+    std::memset(out, 0, cb);
+    std::memcpy(out, &cb, 4);
+    for (size_t i = 0; i < 9 && 8 + (i + 1) * ps <= cb; ++i) lowmem::storePtr(out + 8 + i * ps, std::min(vals[i], cap));
     return 1;
 }
 
@@ -13395,12 +13597,13 @@ int32_t NativeDllInterceptor::win_TryEnterCriticalSection(void* lpCriticalSectio
     // (Silksong: pantalla negra al arrancar, 1 de cada ~5 veces).
     if (lpCriticalSection == nullptr) return 0;
     pthread_mutex_t* m = lpCriticalSection != nullptr ? csMutex(lpCriticalSection) : nullptr;
-    {   // EXPERIMENTO (debug.hyperplay.trylockwait 1): en 32 bits TryEnter espera como Enter.
-        static const bool s_wait = [] { char b[PROP_VALUE_MAX] = {}; return __system_property_get("debug.hyperplay.trylockwait", b) > 0 && b[0] == '1'; }();
-        if (s_wait && lowmem::enabled() && m != nullptr) { pthread_mutex_lock(m); return 1; }
-    }
     if (m == nullptr) { static std::atomic<int> s_nulls{0}; if (s_nulls.fetch_add(1) < 5) LOGW("TryEnterCriticalSection(%p): sin mutex (CS no inicializada)", lpCriticalSection); }
-    return m != nullptr && pthread_mutex_trylock(m) == 0 ? 1 : 0;
+    if (m == nullptr || pthread_mutex_trylock(m) != 0) return 0;
+    if (lowmem::enabled()) {  // RecursionCount/OwningThread como en EnterCriticalSection
+        auto* f = static_cast<int32_t*>(lpCriticalSection);
+        if (f[2]++ == 0) __atomic_store_n(&f[3], static_cast<int32_t>(gettid()), __ATOMIC_RELAXED);
+    }
+    return 1;
 }
 
 void NativeDllInterceptor::win_InitializeSRWLock(void* srwLock) {

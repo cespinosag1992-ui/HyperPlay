@@ -3060,6 +3060,13 @@ void testStringDirectionFlag32() {
     CHECK_EQ(runCode(fw, true), static_cast<int64_t>(b + 24));
     CHECK_EQ(buf[4], 1u);
     CHECK_EQ(buf[5], 1u);
+
+    // XLAT: AL = [EBX + AL]; el resto de EAX no cambia. buf[1] = 1 -> byte 4 de la tabla = 1.
+    Bytes xl;
+    movRegImm32(xl, 3, b);
+    movRegImm32(xl, 0, 0x11223304u);
+    append(xl, {0xD7, 0xC3});
+    CHECK_EQ(runCode(xl, true), 0x11223301);
 }
 
 void testMode32Program() {

@@ -10,6 +10,11 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **32-bit games: DmC now runs its game loop (60 presents per second, no crashes).** The JIT supports `XLAT`
+  (the render thread died in msvcr100's x87 code). New `GetProcessMemoryInfo` (Unreal 3 calls it every frame; the
+  arity-less stub shifted the stack and tripped a security-cookie check), `GetComputerName`, `SetThreadIdealProcessor`,
+  `SetThreadAffinityMask` and IMM32 without an IME. Unimplemented system functions now pop their exact stdcall
+  arguments. 32-bit critical sections keep `OwningThread`/`RecursionCount` and log the owner after 10 s of waiting.
 - **JIT: `MOVS`/`STOS` now honor the direction flag (`STD`).** Repeated string copies and fills always moved forward,
   so an overlapping `memmove` (MSVC copies backwards with `STD; REP MOVSD`) repeated the first element and wrote
   past the end of the buffer. In DmC this corrupted Wwise's memory pool right after the Direct3D 9 device was created.
@@ -62,6 +67,12 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **Juegos de 32 bits: DmC ya ejecuta su bucle de juego (60 Present por segundo, sin fallos).** El JIT admite `XLAT`
+  (el hilo de render moría en el código x87 de msvcr100). Nuevos `GetProcessMemoryInfo` (Unreal 3 lo llama cada
+  fotograma; el stub sin aridad descuadraba la pila y saltaba la cookie de seguridad), `GetComputerName`,
+  `SetThreadIdealProcessor`, `SetThreadAffinityMask` e IMM32 sin IME. Las funciones de sistema sin implementar sacan
+  ahora sus argumentos stdcall exactos. Las secciones críticas de 32 bits mantienen `OwningThread`/`RecursionCount` y
+  avisan del dueño tras 10 s de espera.
 - **JIT: `MOVS`/`STOS` respetan ahora el flag de dirección (`STD`).** Las copias y rellenos repetidos siempre avanzaban,
   así que un `memmove` solapado (MSVC copia hacia atrás con `STD; REP MOVSD`) repetía el primer elemento y escribía
   más allá del final del búfer. En DmC esto corrompía el montón de Wwise justo después de crear el dispositivo Direct3D 9.
