@@ -397,6 +397,8 @@ private:
 
     size_t wordPos() const noexcept { return jitOffset_ / sizeof(uint32_t); }
     void emitWord(uint32_t instruction);
+    // RDTSC: EDX:EAX = CNTVCT_EL0 (contador virtual de ARM, monótono).
+    void emitReadTsc();
     void patchWord(size_t wordIndex, uint32_t instruction);
     void patchImm19(size_t wordIndex, size_t targetWordIndex);
     void patchImm26(size_t wordIndex, size_t targetWordIndex);

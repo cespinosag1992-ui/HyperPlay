@@ -970,8 +970,17 @@ bool regIsString(uint32_t type) {
     return type == win32reg::kRegSz || type == win32reg::kRegExpandSz || type == win32reg::kRegMultiSz;
 }
 
+// HKEY* del invitado: 4 bytes en 32 bits (lowmem::storePtr).
+template <class S>
+uint32_t regOpenOut(uint64_t hKey, const S& sub, bool create, uint64_t* out, uint32_t* disp = nullptr) {
+    uint64_t h = 0;
+    const uint32_t r = registry().open(hKey, sub, create, out != nullptr ? &h : nullptr, disp);
+    if (out != nullptr) lowmem::storePtr(out, h);
+    return r;
+}
+
 int32_t win_RegOpenKeyExW(uint64_t hKey, const void* subKey, uint32_t, uint32_t, uint64_t* out) {
-    const uint32_t r = registry().open(hKey, win32reg::fromGuestW(subKey), false, out);
+    const uint32_t r = regOpenOut(hKey, win32reg::fromGuestW(subKey), false, out);
     static std::atomic<uint32_t> s_logs{0};
     if (s_logs.fetch_add(1, std::memory_order_relaxed) < 64) {
         LOGI("RegOpenKeyExW(0x%llx, '%s') -> %u", static_cast<unsigned long long>(hKey),
@@ -981,16 +990,16 @@ int32_t win_RegOpenKeyExW(uint64_t hKey, const void* subKey, uint32_t, uint32_t,
 }
 
 int32_t win_RegOpenKeyExA(uint64_t hKey, const char* subKey, uint32_t, uint32_t, uint64_t* out) {
-    return static_cast<int32_t>(registry().open(hKey, win32reg::fromUtf8(subKey), false, out));
+    return static_cast<int32_t>(regOpenOut(hKey, win32reg::fromUtf8(subKey), false, out));
 }
 
 int32_t win_RegOpenKeyW(uint64_t hKey, const void* subKey, uint64_t* out) {
-    return static_cast<int32_t>(registry().open(hKey, win32reg::fromGuestW(subKey), false, out));
+    return static_cast<int32_t>(regOpenOut(hKey, win32reg::fromGuestW(subKey), false, out));
 }
 
 int32_t win_RegCreateKeyExW(uint64_t hKey, const void* subKey, uint32_t, const void*, uint32_t,
                             uint32_t, const void*, uint64_t* out, uint32_t* disposition) {
-    const uint32_t r = registry().open(hKey, win32reg::fromGuestW(subKey), true, out, disposition);
+    const uint32_t r = regOpenOut(hKey, win32reg::fromGuestW(subKey), true, out, disposition);
     static std::atomic<uint32_t> s_logs{0};
     if (s_logs.fetch_add(1, std::memory_order_relaxed) < 64) {
         LOGI("RegCreateKeyExW(0x%llx, '%s') -> %u", static_cast<unsigned long long>(hKey),
@@ -1001,11 +1010,11 @@ int32_t win_RegCreateKeyExW(uint64_t hKey, const void* subKey, uint32_t, const v
 
 int32_t win_RegCreateKeyExA(uint64_t hKey, const char* subKey, uint32_t, const char*, uint32_t,
                             uint32_t, const void*, uint64_t* out, uint32_t* disposition) {
-    return static_cast<int32_t>(registry().open(hKey, win32reg::fromUtf8(subKey), true, out, disposition));
+    return static_cast<int32_t>(regOpenOut(hKey, win32reg::fromUtf8(subKey), true, out, disposition));
 }
 
 int32_t win_RegCreateKeyW(uint64_t hKey, const void* subKey, uint64_t* out) {
-    return static_cast<int32_t>(registry().open(hKey, win32reg::fromGuestW(subKey), true, out));
+    return static_cast<int32_t>(regOpenOut(hKey, win32reg::fromGuestW(subKey), true, out));
 }
 
 int32_t win_RegCloseKey(uint64_t hKey) {
@@ -1159,8 +1168,8 @@ int32_t win_AreFileApisANSI() {
 // --- .NET 6 (CoreCLR, Stardew Valley) -----------------------------------------------------------
 // Afinidad: todos los núcleos (8). El GC de CoreCLR falla al crearse si devuelve FALSE.
 int32_t win_GetProcessAffinityMask(void*, uint64_t* process, uint64_t* system) {
-    if (process != nullptr) *process = 0xFF;
-    if (system != nullptr) *system = 0xFF;
+    lowmem::storePtr(process, uint64_t{0xFF});  // DWORD_PTR: 4 bytes en 32 bits
+    lowmem::storePtr(system, uint64_t{0xFF});
     return 1;
 }
 
@@ -1182,14 +1191,17 @@ uint32_t win_RtlGetVersion(uint32_t* info) {
 }
 
 // VerSetConditionMask / VerifyVersionInfoW: HyperPlay es Windows 10 22H2 (10.0.19045).
-uint64_t win_VerSetConditionMask(uint64_t mask, uint32_t typeMask, uint8_t condition) {
+// ULONGLONG por valor = int64_t: en 32 bits ocupa 2 ranuras de pila (w32arity::isWide).
+uint64_t win_VerSetConditionMask(int64_t maskIn, uint32_t typeMask, uint8_t condition) {
+    auto mask = static_cast<uint64_t>(maskIn);
     for (uint32_t i = 0; i < 8; ++i) {
         if ((typeMask & (1u << i)) != 0) mask |= static_cast<uint64_t>(condition & 7u) << (i * 3);
     }
     return mask;
 }
 
-int32_t win_VerifyVersionInfoW(const uint32_t* info, uint32_t typeMask, uint64_t conditions) {
+int32_t win_VerifyVersionInfoW(const uint32_t* info, uint32_t typeMask, int64_t conditionsIn) {
+    const auto conditions = static_cast<uint64_t>(conditionsIn);
     if (info == nullptr) return 0;
     // OSVERSIONINFOEXW: [1]=major [2]=minor [3]=build; wServicePackMajor en byte 276.
     const uint64_t have[3] = {10, 0, 19045};
@@ -1213,6 +1225,46 @@ int32_t win_VerifyVersionInfoW(const uint32_t* info, uint32_t typeMask, uint64_t
         if (!ok && i == 2 && (cond == 3 || cond == 2) && (have[0] > info[1] || have[1] > info[2])) ok = true;
         if (!ok) {
             NativeDllInterceptor::win_SetLastError(1150);  // ERROR_OLD_WIN_VERSION
+            return 0;
+        }
+    }
+    // Resto de campos de OSVERSIONINFOEXW (bytes): dwPlatformId @16, wServicePackMajor @276,
+    // wServicePackMinor @278, wSuiteMask @280, wProductType @282. Somos estación de trabajo
+    // (VER_NT_WORKSTATION = 1), plataforma NT (2), sin service pack. Antes se ignoraban y
+    // "¿es servidor?" también devolvía TRUE (mscoree tomaba la ruta de servidor).
+    const auto* b = reinterpret_cast<const uint8_t*>(info);
+    auto rd16 = [b](size_t off) { uint16_t v; std::memcpy(&v, b + off, 2); return static_cast<uint64_t>(v); };
+    struct Extra { uint32_t bit; uint32_t idx; uint64_t have; uint64_t want; };
+    const Extra extra[] = {
+        {0x08, 3, 2, info[4]},          // VER_PLATFORMID
+        {0x10, 4, 0, rd16(278)},        // VER_SERVICEPACKMINOR
+        {0x20, 5, 0, rd16(276)},        // VER_SERVICEPACKMAJOR
+        {0x80, 7, 1, b[282]},           // VER_PRODUCT_TYPE
+    };
+    for (const Extra& e : extra) {
+        if ((typeMask & e.bit) == 0) continue;
+        const uint32_t cond = static_cast<uint32_t>((conditions >> (e.idx * 3)) & 7u);
+        bool ok = true;
+        switch (cond) {
+            case 1: ok = e.have == e.want; break;
+            case 2: ok = e.have > e.want; break;
+            case 3: ok = e.have >= e.want; break;
+            case 4: ok = e.have < e.want; break;
+            case 5: ok = e.have <= e.want; break;
+            default: break;
+        }
+        if (!ok) {
+            NativeDllInterceptor::win_SetLastError(1150);
+            return 0;
+        }
+    }
+    if ((typeMask & 0x40) != 0) {  // VER_SUITENAME: VER_AND (6) / VER_OR (7) sobre wSuiteMask
+        constexpr uint64_t kSuite = 0x100;  // VER_SUITE_SINGLEUSERTS (Windows de escritorio)
+        const uint32_t cond = static_cast<uint32_t>((conditions >> (6 * 3)) & 7u);
+        const uint64_t want = rd16(280);
+        const bool ok = cond == 7 ? (kSuite & want) != 0 : (kSuite & want) == want;
+        if (!ok) {
+            NativeDllInterceptor::win_SetLastError(1150);
             return 0;
         }
     }
@@ -1467,7 +1519,7 @@ int32_t win_AppPolicyGetThreadInitializationType(void*, int32_t* policy) {
 
 // CONDITION_VARIABLE_INIT es un puntero nulo; Sleep/WakeConditionVariable usan su dirección.
 void win_InitializeConditionVariable(void** cv) {
-    if (cv != nullptr) *cv = nullptr;
+    lowmem::storePtr(cv, uint64_t{0});
 }
 
 int32_t win_GetCurrentPackageId(uint32_t* len, void*) {
@@ -2361,7 +2413,12 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
             args[i] = (static_cast<uint64_t>(hi) << 32) | lo;
         }
         const bool stdcall = known && stubName == nullptr && !ar.variadic && !crtDll;
-        if (info->calls.fetch_add(1, std::memory_order_relaxed) < 4) {
+        // Llamadas registradas por función (setprop debug.hyperplay.thunklog N; por defecto 4).
+        static const uint32_t s_logMax = [] {
+            char v[PROP_VALUE_MAX] = {};
+            return __system_property_get("debug.hyperplay.thunklog", v) > 0 ? static_cast<uint32_t>(std::atoi(v)) : 4u;
+        }();
+        if (info->calls.fetch_add(1, std::memory_order_relaxed) < s_logMax) {
             LOGI("[NativeThunk32] %s(0x%llx, 0x%llx, 0x%llx, 0x%llx) desde EIP=0x%x (%s, %u slots)", name.c_str(),
                  static_cast<unsigned long long>(args[0]), static_cast<unsigned long long>(args[1]),
                  static_cast<unsigned long long>(args[2]), static_cast<unsigned long long>(args[3]), ret32,
@@ -2385,7 +2442,7 @@ bool NativeDllInterceptor::dispatchThunk(void* user, uintptr_t target, CpuContex
                 return true;
             }
         }
-        if (info->calls.load(std::memory_order_relaxed) <= 4) {
+        if (info->calls.load(std::memory_order_relaxed) <= s_logMax) {
             LOGI("[NativeThunk32] %s -> 0x%llx%s", name.c_str(), static_cast<unsigned long long>(ret),
                  ret > 0xFFFFFFFFull && !info->isVoid ? " (¡>4GB: truncado!)" : "");
         }
@@ -3113,6 +3170,153 @@ static void hp_GetStartupInfoA(uint8_t* si) {
 
 // GetThreadTimes: creación/salida a 0 y tiempo de CPU del hilo actual como usuario (msvcr100 lo usa
 // en clock()). FILETIME en unidades de 100 ns.
+// GlobalMemoryStatus: MEMORYSTATUS con campos SIZE_T (32 bytes en 32 bits, 56 en 64). Un juego
+// de 32 bits con LARGE_ADDRESS_AWARE ve 4 GB virtuales (WOW64: 0xFFFE0000).
+static void hp_GlobalMemoryStatus(void* buffer) {
+    if (buffer == nullptr) return;
+    auto* b = static_cast<uint8_t*>(buffer);
+    const bool w32 = lowmem::enabled();
+    const size_t ps = w32 ? 4 : 8;
+    const uint32_t len = w32 ? 32u : 56u;
+    const uint32_t load = 25;
+    std::memcpy(b, &len, 4);
+    std::memcpy(b + 4, &load, 4);
+    // En 32 bits Windows recorta a 4 GB - 1 los valores que no caben en un SIZE_T.
+    auto clip = [w32](uint64_t v) { return w32 && v > 0xFFFFFFFFull ? 0xFFFFFFFFull : v; };
+    const uint64_t vals[6] = {
+        clip(16ULL << 30), clip(12ULL << 30),       // TotalPhys, AvailPhys
+        clip(24ULL << 30), clip(20ULL << 30),       // TotalPageFile, AvailPageFile
+        w32 ? 0xFFFE0000ull : (1ULL << 40),         // TotalVirtual
+        w32 ? 0xE0000000ull : (1ULL << 40),         // AvailVirtual
+    };
+    for (size_t i = 0; i < 6; ++i) lowmem::storePtr(b + 8 + i * ps, vals[i]);
+}
+
+// GetWindowsDirectory / GetSystemDirectory: devuelven la longitud sin el NUL si cabe; si no, el
+// tamaño necesario con el NUL. Rutas virtuales: el cargador las lleva a redist/<arq>/netfx/Windows.
+template <class C>
+static uint32_t copyWinDir(C* buf, uint32_t size, std::string_view path) {
+    const auto len = static_cast<uint32_t>(path.size());
+    if (buf == nullptr || size <= len) return len + 1;
+    for (uint32_t i = 0; i < len; ++i) buf[i] = static_cast<C>(path[i]);
+    buf[len] = 0;
+    return len;
+}
+static uint32_t hp_GetWindowsDirectoryA(char* buf, uint32_t size) { return copyWinDir(buf, size, "C:\\Windows"); }
+static uint32_t hp_GetWindowsDirectoryW(char16_t* buf, uint32_t size) { return copyWinDir(buf, size, "C:\\Windows"); }
+static uint32_t hp_GetSystemDirectoryA(char* buf, uint32_t size) {
+    return copyWinDir(buf, size, "C:\\Windows\\System32");
+}
+static uint32_t hp_GetSystemDirectoryW(char16_t* buf, uint32_t size) {
+    return copyWinDir(buf, size, "C:\\Windows\\System32");
+}
+
+// UrlIsW(url, URLIS): URLIS_URL (0) = tiene esquema "xxx:" de más de una letra (C:\ no cuenta);
+// URLIS_FILEURL (3) = empieza por "file:". El resto de consultas: FALSE.
+static int32_t hp_UrlIsW(const char16_t* url, int32_t kind) {
+    if (url == nullptr) return 0;
+    if (kind == 3) {
+        const char16_t* f = u"file:";
+        for (int i = 0; i < 5; ++i) {
+            char16_t c = url[i];
+            if (c >= u'A' && c <= u'Z') c = static_cast<char16_t>(c + 32);
+            if (c != f[i]) return 0;
+        }
+        return 1;
+    }
+    if (kind == 0) {
+        int i = 0;
+        while ((url[i] >= u'a' && url[i] <= u'z') || (url[i] >= u'A' && url[i] <= u'Z') ||
+               (url[i] >= u'0' && url[i] <= u'9') || url[i] == u'+' || url[i] == u'-' || url[i] == u'.') ++i;
+        return i > 1 && url[i] == u':' ? 1 : 0;
+    }
+    return 0;
+}
+
+static uint16_t hp_GetSystemDefaultLangID() { return 0x0409; }  // en-US
+static uint16_t hp_GetUserDefaultLangID() { return 0x0409; }
+
+// GetDateFormatW / GetTimeFormatW con formato por defecto de en-US ("MM/dd/yyyy", "hh:mm:ss tt").
+// Si no se da SYSTEMTIME se usa la hora local. Devuelve caracteres escritos con el NUL (o los
+// necesarios si cch = 0).
+static int32_t formatDateTimeW(const uint16_t* st, char16_t* out, int32_t cch, bool time) {
+    uint16_t y, mo, d, h, mi, s;
+    if (st != nullptr) {
+        y = st[0]; mo = st[1]; d = st[3]; h = st[4]; mi = st[5]; s = st[6];
+    } else {
+        const time_t now = ::time(nullptr);
+        struct tm lt{};
+        localtime_r(&now, &lt);
+        y = static_cast<uint16_t>(lt.tm_year + 1900); mo = static_cast<uint16_t>(lt.tm_mon + 1);
+        d = static_cast<uint16_t>(lt.tm_mday); h = static_cast<uint16_t>(lt.tm_hour);
+        mi = static_cast<uint16_t>(lt.tm_min); s = static_cast<uint16_t>(lt.tm_sec);
+    }
+    char buf[32];
+    if (time) {
+        const int h12 = h % 12 == 0 ? 12 : h % 12;
+        std::snprintf(buf, sizeof(buf), "%02d:%02u:%02u %s", h12, mi, s, h < 12 ? "AM" : "PM");
+    } else {
+        std::snprintf(buf, sizeof(buf), "%02u/%02u/%04u", mo, d, y);
+    }
+    const auto need = static_cast<int32_t>(std::strlen(buf)) + 1;
+    if (cch == 0 || out == nullptr) return need;
+    if (cch < need) { NativeDllInterceptor::win_SetLastError(122); return 0; }
+    for (int32_t i = 0; i < need; ++i) out[i] = static_cast<char16_t>(buf[i]);
+    return need;
+}
+static int32_t hp_GetDateFormatW(uint32_t, uint32_t, const uint16_t* st, const char16_t*, char16_t* out, int32_t cch) {
+    return formatDateTimeW(st, out, cch, false);
+}
+static int32_t hp_GetTimeFormatW(uint32_t, uint32_t, const uint16_t* st, const char16_t*, char16_t* out, int32_t cch) {
+    return formatDateTimeW(st, out, cch, true);
+}
+
+// FindFirstFileW = FindFirstFileExW(FindExInfoStandard, FindExSearchNameMatch). WIN32_FIND_DATAW no
+// lleva punteros: misma forma en 32 y 64 bits.
+static void* hp_FindFirstFileW(const void* name, void* data) {
+    return NativeDllInterceptor::win_FindFirstFileExW(name, 0, data, 0, nullptr, 0);
+}
+
+// lstr*: cadenas de kernel32 (UTF-16 de 2 bytes en W). NULL se trata como cadena vacía.
+static int32_t hp_lstrlenW(const char16_t* s) {
+    if (s == nullptr) return 0;
+    int32_t n = 0;
+    while (s[n] != 0) ++n;
+    return n;
+}
+static int32_t hp_lstrlenA(const char* s) { return s == nullptr ? 0 : static_cast<int32_t>(std::strlen(s)); }
+static char16_t* hp_lstrcpyW(char16_t* d, const char16_t* s) {
+    if (d == nullptr || s == nullptr) return nullptr;
+    int32_t i = 0;
+    for (; s[i] != 0; ++i) d[i] = s[i];
+    d[i] = 0;
+    return d;
+}
+static char16_t* hp_lstrcpynW(char16_t* d, const char16_t* s, int32_t max) {
+    if (d == nullptr || s == nullptr || max <= 0) return d;
+    int32_t i = 0;
+    for (; i < max - 1 && s[i] != 0; ++i) d[i] = s[i];
+    d[i] = 0;
+    return d;
+}
+static char16_t* hp_lstrcatW(char16_t* d, const char16_t* s) {
+    if (d == nullptr || s == nullptr) return nullptr;
+    hp_lstrcpyW(d + hp_lstrlenW(d), s);
+    return d;
+}
+static int32_t lstrCompareW(const char16_t* a, const char16_t* b, bool ci) {
+    if (a == nullptr) a = u"";
+    if (b == nullptr) b = u"";
+    auto fold = [ci](char16_t c) { return ci && c >= u'A' && c <= u'Z' ? static_cast<char16_t>(c + 32) : c; };
+    for (;; ++a, ++b) {
+        const char16_t x = fold(*a), y = fold(*b);
+        if (x != y) return x < y ? -1 : 1;
+        if (x == 0) return 0;
+    }
+}
+static int32_t hp_lstrcmpW(const char16_t* a, const char16_t* b) { return lstrCompareW(a, b, false); }
+static int32_t hp_lstrcmpiW(const char16_t* a, const char16_t* b) { return lstrCompareW(a, b, true); }
+
 static int32_t hp_GetThreadTimes(void*, uint64_t* creation, uint64_t* exitTime, uint64_t* kernel, uint64_t* user) {
     struct timespec ts{};
     clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
@@ -3400,6 +3604,18 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "OpenFileMappingW") result = w32arity::hpFn(&win_OpenFileMappingW);
         else if (funcName == "OpenFileMappingA") result = w32arity::hpFn(&win_OpenFileMappingA);
         else if (funcName == "FindFirstFileExW") result = w32arity::hpFn(&win_FindFirstFileExW);
+        else if (funcName == "FindFirstFileW") result = w32arity::hpFn(&hp_FindFirstFileW);
+        else if (funcName == "GetSystemDefaultLangID") result = w32arity::hpFn(&hp_GetSystemDefaultLangID);
+        else if (funcName == "GetUserDefaultLangID") result = w32arity::hpFn(&hp_GetUserDefaultLangID);
+        else if (funcName == "GetDateFormatW") result = w32arity::hpFn(&hp_GetDateFormatW);
+        else if (funcName == "GetTimeFormatW") result = w32arity::hpFn(&hp_GetTimeFormatW);
+        else if (funcName == "lstrlenW") result = w32arity::hpFn(&hp_lstrlenW);
+        else if (funcName == "lstrlenA" || funcName == "lstrlen") result = w32arity::hpFn(&hp_lstrlenA);
+        else if (funcName == "lstrcpyW") result = w32arity::hpFn(&hp_lstrcpyW);
+        else if (funcName == "lstrcpynW") result = w32arity::hpFn(&hp_lstrcpynW);
+        else if (funcName == "lstrcatW") result = w32arity::hpFn(&hp_lstrcatW);
+        else if (funcName == "lstrcmpW") result = w32arity::hpFn(&hp_lstrcmpW);
+        else if (funcName == "lstrcmpiW") result = w32arity::hpFn(&hp_lstrcmpiW);
         else if (funcName == "FindNextFileW") result = w32arity::hpFn(&win_FindNextFileW);
         else if (funcName == "FindClose") result = w32arity::hpFn(&win_FindClose);
         else if (funcName == "GetCurrentDirectoryW") result = w32arity::hpFn(&win_GetCurrentDirectoryW);
@@ -3476,6 +3692,13 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "IsDebuggerPresent") result = w32arity::hpFn(&win_IsDebuggerPresent);
         else if (funcName == "GetNativeSystemInfo") result = w32arity::hpFn(&win_GetSystemInfo);
         else if (funcName == "GlobalMemoryStatusEx") result = w32arity::hpFn(&win_GlobalMemoryStatusEx);
+        else if (funcName == "GlobalMemoryStatus") result = w32arity::hpFn(&hp_GlobalMemoryStatus);
+        else if (funcName == "GetWindowsDirectoryA" || funcName == "GetSystemWindowsDirectoryA")
+            result = w32arity::hpFn(&hp_GetWindowsDirectoryA);
+        else if (funcName == "GetWindowsDirectoryW" || funcName == "GetSystemWindowsDirectoryW")
+            result = w32arity::hpFn(&hp_GetWindowsDirectoryW);
+        else if (funcName == "GetSystemDirectoryA") result = w32arity::hpFn(&hp_GetSystemDirectoryA);
+        else if (funcName == "GetSystemDirectoryW") result = w32arity::hpFn(&hp_GetSystemDirectoryW);
         else if (funcName == "CreatePipe") result = w32arity::hpFn(&win_CreatePipe);
         else if (funcName == "SetErrorMode") result = w32arity::hpFn(&win_SetErrorMode);
         else if (funcName == "SetHandleInformation") result = w32arity::hpFn(&win_SetHandleInformation);
@@ -3877,6 +4100,7 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
     if (!result && (dll == "shlwapi.dll" || dll == "shcore.dll" ||
                     dll.rfind("api-ms-win-core-shlwapi", 0) == 0)) {
         if (funcName == "PathCanonicalizeW") result = w32arity::hpFn(&win_PathCanonicalizeW);
+        else if (funcName == "UrlIsW") result = w32arity::hpFn(&hp_UrlIsW);
         else if (funcName == "PathCanonicalizeA") result = w32arity::hpFn(&win_PathCanonicalizeA);
         else if (funcName == "PathCombineW") result = w32arity::hpFn(&win_PathCombineW);
         else if (funcName == "PathCombineA") result = w32arity::hpFn(&win_PathCombineA);
@@ -4897,7 +5121,9 @@ void* NativeDllInterceptor::win_MapViewOfFileEx(void* hFileMappingObject, uint32
         }
         int iflags = MAP_PRIVATE | MAP_ANONYMOUS;
         if (lpBaseAddress != nullptr) iflags |= MAP_FIXED_NOREPLACE;
-        void* img = ::mmap(lpBaseAddress, imgSize, PROT_READ | PROT_WRITE, iflags, -1, 0);
+        void* img = lpBaseAddress == nullptr && lowmem::enabled()
+                        ? lowmem::mmapBelow4G(imgSize)  // invitado de 32 bits: vista < 4 GB
+                        : ::mmap(lpBaseAddress, imgSize, PROT_READ | PROT_WRITE, iflags, -1, 0);
         if (img == MAP_FAILED || (lpBaseAddress != nullptr && img != lpBaseAddress)) {
             if (img != MAP_FAILED) ::munmap(img, imgSize);
             win_SetLastError(8);
@@ -4938,7 +5164,18 @@ void* NativeDllInterceptor::win_MapViewOfFileEx(void* hFileMappingObject, uint32
         flags |= MAP_FIXED_NOREPLACE;  // nunca pisar memoria del host; ocupado -> fallo Win32
     }
 
-    void* mapped = ::mmap(lpBaseAddress, bytesToMap, prot, flags, mapping->fd, static_cast<off_t>(offset));
+    void* mapped = MAP_FAILED;
+    if (lpBaseAddress == nullptr && lowmem::enabled()) {
+        // Invitado de 32 bits: el puntero devuelto debe caber en 32 bits. Se reserva un hueco bajo y
+        // la vista se coloca encima con MAP_FIXED (el hueco es nuestro).
+        void* hole = lowmem::mmapBelow4G(bytesToMap, PROT_NONE);
+        if (hole != MAP_FAILED) {
+            mapped = ::mmap(hole, bytesToMap, prot, flags | MAP_FIXED, mapping->fd, static_cast<off_t>(offset));
+            if (mapped == MAP_FAILED) ::munmap(hole, bytesToMap);
+        }
+    } else {
+        mapped = ::mmap(lpBaseAddress, bytesToMap, prot, flags, mapping->fd, static_cast<off_t>(offset));
+    }
     if (mapped != MAP_FAILED && lpBaseAddress != nullptr && mapped != lpBaseAddress) {
         ::munmap(mapped, bytesToMap);
         mapped = MAP_FAILED;
@@ -5796,6 +6033,16 @@ static void* resolveModuleHandle(std::string name) {
     std::string lowerBase = baseName;
     for (char& c : lowerBase) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
+    // .NET Framework: mscoree.dll cargado es una copia de mscoreei.dll; este se busca a sí mismo por
+    // su nombre real (recursos de LoadString, rutas).
+    if ((lowerBase == "mscoreei.dll" || lowerBase == "mscoreei") && s_activeImage != nullptr) {
+        for (const auto& kv : s_activeImage->localDlls) {
+            std::string n = kv.first;
+            for (char& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (n.size() >= 11 && n.compare(n.size() - 11, 11, "mscoree.dll") == 0) return kv.second.base;
+        }
+    }
+
     if (lowerBase == "kernel32" || lowerBase == "kernel32.dll" || lowerBase == "kernelbase" || lowerBase == "kernelbase.dll" ||
         lowerBase == "psapi" || lowerBase == "psapi.dll") return kHModKernel32;
     if (lowerBase == "user32" || lowerBase == "user32.dll") return kHModUser32;
@@ -5987,7 +6234,21 @@ uint8_t hp_alIsExtensionPresent(const char* name) {
 }  // namespace
 
 void* NativeDllInterceptor::win_GetProcAddress(void* hModule, const char* lpProcName) {
-    void* p = win_GetProcAddressCore(hModule, lpProcName);
+    void* p = nullptr;
+    // .NET Framework: nuestro mscoree.dll es una copia de mscoreei.dll (el shim de System32 no se
+    // distribuye). mscoreei pide al shim su ordinal 142, que en el shim real es GetVersionExW (salto
+    // directo a la IAT); con la copia sería su propio _CorExeMain.
+    if (reinterpret_cast<uintptr_t>(lpProcName) == 142 && s_activeImage != nullptr) {
+        for (const auto& kv : s_activeImage->localDlls) {
+            const std::string n = toLower(kv.first);
+            if (kv.second.base == hModule && n.size() >= 11 && n.compare(n.size() - 11, 11, "mscoree.dll") == 0) {
+                p = w32arity::hpFn(&hp_GetVersionExW);
+                LOGI("GetProcAddress(mscoree, #142) -> GetVersionExW (shim)");
+                break;
+            }
+        }
+    }
+    if (p == nullptr) p = win_GetProcAddressCore(hModule, lpProcName);
     // Invitado de 32 bits: un puntero nativo (>4 GB) no cabe en sus variables; se da el alias bajo.
     if (p != nullptr && s_activeImage != nullptr && s_activeImage->is32Bit &&
         reinterpret_cast<uintptr_t>(p) > 0xFFFFFFFFull) {
@@ -6345,16 +6606,16 @@ int32_t NativeDllInterceptor::win_InitOnceBeginInitialize(void* lpInitOnce, uint
 
     if ((dwFlags & kInitOnceCheckOnly) != 0u) {
         *fPending = state.completed ? 0 : 1;
-        if (lpContext != nullptr) *lpContext = state.context;
+        lowmem::storePtr(lpContext, state.context);
         return state.completed ? 1 : 0;
     }
     if (!state.completed) {
         *fPending = 1;
-        if (lpContext != nullptr) *lpContext = nullptr;
+        lowmem::storePtr(lpContext, uint64_t{0});
         return 1;
     }
     *fPending = 0;
-    if (lpContext != nullptr) *lpContext = state.context;
+    lowmem::storePtr(lpContext, state.context);
     return 1;
 }
 
@@ -7156,7 +7417,7 @@ int32_t NativeDllInterceptor::win_PostMessageA(void*, uint32_t, uint64_t, int64_
 
 int64_t NativeDllInterceptor::win_SendMessageTimeoutA(void*, uint32_t, uint64_t, int64_t, uint32_t, uint32_t, uintptr_t* lpdwResult) {
     s_otherCalls.fetch_add(1);
-    if (lpdwResult != nullptr) *lpdwResult = 0;
+    lowmem::storePtr(lpdwResult, uint64_t{0});  // DWORD_PTR
     return 1;
 }
 
@@ -8039,6 +8300,28 @@ static std::string guestModulePath(void* hModule) {
     }
     for (const auto& kv : s_activeImage->localDlls) {
         if (kv.second.base != hModule) continue;
+        // DLL de sistema instaladas por la app (/sdcard/HyperPlay/redist/<arq>/...): su ruta de
+        // Windows real. mscoree/.NET calculan sus carpetas a partir de la suya.
+        {
+            const std::string& hp = kv.second.hostPath;
+            for (const char* arch : {"/redist/x86/", "/redist/x64/"}) {
+                const size_t r = hp.find(arch);
+                if (r == std::string::npos) continue;
+                std::string rest = hp.substr(r + std::strlen(arch));
+                std::string win;
+                if (rest == "netfx/Windows/System32/mscoree.dll") {
+                    // Es la copia de mscoreei.dll: se presenta con su ruta real, donde busca su
+                    // satélite de recursos (mscoreeis.dll) y el resto del Framework.
+                    win = "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\mscoreei.dll";
+                } else if (rest.rfind("netfx/Windows/", 0) == 0) {
+                    win = "C:\\Windows\\" + rest.substr(14);
+                } else {
+                    win = "C:\\Windows\\System32\\" + rest;
+                }
+                for (char& ch : win) if (ch == '/') ch = '\\';
+                return win;
+            }
+        }
         if (std::string w = managed::toWinPath(kv.second.hostPath); !w.empty()) return w;
         std::string p = kv.first;
         for (char& ch : p) if (ch == '/') ch = '\\';
@@ -8092,11 +8375,13 @@ static std::vector<std::pair<void*, const PeInfo*>> realGuestModules() {
 int32_t NativeDllInterceptor::win_EnumProcessModules(void*, void** lphModule, uint32_t cb, uint32_t* lpcbNeeded) {
     s_kernel32Calls.fetch_add(1);
     const auto mods = realGuestModules();
-    const auto needed = static_cast<uint32_t>(mods.size() * sizeof(void*));
+    const size_t ps = lowmem::guestPtrSize();  // HMODULE: 4 bytes en 32 bits
+    const auto needed = static_cast<uint32_t>(mods.size() * ps);
     if (lpcbNeeded != nullptr) *lpcbNeeded = needed;
     if (lphModule != nullptr) {
-        const size_t fit = std::min<size_t>(mods.size(), cb / sizeof(void*));
-        for (size_t i = 0; i < fit; ++i) lphModule[i] = mods[i].first;
+        const size_t fit = std::min<size_t>(mods.size(), cb / ps);
+        auto* out = reinterpret_cast<uint8_t*>(lphModule);
+        for (size_t i = 0; i < fit; ++i) lowmem::storePtr(out + i * ps, mods[i].first);
     }
     LOGI("EnumProcessModules -> %zu módulos (cb=%u)", mods.size(), cb);
     return 1;
@@ -8104,19 +8389,21 @@ int32_t NativeDllInterceptor::win_EnumProcessModules(void*, void** lphModule, ui
 
 int32_t NativeDllInterceptor::win_GetModuleInformation(void*, void* hModule, void* lpmodinfo, uint32_t cb) {
     s_kernel32Calls.fetch_add(1);
-    if (lpmodinfo == nullptr || cb < 24) {  // MODULEINFO x64 = 24 B
+    const bool w32 = lowmem::enabled();
+    const uint32_t infoSize = w32 ? 12u : 24u;  // MODULEINFO: x86 = 12 B, x64 = 24 B
+    if (lpmodinfo == nullptr || cb < infoSize) {
         win_SetLastError(122);
         return 0;
     }
     for (const auto& [base, pe] : realGuestModules()) {
         if (base != hModule) continue;
         auto* out = static_cast<uint8_t*>(lpmodinfo);
-        std::memset(out, 0, 24);
+        std::memset(out, 0, infoSize);
         const uint32_t size = pe->imageSize;
         void* entry = pe->entryPointRva != 0 ? static_cast<uint8_t*>(base) + pe->entryPointRva : nullptr;
-        std::memcpy(out, &base, 8);        // lpBaseOfDll
-        std::memcpy(out + 8, &size, 4);    // SizeOfImage
-        std::memcpy(out + 16, &entry, 8);  // EntryPoint
+        lowmem::storePtr(out, base);                     // lpBaseOfDll
+        std::memcpy(out + (w32 ? 4 : 8), &size, 4);      // SizeOfImage
+        lowmem::storePtr(out + (w32 ? 8 : 16), entry);   // EntryPoint
         return 1;
     }
     win_SetLastError(6);  // ERROR_INVALID_HANDLE
@@ -8183,9 +8470,7 @@ int32_t NativeDllInterceptor::win_SetConsoleCtrlHandler(void*, int32_t) {
 
 int32_t NativeDllInterceptor::win_OpenProcessToken(void*, uint32_t, void** TokenHandle) {
     s_otherCalls.fetch_add(1);
-    if (TokenHandle != nullptr) {
-        *TokenHandle = reinterpret_cast<void*>(0xCAFE0002ULL);
-    }
+    lowmem::storePtr(TokenHandle, uint64_t{0xCAFE0002ULL});
     return 1;
 }
 
@@ -8195,23 +8480,25 @@ int32_t NativeDllInterceptor::win_GetModuleHandleExW(uint32_t dwFlags, const voi
     if (phModule && (dwFlags & kFromAddress) != 0) {
         // lpModuleName es una dirección dentro de un módulo, no una cadena.
         const auto addr = reinterpret_cast<uintptr_t>(lpModuleName);
-        *phModule = nullptr;
+        void* found = nullptr;
         if (s_activeImage != nullptr) {
             const auto exeBase = reinterpret_cast<uintptr_t>(s_activeImage->baseAddress);
             if (addr >= exeBase && addr < exeBase + s_activeImage->totalMappedSize) {
-                *phModule = s_activeImage->baseAddress;
+                found = s_activeImage->baseAddress;
             }
             for (const auto& kv : s_activeImage->localDlls) {
                 const auto b = reinterpret_cast<uintptr_t>(kv.second.base);
-                if (addr >= b && addr < b + kv.second.size) { *phModule = kv.second.base; break; }
+                if (addr >= b && addr < b + kv.second.size) { found = kv.second.base; break; }
             }
         }
-        if (*phModule == nullptr) { win_SetLastError(126); return 0; }
+        lowmem::storePtr(phModule, found);  // HMODULE*: 4 bytes en 32 bits
+        if (found == nullptr) { win_SetLastError(126); return 0; }
         return 1;
     }
     if (phModule) {
-        *phModule = win_GetModuleHandleW(reinterpret_cast<const wchar_t*>(lpModuleName));
-        return *phModule != nullptr ? 1 : 0;
+        void* h = win_GetModuleHandleW(reinterpret_cast<const wchar_t*>(lpModuleName));
+        lowmem::storePtr(phModule, h);
+        return h != nullptr ? 1 : 0;
     }
     return 0;
 }
@@ -8348,7 +8635,7 @@ std::string getKnownFolderPath(const void* rfid, int32_t csidl) {
 int32_t NativeDllInterceptor::win_SHGetKnownFolderPath(const void* rfid, uint32_t, void*, void** ppszPath) {
     s_otherCalls.fetch_add(1);
     if (!ppszPath) return static_cast<int32_t>(0x80070057); // E_INVALIDARG
-    *ppszPath = nullptr;
+    lowmem::storePtr(ppszPath, uint64_t{0});
 
     const std::string path = getKnownFolderPath(rfid, -1);
     const size_t numChars = guestWStringLength(path) + 1;
@@ -8357,7 +8644,7 @@ int32_t NativeDllInterceptor::win_SHGetKnownFolderPath(const void* rfid, uint32_
     void* mem = win_HeapAlloc(win_GetProcessHeap(), 0, numBytes);
     if (!mem) return static_cast<int32_t>(0x8007000E); // E_OUTOFMEMORY
     writeGuestWString(static_cast<wchar_t*>(mem), numChars, path);
-    *ppszPath = mem;
+    lowmem::storePtr(ppszPath, mem);
     LOGI("win_SHGetKnownFolderPath: rfid=%p -> '%s' (ptr=%p, S_OK)", rfid, path.c_str(), mem);
     return 0; // S_OK
 }
@@ -8618,8 +8905,9 @@ int32_t NativeDllInterceptor::win_GlobalMemoryStatusEx(void* lpBuffer) {
     ms->ullAvailPhys = 12ULL * 1024 * 1024 * 1024;
     ms->ullTotalPageFile = 24ULL * 1024 * 1024 * 1024;
     ms->ullAvailPageFile = 20ULL * 1024 * 1024 * 1024;
-    ms->ullTotalVirtual = 1ULL << 40;
-    ms->ullAvailVirtual = 1ULL << 40;
+    // 32 bits con LARGE_ADDRESS_AWARE: 4 GB de espacio de direcciones (como WOW64).
+    ms->ullTotalVirtual = lowmem::enabled() ? 0xFFFE0000ull : 1ULL << 40;
+    ms->ullAvailVirtual = lowmem::enabled() ? 0xE0000000ull : 1ULL << 40;
     ms->ullAvailExtendedVirtual = 0;
     return 1;
 }
@@ -8628,12 +8916,12 @@ int32_t NativeDllInterceptor::win_CreatePipe(void** phReadPipe, void** phWritePi
     s_kernel32Calls.fetch_add(1);
     int fds[2];
     if (pipe(fds) == 0) {
-        if (phReadPipe) *phReadPipe = handleFromFd(fds[0]);
-        if (phWritePipe) *phWritePipe = handleFromFd(fds[1]);
+        lowmem::storePtr(phReadPipe, handleFromFd(fds[0]));
+        lowmem::storePtr(phWritePipe, handleFromFd(fds[1]));
         return 1;
     }
-    if (phReadPipe) *phReadPipe = handleFromFd(100);
-    if (phWritePipe) *phWritePipe = handleFromFd(101);
+    lowmem::storePtr(phReadPipe, handleFromFd(100));
+    lowmem::storePtr(phWritePipe, handleFromFd(101));
     return 1;
 }
 
@@ -8770,10 +9058,12 @@ int32_t NativeDllInterceptor::win_DuplicateHandle(void* hSourceProcessHandle, vo
     if (lpTargetHandle != nullptr) {
         // DuplicateHandle(GetCurrentThread()) produce un handle REAL del hilo llamador (así es
         // como Mono/Boehm guardan el hilo para suspenderlo); el pseudo-handle no sirve fuera.
-        if (reinterpret_cast<uintptr_t>(hSourceHandle) == kPseudoCurrentThread) {
-            *lpTargetHandle = makeThreadHandle(static_cast<int>(gettid()));
+        const auto src = reinterpret_cast<uintptr_t>(hSourceHandle);
+        // En 32 bits el pseudo-handle -2 llega como 0xFFFFFFFE (sin extender el signo).
+        if (src == kPseudoCurrentThread || (lowmem::enabled() && src == 0xFFFFFFFEu)) {
+            lowmem::storePtr(lpTargetHandle, makeThreadHandle(static_cast<int>(gettid())));
         } else {
-            *lpTargetHandle = hSourceHandle;
+            lowmem::storePtr(lpTargetHandle, hSourceHandle);
         }
     }
     return 1;
@@ -9072,7 +9362,7 @@ void* NativeDllInterceptor::win_RtlPcToFileHeader(void* PcValue, void** BaseOfIm
     s_ntdllCalls.fetch_add(1);
     sehimpl::initOnce();
     void* base = reinterpret_cast<void*>(seh::moduleBaseOf(reinterpret_cast<uint64_t>(PcValue)));
-    if (BaseOfImage != nullptr) *BaseOfImage = base;
+    lowmem::storePtr(BaseOfImage, base);
     return base;
 }
 
@@ -9086,7 +9376,8 @@ void* NativeDllInterceptor::win_DecodePointer(void* Ptr) {
 
 void NativeDllInterceptor::win_InitializeSListHead(void* ListHead) {
     s_kernel32Calls.fetch_add(1);
-    if (ListHead) std::memset(ListHead, 0, 16);
+    // SLIST_HEADER: 16 bytes en x64, 8 en x86 (con 16 se pisaba la variable siguiente).
+    if (ListHead) std::memset(ListHead, 0, lowmem::enabled() ? 8 : 16);
 }
 
 // -----------------------------------------------------------------------------
@@ -9930,7 +10221,7 @@ int32_t NativeDllInterceptor::win_BCryptGenRandom(void*, uint8_t* pbBuffer, uint
 }
 
 int32_t NativeDllInterceptor::win_BCryptOpenAlgorithmProvider(void** phAlgorithm, const wchar_t*, const wchar_t*, uint32_t) {
-    if (phAlgorithm != nullptr) *phAlgorithm = reinterpret_cast<void*>(0xBEEF1001);
+    lowmem::storePtr(phAlgorithm, uint64_t{0xBEEF1001});
     return 0; // STATUS_SUCCESS
 }
 
@@ -9939,12 +10230,12 @@ int32_t NativeDllInterceptor::win_BCryptCloseAlgorithmProvider(void*, uint32_t) 
 }
 
 int32_t NativeDllInterceptor::win_CryptAcquireContextW(void** phProv, const wchar_t*, const wchar_t*, uint32_t, uint32_t) {
-    if (phProv != nullptr) *phProv = reinterpret_cast<void*>(0xCAFE2002);
+    lowmem::storePtr(phProv, uint64_t{0xCAFE2002});  // HCRYPTPROV = ULONG_PTR
     return 1;
 }
 
 int32_t NativeDllInterceptor::win_CryptAcquireContextA(void** phProv, const char*, const char*, uint32_t, uint32_t) {
-    if (phProv != nullptr) *phProv = reinterpret_cast<void*>(0xCAFE2002);
+    lowmem::storePtr(phProv, uint64_t{0xCAFE2002});
     return 1;
 }
 
@@ -9986,7 +10277,7 @@ int32_t NativeDllInterceptor::win_GetFileVersionInfoA(const char*, uint32_t hand
 }
 
 int32_t NativeDllInterceptor::win_VerQueryValueW(const void*, const wchar_t*, void** buffer, uint32_t* len) {
-    if (buffer != nullptr) *buffer = nullptr;
+    lowmem::storePtr(buffer, uint64_t{0});
     if (len != nullptr) *len = 0;
     win_SetLastError(1813);
     return 0;
@@ -10642,6 +10933,12 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableW(const wchar_t* lpName
         }
     }
 
+    // Diagnóstico de .NET Framework (setprop debug.hyperplay.clrloadlog 1): mscoreei escribe en la
+    // carpeta del juego por qué elige o rechaza cada runtime.
+    if (!found && upper == "COMPLUS_CLRLOADLOGDIR") {
+        char lv[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.clrloadlog", lv) > 0 && lv[0] == '1') { val = "D:\\"; found = true; }
+    }
     if (!found) found = managedEnvVar(upper, val);
     // Diagnóstico (setprop debug.hyperplay.dotnettrace 1): EventPipe lee aquí su configuración.
     if (!found && upper.rfind("DOTNET_", 0) == 0) {
@@ -10728,6 +11025,12 @@ uint32_t NativeDllInterceptor::win_GetEnvironmentVariableA(const char* lpName, c
         }
     }
 
+    // Diagnóstico de .NET Framework (setprop debug.hyperplay.clrloadlog 1): mscoreei escribe en la
+    // carpeta del juego por qué elige o rechaza cada runtime.
+    if (!found && upper == "COMPLUS_CLRLOADLOGDIR") {
+        char lv[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.clrloadlog", lv) > 0 && lv[0] == '1') { val = "D:\\"; found = true; }
+    }
     if (!found) found = managedEnvVar(upper, val);
     // Diagnóstico (setprop debug.hyperplay.dotnettrace 1): EventPipe lee aquí su configuración.
     if (!found && upper.rfind("DOTNET_", 0) == 0) {
@@ -11047,7 +11350,7 @@ int32_t NativeDllInterceptor::win_PostQueuedCompletionStatus(void* port, uint32_
 int32_t NativeDllInterceptor::win_GetQueuedCompletionStatus(void* port, uint32_t* bytes, uint64_t* key, void** overlapped,
                                                             uint32_t ms) {
     s_kernel32Calls.fetch_add(1);
-    if (overlapped) *overlapped = nullptr;
+    lowmem::storePtr(overlapped, uint64_t{0});
     auto p = findIocp(port);
     if (!p) {
         win_SetLastError(6);
@@ -11061,8 +11364,8 @@ int32_t NativeDllInterceptor::win_GetQueuedCompletionStatus(void* port, uint32_t
     const IocpPacket pk = p->queue.front();
     p->queue.pop_front();
     if (bytes) *bytes = pk.bytes;
-    if (key) *key = pk.key;
-    if (overlapped) *overlapped = pk.overlapped;
+    lowmem::storePtr(key, pk.key);  // ULONG_PTR
+    lowmem::storePtr(overlapped, pk.overlapped);
     return 1;
 }
 
@@ -11320,7 +11623,7 @@ uint32_t NativeDllInterceptor::win_GetFullPathNameW(const wchar_t* lpFileName, u
         }
         // Aritmética en unidades WCHAR de 2 bytes (wchar_t de Bionic mide 4).
         auto* base16 = reinterpret_cast<char16_t*>(lpBuffer);
-        *lpFilePart = reinterpret_cast<wchar_t*>(lastSlash >= 0 ? base16 + lastSlash + 1 : base16);
+        lowmem::storePtr(lpFilePart, lastSlash >= 0 ? base16 + lastSlash + 1 : base16);
     }
     return needed;
 }
@@ -11561,7 +11864,7 @@ int32_t NativeDllInterceptor::win_FindNextFileW(void* hFindFile, void* lpFindFil
     {
         std::lock_guard<std::mutex> lock(s_findMutex);
         auto it = s_findSearches.find(handle);
-        if (it == s_findSearches.end() || it->second.dir == nullptr) return 0;
+        if (it == s_findSearches.end() || it->second.dir == nullptr) { win_SetLastError(6); return 0; }
         d = it->second.dir;
         dirPath = it->second.dirPath;
         pattern = it->second.pattern;
@@ -11577,7 +11880,10 @@ int32_t NativeDllInterceptor::win_FindNextFileW(void* hFindFile, void* lpFindFil
         }
         break;
     }
-    if (!entry) return 0;
+    if (!entry) {
+        win_SetLastError(18);  // ERROR_NO_MORE_FILES: fin normal (.NET distingue esto de un error)
+        return 0;
+    }
 
     auto* fd = static_cast<WIN32_FIND_DATAW_STRUCT*>(lpFindFileData);
     std::memset(fd, 0, sizeof(*fd));

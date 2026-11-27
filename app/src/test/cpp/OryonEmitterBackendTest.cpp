@@ -154,10 +154,9 @@ uint8_t* mapCode(const Bytes& code, bool low32 = false) {
 #endif
     }
     void* p = mmap(hint, size, PROT_READ | PROT_WRITE, flags, -1, 0);
-    if (p == MAP_FAILED && low32) {
-        // Si el cargador ya ocupa esa dirección, probamos otra zona baja.
-        hint = reinterpret_cast<void*>(0x30000000);
-        p = mmap(hint, size, PROT_READ | PROT_WRITE, flags, -1, 0);
+    // Si esa dirección ya está ocupada (otro programa de 32 bits anterior), siguiente hueco bajo.
+    for (uintptr_t a = 0x30000000; p == MAP_FAILED && low32 && a < 0x40000000; a += 0x10000) {
+        p = mmap(reinterpret_cast<void*>(a), size, PROT_READ | PROT_WRITE, flags, -1, 0);
     }
     if (p == MAP_FAILED) {
         std::perror("mmap code");
@@ -3033,6 +3032,35 @@ void testMode32Program() {
     append(loop, {0x75, 0xFA});        // jnz -6 (vuelve a add eax,2)
     append(loop, {0xC3});
     CHECK_EQ(runCode(loop, true), 20);
+
+    // MSVC __EH_prolog3 (mscoree de .NET 4.8): llamado con ECX = this, no debe tocar ECX.
+    // Cookie [abs] sustituida por mov eax, 0; fs:[0] apunta a un TEB de prueba por debajo de 4 GB.
+    auto* teb = static_cast<uint32_t*>(hyperplay::lowmem::mmapBelow4G(4096));
+    CHECK(teb != MAP_FAILED);
+    teb[0] = 0xFFFFFFFFu;  // ExceptionList vacía
+    g_backend->context().fsBase = reinterpret_cast<uintptr_t>(teb);
+    Bytes eh;
+    append(eh, {0xB9, 0x44, 0x33, 0x22, 0x11});  // 0: mov ecx, 0x11223344
+    append(eh, {0x89, 0xE6});                    // 5: mov esi, esp
+    append(eh, {0x6A, 0x01, 0x6A, 0x00});        // 7: push 1; push 0
+    append(eh, {0xE8, 0x00, 0x00, 0x00, 0x00});  // 11: call 16
+    append(eh, {0x6A, 0x14});                    // 16: push 0x14
+    append(eh, {0xB8, 0x88, 0x77, 0x66, 0x55});  // 18: mov eax, 0x55667788
+    append(eh, {0xE8, 0x05, 0x00, 0x00, 0x00});  // 23: call 33 (__EH_prolog3)
+    append(eh, {0x89, 0xC8});                    // 28: mov eax, ecx
+    append(eh, {0x89, 0xF4});                    // 30: mov esp, esi
+    append(eh, {0xC3});                          // 32: ret
+    append(eh, {0x50, 0x64, 0xFF, 0x35, 0x00, 0x00, 0x00, 0x00,       // push eax; push fs:[0]
+                0x8D, 0x44, 0x24, 0x0C, 0x2B, 0x64, 0x24, 0x0C,       // lea eax,[esp+0xc]; sub esp,[esp+0xc]
+                0x53, 0x56, 0x57, 0x89, 0x28, 0x8B, 0xE8,             // push ebx/esi/edi; mov [eax],ebp; mov ebp,eax
+                0xB8, 0x00, 0x00, 0x00, 0x00, 0x33, 0xC5, 0x50,       // mov eax,0 (cookie); xor eax,ebp; push eax
+                0xFF, 0xB5, 0xFC, 0xFF, 0xFF, 0xFF,                   // push [ebp-4]
+                0xC7, 0x85, 0xFC, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // mov [ebp-4], -1
+                0x8D, 0x85, 0xF4, 0xFF, 0xFF, 0xFF,                   // lea eax,[ebp-0xc]
+                0x64, 0xA3, 0x00, 0x00, 0x00, 0x00,                   // mov fs:[0], eax
+                0xF2, 0xC3});                                         // bnd ret
+    CHECK_EQ(runCode(eh, true), 0x11223344);
+    hyperplay::lowmem::g_enabled = false;
 }
 
 void testWxAndUnsupported() {

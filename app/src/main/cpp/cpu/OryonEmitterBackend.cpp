@@ -1423,6 +1423,12 @@ void OryonEmitterBackend::setGuestMode(bool is32Bit) {
 // Emisión de palabras y parcheo de saltos
 // ---------------------------------------------------------------------------
 
+void OryonEmitterBackend::emitReadTsc() {
+    emitWord(0xD53BE040u | 16u);   // mrs x16, cntvct_el0
+    emitMovReg(0, 16, false);      // EAX = 32 bits bajos (mov w0, w16 pone a cero la mitad alta)
+    emitLsrImm(2, 16, 32, true);   // EDX = 32 bits altos
+}
+
 void OryonEmitterBackend::emitWord(uint32_t instruction) {
     if (!emitOk_) return;
     if (arena_ == nullptr || jitOffset_ + sizeof(uint32_t) > arenaSize_) {
@@ -2844,6 +2850,10 @@ bool probeReadable(uintptr_t addr, size_t len) {
 std::atomic<uint64_t (*)(uint64_t)> s_moduleBaseOf{nullptr};
 
 bool probeMatches(uintptr_t rip) {
+    // Dirección absoluta (útil en 32 bits, donde el resolutor de módulos solo conoce imágenes x64).
+    for (const uint64_t a : probeRvas()) {
+        if (a >= 0x1000000 && rip == a) return true;
+    }
     auto baseOf = s_moduleBaseOf.load(std::memory_order_acquire);
     if (baseOf == nullptr) return false;
     const uint64_t base = baseOf(rip);
@@ -2906,6 +2916,9 @@ static void probeLog(CpuContext* c, uint64_t rip) {
          static_cast<unsigned long long>(c->gpr[8]), probeText(c->gpr[8]).c_str(),
          static_cast<unsigned long long>(c->gpr[9]), probeText(c->gpr[9]).c_str(),
          static_cast<unsigned long long>(ret));
+    LOGI("[Sonda]   rbx=%llx rsp=%llx rbp=%llx rsi=%llx rdi=%llx", static_cast<unsigned long long>(c->gpr[3]),
+         static_cast<unsigned long long>(c->gpr[4]), static_cast<unsigned long long>(c->gpr[5]),
+         static_cast<unsigned long long>(c->gpr[6]), static_cast<unsigned long long>(c->gpr[7]));
     if (probeReadable(c->gpr[8], 32)) {
         const auto* q = reinterpret_cast<const uint64_t*>(c->gpr[8]);
         LOGI("[Sonda]   [r8]=%llx%s [r8+8]=%llx%s [r8+10]=%llx [r8+18]=%llx [r8+20]=%llx",
@@ -6329,13 +6342,17 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
                 emitMovImm64(2, 0);  // EDX = 0
                 return finish();
             }
-            if (modrm == 0xF9) {  // RDTSCP
-                emitMovImm64(0, 1000);
-                emitMovImm64(2, 0);
+            if (modrm == 0xF9) {  // RDTSCP: contador real + ECX = TSC_AUX (0)
+                emitReadTsc();
                 emitMovImm64(1, 0);
                 return finish();
             }
             return fail("0F 01 suboperacion no soportada");
+        }
+
+        if (op2 == 0x31) {  // RDTSC (0F 31): EDX:EAX = contador
+            emitReadTsc();
+            return finish();
         }
 
         // --- SETcc r/m8 (0x0F 0x90..0x9F) -------------------------------------------
@@ -7555,6 +7572,31 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
         }
         emitEffectiveAddress(m, nextRip());
         emitMovReg(m.reg, 16, is64);
+        return finish();
+    }
+
+    // --- MOV r/m, Sreg (8C) -----------------------------------------------------------
+    // No hay segmentos reales: se devuelven los selectores fijos de Windows. CS es 0x23 en WOW64
+    // (32 bits) y 0x33 en x64; DS/ES/SS/GS = 0x2B y FS = 0x53. Lo usan las rutinas que guardan el
+    // contexto (__report_gsfailure, RtlCaptureContext de 32 bits).
+    if (op == 0x8C) {
+        ModRm m;
+        if (!decodeModRm(reader, rexR, rexX, rexB, m)) return fail("MOV Sreg truncado");
+        uint16_t sel = 0x2B;
+        switch (m.reg & 7) {
+            case 1: sel = mode32_ ? 0x23 : 0x33; break;  // CS
+            case 4: sel = 0x53; break;                     // FS
+            case 0: case 2: case 3: case 5: break;         // ES, SS, DS, GS
+            default: return fail("MOV con registro de segmento no válido");
+        }
+        emitMovImm64(16, sel);
+        if (m.isMemory) {
+            emitStoreOperand(m, 16, 2, nextRip());  // con memoria siempre escribe 16 bits
+        } else if (prefix66) {
+            emitBfi(m.rm, 16, 0, 16);
+        } else {
+            emitMovReg(m.rm, 16, is64);  // con registro: extendido con ceros
+        }
         return finish();
     }
 
@@ -10503,11 +10545,14 @@ struct sigaction s_prevSegv{}, s_prevBus{}, s_prevIll{};
 std::once_flag s_crashReporterOnce;
 
 int s_crashFd = -1;  // abierto al instalar: write() es async-signal-safe (logd puede descartar líneas)
+// Copia legible sin run-as (APK de release): solo con `setprop debug.hyperplay.crashsd 1`.
+int s_crashFdSd = -1;
 
 void crashWrite(const char* s) {
     size_t n = 0;
     while (s[n] != 0) ++n;
     if (s_crashFd >= 0) (void)!write(s_crashFd, s, n);
+    if (s_crashFdSd >= 0) (void)!write(s_crashFdSd, s, n);
 }
 
 void crashHex(char* out, uint64_t v) {  // 16 dígitos + NUL, sin snprintf
@@ -10612,6 +10657,10 @@ void installGuestCrashReporter() {
         s_crashFd = open("/data/data/com.murdoc820.hyperplay/files/guest_crash.txt",
                          O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         if (s_crashFd < 0) s_crashFd = open("/data/local/tmp/guest_crash.txt", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+        char sd[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.hyperplay.crashsd", sd) > 0 && sd[0] == '1') {
+            s_crashFdSd = open("/sdcard/HyperPlay/guest_crash.txt", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+        }
         auto addSpecial = reinterpret_cast<AddSpecialSignalHandlerFnT>(dlsym(RTLD_DEFAULT, "AddSpecialSignalHandlerFn"));
         if (addSpecial != nullptr) {
             static SigchainAction action{};
