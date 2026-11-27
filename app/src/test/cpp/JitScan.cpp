@@ -26,6 +26,7 @@ namespace hyperplay {
 void NativeDllInterceptor::setGuestTeb(void*, bool) noexcept {}
 bool NativeDllInterceptor::isRegisteredTrampoline(uintptr_t) noexcept { return false; }
 int32_t NativeDllInterceptor::dispatchGuestException(OryonEmitterBackend&, uint64_t) { return 0; }
+bool NativeDllInterceptor::prepareGuestException32(CpuContext&, uint32_t, uint32_t, uint32_t) { return false; }
 }  // namespace hyperplay
 
 namespace {

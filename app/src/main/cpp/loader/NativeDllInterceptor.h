@@ -483,6 +483,9 @@ public:
     /// Llama a los VEH registrados y al filtro de nivel superior con EXCEPTION_POINTERS en memoria
     /// invitada. Devuelve EXCEPTION_CONTINUE_EXECUTION (-1) o EXCEPTION_CONTINUE_SEARCH (0).
     static int32_t dispatchGuestException(class OryonEmitterBackend& backend, uint64_t exceptionPointers);
+    // Excepción hardware de un invitado de 32 bits: deja EXCEPTION_RECORD/CONTEXT x86 en su pila y
+    // `ctx` apuntando al despachador SEH x86. false si no se pudo (se trata como sin manejar).
+    static bool prepareGuestException32(struct CpuContext& ctx, uint32_t code, uint32_t address, uint32_t access);
     /// Contexto x64 real de un hilo invitado detenido (o en código nativo) para el GC de Mono.
     static int32_t win_GetThreadContext(void* hThread, void* lpContext);
     static int32_t win_SetThreadContext(void* hThread, const void* lpContext);

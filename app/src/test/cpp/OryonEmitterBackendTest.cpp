@@ -78,6 +78,8 @@ int32_t NativeDllInterceptor::dispatchGuestException(OryonEmitterBackend& backen
     const uint64_t args[1] = {exceptionPointers};
     return static_cast<int32_t>(backend.callGuestNested(g_vehHandler, args, 1));
 }
+// SEH x86 vive en el interceptor real; aquí un fallo de 32 bits queda sin manejar.
+bool NativeDllInterceptor::prepareGuestException32(CpuContext&, uint32_t, uint32_t, uint32_t) { return false; }
 #endif
 }
 
@@ -3077,6 +3079,45 @@ void testMode32Program() {
     append(pa, {0x01, 0xF8});              // add eax, edi
     append(pa, {0xC3});
     CHECK_EQ(runCode(pa, true), 0x77);
+
+    // SAHF: AH=0x41 -> ZF=1, CF=1.  LAHF tras XOR (ZF=1, PF=1, CF=0) -> AH = 0x46.
+    Bytes sh;
+    append(sh, {0xB4, 0x41, 0x9E});                    // mov ah, 0x41; sahf
+    append(sh, {0xB8, 0x00, 0x00, 0x00, 0x00});        // mov eax, 0 (no toca flags)
+    append(sh, {0x0F, 0x94, 0xC0});                    // sete al
+    append(sh, {0x0F, 0x92, 0xC1});                    // setb cl
+    append(sh, {0x0F, 0xB6, 0xC9, 0xD1, 0xE1});        // movzx ecx, cl; shl ecx, 1
+    append(sh, {0x01, 0xC8, 0xC3});                    // add eax, ecx; ret -> 3
+    CHECK_EQ(runCode(sh, true), 3);
+    Bytes lh;
+    append(lh, {0x31, 0xD2, 0x9F});                    // xor edx, edx; lahf
+    append(lh, {0x0F, 0xB6, 0xC4, 0xC3});              // movzx eax, ah; ret -> 0x46
+    CHECK_EQ(runCode(lh, true), 0x46);
+
+    // PUSH ESP guarda el ESP anterior; POP ESP deja el valor leído (sin sumar 4).
+    Bytes pe;
+    append(pe, {0x89, 0xE0});  // mov eax, esp
+    append(pe, {0x54, 0x5C});  // push esp; pop esp   -> esp sin cambios
+    append(pe, {0x89, 0xE1});  // mov ecx, esp
+    append(pe, {0x29, 0xC1});  // sub ecx, eax        -> 0
+    append(pe, {0x54, 0x5A});  // push esp; pop edx   -> edx = esp original
+    append(pe, {0x29, 0xC2});  // sub edx, eax        -> 0
+    append(pe, {0x01, 0xD1});  // add ecx, edx
+    append(pe, {0x83, 0xC1, 0x07});  // add ecx, 7
+    append(pe, {0x89, 0xC8, 0xC3});  // mov eax, ecx; ret
+    CHECK_EQ(runCode(pe, true), 7);
+    CHECK(configureBackend(false));
+    Bytes pe64;
+    append(pe64, {0x48, 0x89, 0xE0});        // mov rax, rsp
+    append(pe64, {0x54, 0x5C});              // push rsp; pop rsp
+    append(pe64, {0x48, 0x89, 0xE1});        // mov rcx, rsp
+    append(pe64, {0x48, 0x29, 0xC1});        // sub rcx, rax
+    append(pe64, {0x54, 0x5A});              // push rsp; pop rdx
+    append(pe64, {0x48, 0x29, 0xC2});        // sub rdx, rax
+    append(pe64, {0x48, 0x01, 0xD1});        // add rcx, rdx
+    append(pe64, {0x48, 0x83, 0xC1, 0x07});  // add rcx, 7
+    append(pe64, {0x48, 0x89, 0xC8, 0xC3});  // mov rax, rcx; ret
+    CHECK_EQ(runCode(pe64), 7);
     hyperplay::lowmem::g_enabled = false;
 }
 

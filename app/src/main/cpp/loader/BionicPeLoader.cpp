@@ -6,6 +6,7 @@
 #include <android/log.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/system_properties.h>
 #include <unistd.h>
@@ -375,6 +376,8 @@ bool BionicPeLoader::applyRelocations(LoadedPeImage& image) {
     if (skipped > 0) {
         LOGW("Reubicaciones aplicadas: %zu, omitidas (tipo no soportado o fuera de imagen): %zu", applied, skipped);
     }
+    // OptionalHeader.ImageBase se deja como en el archivo: CoreCLR (.NET 6) rechaza sus ensamblados
+    // ReadyToRun cargados con LoadLibrary si se reescribe (probado con Stardew Valley).
     return true;
 }
 
@@ -495,11 +498,60 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
         else if (c != '\0' && c != '\"') norm.push_back(c);
     }
 
-    // Seguridad: no permitir escapes de directorio '..'
+    // '..': se permite solo si la ruta resultante queda dentro de la instalación del juego (hasta dos
+    // niveles por encima de la carpeta del ejecutable: Unreal pone el .exe en Binaries/Win32 y carga
+    // "..\NTJobCode\windows\submission\NTJobCode.dll"). Cualquier otra salida se rechaza.
+    std::string traversalPath;
     if (norm == "." || norm == ".." || norm.find("/../") != std::string::npos ||
         norm.rfind("../", 0) == 0 || (norm.size() >= 3 && norm.substr(norm.size() - 3) == "/..")) {
-        LOGW("DLL local con path traversal no permitido: %s", dllName.c_str());
-        return nullptr;
+        std::vector<std::string> parts;
+        auto push = [&parts](const std::string& path) -> bool {
+            size_t i = 0;
+            while (i <= path.size()) {
+                const size_t j = path.find('/', i);
+                const std::string c = path.substr(i, (j == std::string::npos ? path.size() : j) - i);
+                if (c == "..") {
+                    if (parts.empty()) return false;
+                    parts.pop_back();
+                } else if (!c.empty() && c != ".") {
+                    parts.push_back(c);
+                }
+                if (j == std::string::npos) break;
+                i = j + 1;
+            }
+            return true;
+        };
+        std::string abs;
+        if (push(image.gameDir) && push(norm)) {
+            for (const auto& c : parts) abs += "/" + c;
+        }
+        std::string root = image.gameDir;
+        for (int up = 0; up < 2; ++up) {
+            const size_t s = root.find_last_of('/');
+            if (s == std::string::npos || s == 0) break;
+            root = root.substr(0, s);
+        }
+        if (abs.empty() || abs.rfind(root + "/", 0) != 0) {
+            LOGW("DLL local con path traversal no permitido: %s", dllName.c_str());
+            return nullptr;
+        }
+        // Componentes sin distinguir mayúsculas (Windows): NTJOBCODE\WINDOWS -> NTJobCode/windows.
+        std::string resolved = root;
+        bool ok = true;
+        for (size_t i = std::count(root.begin(), root.end(), '/'); i < parts.size() && ok; ++i) {
+            const std::string want = parts[i];
+            std::string match;
+            if (DIR* d = opendir(resolved.c_str()); d != nullptr) {
+                while (struct dirent* e = readdir(d)) {
+                    if (strcasecmp(e->d_name, want.c_str()) == 0) { match = e->d_name; break; }
+                }
+                closedir(d);
+            }
+            if (match.empty()) ok = false;
+            else resolved += "/" + match;
+        }
+        traversalPath = ok ? resolved : abs;
+        norm = parts.empty() ? norm : parts.back();
     }
 
     const size_t slash = norm.find_last_of('/');
@@ -515,6 +567,7 @@ void* BionicPeLoader::loadLocalDll(LoadedPeImage& image, const std::string& dllN
 
     // Construcción de rutas candidatas para localizar el binario en disco
     std::vector<std::string> candidatePaths;
+    if (!traversalPath.empty()) candidatePaths.push_back(traversalPath);  // ruta con '..' ya validada
     // 0. Juego .NET: primero las DLL x64 del runtime (FNA y shims de Steam/FMOD), que sustituyen a
     //    las de 32 bits que trae el juego (CSteamworks.dll, fmod.dll...).
     if (const std::string user = managed::userOverride(lowerBase); !user.empty()) candidatePaths.push_back(user);
@@ -781,20 +834,40 @@ std::string BionicPeLoader::resolveVirtualPath(const LoadedPeImage& image, const
         relative = norm;
     }
 
-    // Sin componentes "..": un ejecutable no puede escapar de su carpeta (ni leer datos privados).
-    std::string safe;
+    // "..": dentro de la ruta retrocede un componente. Por encima de D:\ (la carpeta del ejecutable)
+    // solo se permite subir dos niveles, hasta la raíz de la instalación: Unreal pone el .exe en
+    // Binaries\Win32 y abre "..\..\DmCGame\Config\...". Nunca se sale más arriba.
+    const bool gameDrive = !(norm.size() >= 2 && norm[1] == ':') || norm[0] == 'D' || norm[0] == 'd';
+    std::vector<std::string> comps;
+    int ups = 0;
     size_t start = 0;
     while (start <= relative.size()) {
         const size_t slash = relative.find('/', start);
         const std::string part = relative.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
-        if (!part.empty() && part != "." && part != "..") {
-            if (!safe.empty()) safe.push_back('/');
-            safe += part;
+        if (part == "..") {
+            if (!comps.empty()) comps.pop_back();
+            else if (gameDrive && ups < 2) ++ups;
+        } else if (!part.empty() && part != ".") {
+            comps.push_back(part);
         }
         if (slash == std::string::npos) break;
         start = slash + 1;
     }
+    std::string safe;
+    for (const auto& c : comps) {
+        if (!safe.empty()) safe.push_back('/');
+        safe += c;
+    }
     if (safe.empty()) safe = ".";
+    if (ups > 0) {
+        std::string base = image.gameDir;
+        for (int i = 0; i < ups; ++i) {
+            const size_t s = base.find_last_of('/');
+            if (s == std::string::npos || s == 0) break;
+            base = base.substr(0, s);
+        }
+        return base + "/" + safe;
+    }
 
     // Perfil de usuario (C:\users\..., C:\ProgramData\...) y carpetas de guardado: se aíslan en
     // <Game>/_HyperPlaySaves conservando el árbol COMPLETO, de modo que padre e hijo se resuelven

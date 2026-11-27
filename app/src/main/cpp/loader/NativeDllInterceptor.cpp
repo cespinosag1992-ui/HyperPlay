@@ -206,6 +206,11 @@ uintptr_t lowFor(void* host, const std::string& name) {
 }
 }  // namespace w32alias
 
+// Llamada a código del invitado (definida en sehimpl).
+namespace sehimpl {
+uint64_t callGuest(uint64_t fn, const uint64_t* args, size_t argc);
+}  // namespace sehimpl
+
 // SEH de 32 bits (definido junto a RaiseException).
 namespace seh32 {
 int32_t hp_NtContinue32(const uint8_t* ctx, int32_t testAlert);
@@ -1553,6 +1558,34 @@ void* win_InterlockedPushListSListEx(void* head, void* list, void* listEnd, uint
     return reinterpret_cast<void*>(old);
 }
 
+// FileTimeToLocalFileTime / LocalFileTimeToFileTime: FILETIME (100 ns desde 1601) ± desfase de la
+// zona horaria local. Mono las usa al abrir ensamblados si GetFileInformationByHandle da fechas.
+int64_t localOffset100ns() {
+    const time_t now = ::time(nullptr);
+    struct tm lt{};
+    localtime_r(&now, &lt);
+    return static_cast<int64_t>(lt.tm_gmtoff) * 10000000LL;
+}
+int32_t win_FileTimeToLocalFileTime(const uint64_t* in, uint64_t* out) {
+    if (in == nullptr || out == nullptr) { NativeDllInterceptor::win_SetLastError(87); return 0; }
+    uint64_t v = 0;
+    std::memcpy(&v, in, 8);
+    v = static_cast<uint64_t>(static_cast<int64_t>(v) + localOffset100ns());
+    std::memcpy(out, &v, 8);
+    return 1;
+}
+int32_t win_LocalFileTimeToFileTime(const uint64_t* in, uint64_t* out) {
+    if (in == nullptr || out == nullptr) { NativeDllInterceptor::win_SetLastError(87); return 0; }
+    uint64_t v = 0;
+    std::memcpy(&v, in, 8);
+    v = static_cast<uint64_t>(static_cast<int64_t>(v) - localOffset100ns());
+    std::memcpy(out, &v, 8);
+    return 1;
+}
+
+// SetCriticalSectionSpinCount: las secciones críticas son mutex nativos; devuelve la cuenta anterior (0).
+uint32_t win_SetCriticalSectionSpinCount(void*, uint32_t) { return 0; }
+
 // OpenProcess: solo existe el propio proceso (pseudo-handle -1); otros PID -> NULL.
 void* win_OpenProcess(uint32_t, int32_t, uint32_t pid) {
     if (pid == static_cast<uint32_t>(getpid()) || pid == 0) return reinterpret_cast<void*>(~uintptr_t{0});
@@ -1788,6 +1821,9 @@ void* resolveSystemExtraExport(const std::string& funcName) {
         {"OpenEventW", w32arity::hpFn(&win_OpenEventW)},
         {"OpenEventA", w32arity::hpFn(&win_OpenEventW)},
         {"OpenProcess", w32arity::hpFn(&win_OpenProcess)},
+        {"SetCriticalSectionSpinCount", w32arity::hpFn(&win_SetCriticalSectionSpinCount)},
+        {"FileTimeToLocalFileTime", w32arity::hpFn(&win_FileTimeToLocalFileTime)},
+        {"LocalFileTimeToFileTime", w32arity::hpFn(&win_LocalFileTimeToFileTime)},
         {"GetProcessId", w32arity::hpFn(&win_GetProcessId)},
         {"CreateMemoryResourceNotification", w32arity::hpFn(&win_CreateMemoryResourceNotification)},
         {"QueryMemoryResourceNotification", w32arity::hpFn(&win_QueryMemoryResourceNotification)},
@@ -1859,7 +1895,21 @@ void* resolveRegistryExport(const std::string& funcName) {
 void NativeDllInterceptor::init(LoadedPeImage* image) {
     s_activeImage = image;
     // Invitado de 32 bits: el montón Win32 y demás memoria que se le entrega, por debajo de 4 GB.
-    if (image != nullptr && image->is32Bit) lowmem::g_enabled.store(true);
+    if (image != nullptr && image->is32Bit) {
+        lowmem::g_enabled.store(true);
+        // Los HMODULE de las DLL de sistema son 0x7FFF00xx. El .NET Framework lee la cabecera PE de un
+        // HMODULE (MZ/PE/SizeOfImage): una página de ceros hace que la lea, vea que no es una imagen y
+        // siga, en vez de fallar. Solo 32 bits (en 64 bits nadie la ha necesitado).
+        static std::once_flag s_fakeHmodPage;
+        std::call_once(s_fakeHmodPage, [] {
+            void* p = mmap(reinterpret_cast<void*>(0x7FFF0000u), 0x10000, PROT_READ,
+                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+            if (p == MAP_FAILED || p != reinterpret_cast<void*>(0x7FFF0000u)) {
+                if (p != MAP_FAILED) munmap(p, 0x10000);
+                LOGW("No se pudo reservar la página de HMODULE de sistema en 0x7FFF0000");
+            }
+        });
+    }
     gpu::presentopt::g_widePatched.store(false);  // juego nuevo: aún sin parche panorámico
     s_cmdA[0] = '\0';
     s_cmdW[0] = u'\0';
@@ -2938,6 +2988,25 @@ static std::string importName(const std::string& dll, const ImportedFunction& fn
         };
         if (const auto it = kOleAut.find(fn.ordinal); it != kOleAut.end()) return it->second;
     }
+    if (d == "wsock32.dll" || d == "wsock32" || d == "ws2_32.dll" || d == "ws2_32") {
+        static const std::unordered_map<uint16_t, const char*> kWsock = {
+            {1, "accept"}, {2, "bind"}, {3, "closesocket"}, {4, "connect"}, {5, "getpeername"}, {6, "getsockname"},
+            {7, "getsockopt"}, {8, "htonl"}, {9, "htons"}, {10, "inet_addr"}, {11, "inet_ntoa"}, {12, "ioctlsocket"},
+            {13, "listen"}, {14, "ntohl"}, {15, "ntohs"}, {16, "recv"}, {17, "recvfrom"}, {18, "select"}, {19, "send"},
+            {20, "sendto"}, {21, "setsockopt"}, {22, "shutdown"}, {23, "socket"}, {51, "gethostbyaddr"},
+            {52, "gethostbyname"}, {57, "gethostname"}, {101, "WSAAsyncSelect"}, {111, "WSAGetLastError"},
+            {112, "WSASetLastError"}, {115, "WSAStartup"}, {116, "WSACleanup"}, {151, "__WSAFDIsSet"},
+        };
+        if (const auto it = kWsock.find(fn.ordinal); it != kWsock.end()) return it->second;
+    }
+    if (d.rfind("xinput", 0) == 0) {
+        static const std::unordered_map<uint16_t, const char*> kXInput = {
+            {2, "XInputGetState"}, {3, "XInputSetState"}, {4, "XInputGetCapabilities"}, {5, "XInputEnable"},
+            {6, "XInputGetDSoundAudioDeviceGuids"}, {7, "XInputGetBatteryInformation"}, {8, "XInputGetKeystroke"},
+            {100, "XInputGetStateEx"},
+        };
+        if (const auto it = kXInput.find(fn.ordinal); it != kXInput.end()) return it->second;
+    }
     return fn.name;
 }
 
@@ -3558,6 +3627,20 @@ static int32_t hp_UrlIsW(const char16_t* url, int32_t kind) {
 
 static int32_t hp_PathIsURLW(const char16_t* p) { return hp_UrlIsW(p, 0); }
 
+// StrToIntW/A: decimal con signo opcional; se para en el primer carácter no numérico.
+template <class C>
+static int32_t strToIntT(const C* s) {
+    if (s == nullptr) return 0;
+    while (*s == ' ' || *s == '\t') ++s;
+    bool neg = false;
+    if (*s == '-' || *s == '+') neg = *s++ == '-';
+    int64_t v = 0;
+    while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0');
+    return static_cast<int32_t>(neg ? -v : v);
+}
+static int32_t hp_StrToIntW(const char16_t* s) { return strToIntT(s); }
+static int32_t hp_StrToIntA(const char* s) { return strToIntT(s); }
+
 // PathRemoveBackslashW: quita una '\' final salvo en raíces ("C:\"); devuelve el puntero al final.
 static char16_t* hp_PathRemoveBackslashW(char16_t* p) {
     if (p == nullptr) return nullptr;
@@ -3591,8 +3674,25 @@ static std::u16string u16of(const char16_t* p) {
     if (p != nullptr) for (; *p != 0; ++p) s.push_back(*p);
     return s;
 }
-static int32_t hp_UrlCanonicalizeW(const char16_t* url, char16_t* out, uint32_t* cch, uint32_t) {
-    return urlCopyOut(u16of(url), out, cch);
+// Como Windows: una ruta DOS se convierte en URL de archivo ("D:\a b.exe" -> "file:///D:/a%20b.exe",
+// "\\srv\c" -> "file://srv/c"); el .NET Framework la usa como codebase del ejecutable. Una URL
+// (con esquema) se deja igual.
+static int32_t hp_UrlCanonicalizeW(const char16_t* url, char16_t* out, uint32_t* cch, uint32_t flags) {
+    std::u16string s = u16of(url);
+    const bool drive = s.size() >= 2 && s[1] == u':' &&
+                       ((s[0] >= u'A' && s[0] <= u'Z') || (s[0] >= u'a' && s[0] <= u'z'));
+    const bool unc = s.size() >= 2 && s[0] == u'\\' && s[1] == u'\\';
+    if (drive || unc) {
+        std::u16string r = drive ? u"file:///" : u"file://";
+        for (size_t i = unc ? 2 : 0; i < s.size(); ++i) {
+            const char16_t c = s[i];
+            if (c == u'\\') r.push_back(u'/');
+            else if (c == u' ' && (flags & 0x02000000u) == 0) r += u"%20";  // salvo URL_DONT_ESCAPE_EXTRA_INFO
+            else r.push_back(c);
+        }
+        s = r;
+    }
+    return urlCopyOut(s, out, cch);
 }
 static int32_t hp_UrlUnescapeW(char16_t* url, char16_t* out, uint32_t* cch, uint32_t flags) {
     const std::u16string in = u16of(url);
@@ -3618,6 +3718,780 @@ static int32_t hp_UrlUnescapeW(char16_t* url, char16_t* out, uint32_t* cch, uint
     }
     return urlCopyOut(s, out, cch);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Resto de importaciones de clr.dll (.NET Framework 4, 32 bits). Firmas exactas: en stdcall una
+// aridad equivocada desbalancea la pila. Solo se resuelven para invitados de 32 bits.
+// ---------------------------------------------------------------------------------------------
+namespace w32more {
+constexpr int32_t kENotImpl = static_cast<int32_t>(0x80004001u);
+constexpr int32_t kEInvalidArg = static_cast<int32_t>(0x80070057u);
+constexpr int32_t kClassNotReg = static_cast<int32_t>(0x80040154u);  // REGDB_E_CLASSNOTREG
+
+size_t len16(const char16_t* s) {
+    size_t n = 0;
+    if (s != nullptr) while (s[n] != 0) ++n;
+    return n;
+}
+
+// --- SHLWAPI ---
+int32_t PathCreateFromUrlW(const char16_t* url, char16_t* path, uint32_t* cch, uint32_t) {
+    std::u16string s = u16of(url);
+    const std::u16string pre = u"file:///";
+    if (s.size() < pre.size()) return kEInvalidArg;
+    for (size_t i = 0; i < pre.size(); ++i) {
+        char16_t c = s[i];
+        if (c >= u'A' && c <= u'Z') c = static_cast<char16_t>(c + 32);
+        if (c != pre[i]) return kEInvalidArg;
+    }
+    s = s.substr(pre.size());
+    std::u16string r;
+    auto hexv = [](char16_t c) -> int {
+        if (c >= u'0' && c <= u'9') return c - u'0';
+        if (c >= u'a' && c <= u'f') return c - u'a' + 10;
+        if (c >= u'A' && c <= u'F') return c - u'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == u'%' && i + 2 < s.size() && hexv(s[i + 1]) >= 0 && hexv(s[i + 2]) >= 0) {
+            r.push_back(static_cast<char16_t>(hexv(s[i + 1]) * 16 + hexv(s[i + 2])));
+            i += 2;
+        } else {
+            r.push_back(s[i] == u'/' ? u'\\' : s[i]);
+        }
+    }
+    return urlCopyOut(r, path, cch);
+}
+char16_t* PathAddBackslashW(char16_t* p) {
+    if (p == nullptr) return nullptr;
+    size_t n = len16(p);
+    if (n == 0 || p[n - 1] != u'\\') { p[n++] = u'\\'; p[n] = 0; }
+    return p + n;
+}
+char16_t* StrStrW(char16_t* s, const char16_t* f) {
+    if (s == nullptr || f == nullptr) return nullptr;
+    const size_t m = len16(f);
+    for (; *s != 0; ++s) if (std::memcmp(s, f, m * 2) == 0) return s;
+    return m == 0 ? s : nullptr;
+}
+char16_t* StrRChrW(char16_t* start, const char16_t* end, uint32_t ch) {
+    if (start == nullptr) return nullptr;
+    const char16_t* e = end != nullptr ? end : start + len16(start);
+    char16_t* last = nullptr;
+    for (char16_t* p = start; p < e && *p != 0; ++p) if (*p == static_cast<char16_t>(ch)) last = p;
+    return last;
+}
+int32_t StrCmpNW(const char16_t* a, const char16_t* b, int32_t n) {
+    for (int32_t i = 0; i < n; ++i) {
+        const char16_t x = a != nullptr ? a[i] : 0, y = b != nullptr ? b[i] : 0;
+        if (x != y) return x < y ? -1 : 1;
+        if (x == 0) return 0;
+    }
+    return 0;
+}
+void PathRemoveExtensionW(char16_t* p) {
+    if (p == nullptr) return;
+    for (size_t i = len16(p); i > 0; --i) {
+        if (p[i - 1] == u'\\' || p[i - 1] == u'/') return;
+        if (p[i - 1] == u'.') { p[i - 1] = 0; return; }
+    }
+}
+int32_t PathIsUNCW(const char16_t* p) { return p != nullptr && p[0] == u'\\' && p[1] == u'\\' ? 1 : 0; }
+int32_t UrlEscapeW(const char16_t* url, char16_t* out, uint32_t* cch, uint32_t) { return urlCopyOut(u16of(url), out, cch); }
+int32_t UrlCombineW(const char16_t* base, const char16_t* rel, char16_t* out, uint32_t* cch, uint32_t) {
+    std::u16string r = u16of(rel);
+    if (hp_UrlIsW(rel, 0) || (r.size() > 1 && r[1] == u':') || (!r.empty() && (r[0] == u'\\' || r[0] == u'/')))
+        return urlCopyOut(r, out, cch);
+    std::u16string b = u16of(base);
+    const size_t cut = b.find_last_of(u"/\\");
+    b = cut == std::u16string::npos ? std::u16string() : b.substr(0, cut + 1);
+    return urlCopyOut(b + r, out, cch);
+}
+int32_t UrlGetPartW(const char16_t* url, char16_t* out, uint32_t* cch, uint32_t part, uint32_t) {
+    const std::u16string s = u16of(url);
+    const size_t colon = s.find(u':');
+    if (part == 1 && colon != std::u16string::npos && colon > 1) return urlCopyOut(s.substr(0, colon), out, cch);  // URL_PART_SCHEME
+    return static_cast<int32_t>(0x80004005u);  // E_FAIL
+}
+
+// --- WinRT HSTRING: {flags (1 = referencia), longitud, puntero a los datos}. ---
+struct HStr {
+    uint32_t flags;
+    uint32_t len;
+    const char16_t* data;  // en 32 bits el puntero cabe en los 20 bytes de HSTRING_HEADER
+};
+const char16_t kEmpty16[1] = {0};
+int32_t WindowsCreateString(const char16_t* src, uint32_t len, void** out) {
+    if (out == nullptr) return kEInvalidArg;
+    if (len == 0) { lowmem::storePtr(out, uint64_t{0}); return 0; }
+    if (src == nullptr) return kEInvalidArg;
+    auto* h = static_cast<uint8_t*>(NativeDllInterceptor::win_HeapAlloc(NativeDllInterceptor::win_GetProcessHeap(), 0,
+                                                                         sizeof(HStr) + (len + 1) * 2));
+    if (h == nullptr) return static_cast<int32_t>(0x8007000Eu);
+    auto* data = reinterpret_cast<char16_t*>(h + sizeof(HStr));
+    std::memcpy(data, src, len * 2);
+    data[len] = 0;
+    *reinterpret_cast<HStr*>(h) = HStr{0, len, data};
+    lowmem::storePtr(out, h);
+    return 0;
+}
+int32_t WindowsCreateStringReference(const char16_t* src, uint32_t len, void* header, void** out) {
+    if (out == nullptr || header == nullptr) return kEInvalidArg;
+    if (len == 0) { lowmem::storePtr(out, uint64_t{0}); return 0; }
+    *static_cast<HStr*>(header) = HStr{1, len, src};
+    lowmem::storePtr(out, header);
+    return 0;
+}
+int32_t WindowsDeleteString(void* h) {
+    if (h != nullptr && (static_cast<HStr*>(h)->flags & 1u) == 0)
+        NativeDllInterceptor::win_HeapFree(NativeDllInterceptor::win_GetProcessHeap(), 0, h);
+    return 0;
+}
+uint32_t WindowsGetStringLen(void* h) { return h != nullptr ? static_cast<HStr*>(h)->len : 0u; }
+int32_t WindowsIsStringEmpty(void* h) { return WindowsGetStringLen(h) == 0 ? 1 : 0; }
+const char16_t* WindowsGetStringRawBuffer(void* h, uint32_t* len) {
+    if (len != nullptr) *len = WindowsGetStringLen(h);
+    return h != nullptr ? static_cast<HStr*>(h)->data : kEmpty16;
+}
+int32_t WindowsDuplicateString(void* h, void** out) {
+    uint32_t n = 0;
+    const char16_t* d = WindowsGetStringRawBuffer(h, &n);
+    return WindowsCreateString(d, n, out);
+}
+int32_t WindowsCompareStringOrdinal(void* a, void* b, int32_t* result) {
+    uint32_t na = 0, nb = 0;
+    const char16_t* da = WindowsGetStringRawBuffer(a, &na);
+    const char16_t* db = WindowsGetStringRawBuffer(b, &nb);
+    int32_t r = 0;
+    for (uint32_t i = 0; i < std::min(na, nb) && r == 0; ++i) if (da[i] != db[i]) r = da[i] < db[i] ? -1 : 1;
+    if (r == 0 && na != nb) r = na < nb ? -1 : 1;
+    if (result != nullptr) *result = r;
+    return 0;
+}
+int32_t RoGetActivationFactory(void*, const void*, void** out) {
+    lowmem::storePtr(out, uint64_t{0});
+    return kClassNotReg;
+}
+// --- RoGetParameterizedTypeInstanceIID: IID de una instancia de interfaz genérica de WinRT. ---
+// Firma de tipos (pinterface({piid};arg;...), {iid}, delegate({iid}), rc(...), struct(...),
+// enum(...), tipos básicos) y UUID v5: SHA-1 del espacio de nombres
+// {11f47ad5-7b73-42c0-abae-878b1e16adee} + firma UTF-8. Los nombres que no son básicos se
+// resuelven con el IRoMetaDataLocator del llamador (Locate llama a un IRoSimpleMetaDataBuilder,
+// que aquí es un objeto en memoria del invitado cuyos métodos son funciones nativas).
+namespace roiid {
+struct Res {
+    bool param = false;
+    uint32_t nargs = 0;
+    std::string sig;
+    bool ok = false;
+};
+thread_local std::vector<Res*> t_res;
+thread_local uint32_t t_locator = 0;
+uint32_t rd32g(uint32_t a) {
+    uint32_t v = 0;
+    std::memcpy(&v, reinterpret_cast<const void*>(static_cast<uintptr_t>(a)), 4);
+    return v;
+}
+uint32_t s_builder = 0;  // objeto IRoSimpleMetaDataBuilder (vtable de alias nativos)
+
+std::string guidStr(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+    uint8_t g[16];
+    std::memcpy(g, &a, 4);
+    std::memcpy(g + 4, &b, 4);
+    std::memcpy(g + 8, &c, 4);
+    std::memcpy(g + 12, &d, 4);
+    uint32_t d1 = 0;
+    uint16_t d2 = 0, d3 = 0;
+    std::memcpy(&d1, g, 4);
+    std::memcpy(&d2, g + 4, 2);
+    std::memcpy(&d3, g + 6, 2);
+    char b2[48];
+    std::snprintf(b2, sizeof(b2), "{%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}", d1, d2, d3, g[8], g[9], g[10],
+                  g[11], g[12], g[13], g[14], g[15]);
+    return b2;
+}
+std::string guidStrPtr(const uint8_t* g) {
+    uint32_t w[4];
+    std::memcpy(w, g, 16);
+    return guidStr(w[0], w[1], w[2], w[3]);
+}
+std::string u8(const char16_t* p) { return p != nullptr ? utf16ToUtf8(p) : std::string(); }
+
+const char* builtin(const std::string& n) {
+    static const std::unordered_map<std::string, const char*> k = {
+        {"Int8", "i1"}, {"UInt8", "u1"}, {"Int16", "i2"}, {"UInt16", "u2"}, {"Int32", "i4"}, {"UInt32", "u4"},
+        {"Int64", "i8"}, {"UInt64", "u8"}, {"Single", "f4"}, {"Double", "f8"}, {"Boolean", "b1"}, {"Char16", "c2"},
+        {"String", "string"}, {"Guid", "g16"}, {"Object", "cinterface(IInspectable)"},
+    };
+    const auto it = k.find(n);
+    return it == k.end() ? nullptr : it->second;
+}
+
+Res* cur() { return t_res.empty() ? nullptr : t_res.back(); }
+
+bool locate(const char16_t* name, Res& out) {
+    if (t_locator == 0 || s_builder == 0 || name == nullptr) return false;
+    const uint32_t vtbl = rd32g(t_locator);
+    const uint32_t fn = rd32g(vtbl);  // IRoMetaDataLocator::Locate (stdcall: this, nombre, builder)
+    t_res.push_back(&out);
+    const uint64_t a[3] = {t_locator, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(name)), s_builder};
+    const auto hr = static_cast<int32_t>(sehimpl::callGuest(fn, a, 3));
+    t_res.pop_back();
+    return hr >= 0 && out.ok;
+}
+
+std::string sigOfName(const char16_t* name);
+// Elementos [idx..]: un tipo y, si es parametrizado, sus argumentos a continuación.
+std::string parse(const char16_t* const* el, uint32_t count, uint32_t& idx, bool& ok) {
+    if (idx >= count) { ok = false; return {}; }
+    const char16_t* name = el[idx++];
+    if (const char* b = builtin(u8(name))) return b;
+    Res r;
+    if (!locate(name, r)) { ok = false; return {}; }
+    if (!r.param) return r.sig;
+    std::string s = r.sig;
+    for (uint32_t k = 0; k < r.nargs; ++k) s += ";" + parse(el, count, idx, ok);
+    return s + ")";
+}
+std::string parseList(uint32_t count, const void* elems, bool& ok) {
+    std::vector<const char16_t*> v(count);
+    for (uint32_t i = 0; i < count; ++i)
+        v[i] = reinterpret_cast<const char16_t*>(uintptr_t{rd32g(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(elems)) + 4 * i)});
+    uint32_t idx = 0;
+    return parse(v.data(), count, idx, ok);
+}
+std::string sigOfName(const char16_t* name) {
+    bool ok = true;
+    const char16_t* one[1] = {name};
+    uint32_t idx = 0;
+    return parse(one, 1, idx, ok);
+}
+
+// Métodos del builder (stdcall con this; un GUID por valor ocupa 4 ranuras).
+int32_t SetWinRtInterface(void*, uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+    if (Res* r = cur()) { r->sig = guidStr(a, b, c, d); r->ok = true; }
+    return 0;
+}
+int32_t SetDelegate(void*, uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+    if (Res* r = cur()) { r->sig = "delegate(" + guidStr(a, b, c, d) + ")"; r->ok = true; }
+    return 0;
+}
+int32_t SetInterfaceGroupSimpleDefault(void*, const char16_t* name, const char16_t* defName, const uint8_t* defIid) {
+    if (Res* r = cur()) {
+        r->sig = "ig(" + u8(name) + ";" + (defIid != nullptr ? guidStrPtr(defIid) : sigOfName(defName)) + ")";
+        r->ok = true;
+    }
+    return 0;
+}
+int32_t SetInterfaceGroupParameterizedDefault(void*, const char16_t* name, uint32_t n, const void* elems) {
+    if (Res* r = cur()) {
+        bool ok = true;
+        const std::string d = parseList(n, elems, ok);
+        r->sig = "ig(" + u8(name) + ";" + d + ")";
+        r->ok = ok;
+    }
+    return 0;
+}
+int32_t SetRuntimeClassSimpleDefault(void*, const char16_t* name, const char16_t* defName, const uint8_t* defIid) {
+    if (Res* r = cur()) {
+        r->sig = "rc(" + u8(name) + ";" + (defIid != nullptr ? guidStrPtr(defIid) : sigOfName(defName)) + ")";
+        r->ok = true;
+    }
+    return 0;
+}
+int32_t SetRuntimeClassParameterizedDefault(void*, const char16_t* name, uint32_t n, const void* elems) {
+    if (Res* r = cur()) {
+        bool ok = true;
+        const std::string d = parseList(n, elems, ok);
+        r->sig = "rc(" + u8(name) + ";" + d + ")";
+        r->ok = ok;
+    }
+    return 0;
+}
+int32_t SetStruct(void*, const char16_t* name, uint32_t n, const void* fields) {
+    if (Res* r = cur()) {
+        std::string s = "struct(" + u8(name);
+        for (uint32_t i = 0; i < n; ++i) {
+            const auto* f = reinterpret_cast<const char16_t*>(
+                uintptr_t{rd32g(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(fields)) + 4 * i)});
+            s += ";" + sigOfName(f);
+        }
+        r->sig = s + ")";
+        r->ok = true;
+    }
+    return 0;
+}
+int32_t SetEnum(void*, const char16_t* name, const char16_t* base) {
+    if (Res* r = cur()) { r->sig = "enum(" + u8(name) + ";" + sigOfName(base) + ")"; r->ok = true; }
+    return 0;
+}
+int32_t SetParameterized(void*, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t nargs) {
+    if (Res* r = cur()) {
+        r->param = true;
+        r->nargs = nargs;
+        r->sig = "pinterface(" + guidStr(a, b, c, d);
+        r->ok = true;
+    }
+    return 0;
+}
+
+// SHA-1 (FIPS 180-1).
+void sha1(const uint8_t* data, size_t len, uint8_t out[20]) {
+    uint32_t h[5] = {0x67452301u, 0xEFCDAB89u, 0x98BADCFEu, 0x10325476u, 0xC3D2E1F0u};
+    std::vector<uint8_t> m(data, data + len);
+    m.push_back(0x80);
+    while (m.size() % 64 != 56) m.push_back(0);
+    const uint64_t bits = static_cast<uint64_t>(len) * 8;
+    for (int i = 7; i >= 0; --i) m.push_back(static_cast<uint8_t>(bits >> (i * 8)));
+    auto rol = [](uint32_t x, int n) { return (x << n) | (x >> (32 - n)); };
+    for (size_t off = 0; off < m.size(); off += 64) {
+        uint32_t w[80];
+        for (int i = 0; i < 16; ++i)
+            w[i] = (uint32_t{m[off + 4 * i]} << 24) | (uint32_t{m[off + 4 * i + 1]} << 16) |
+                   (uint32_t{m[off + 4 * i + 2]} << 8) | m[off + 4 * i + 3];
+        for (int i = 16; i < 80; ++i) w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+        uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
+        for (int i = 0; i < 80; ++i) {
+            uint32_t f, k;
+            if (i < 20) { f = (b & c) | (~b & d); k = 0x5A827999u; }
+            else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1u; }
+            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDCu; }
+            else { f = b ^ c ^ d; k = 0xCA62C1D6u; }
+            const uint32_t t = rol(a, 5) + f + e + k + w[i];
+            e = d; d = c; c = rol(b, 30); b = a; a = t;
+        }
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e;
+    }
+    for (int i = 0; i < 5; ++i)
+        for (int j = 0; j < 4; ++j) out[4 * i + j] = static_cast<uint8_t>(h[i] >> (24 - 8 * j));
+}
+
+uint32_t builder() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        void* mem = lowmem::mmapBelow4G(4096);
+        if (mem == MAP_FAILED) return;
+        auto* p = static_cast<uint8_t*>(mem);
+        void* fns[10] = {
+            w32arity::hpFn(&SetWinRtInterface), w32arity::hpFn(&SetDelegate),
+            w32arity::hpFn(&SetInterfaceGroupSimpleDefault), w32arity::hpFn(&SetInterfaceGroupParameterizedDefault),
+            w32arity::hpFn(&SetRuntimeClassSimpleDefault), w32arity::hpFn(&SetRuntimeClassParameterizedDefault),
+            w32arity::hpFn(&SetStruct), w32arity::hpFn(&SetEnum), w32arity::hpFn(&SetParameterized),
+            w32arity::hpFn(&SetParameterized)};  // SetParameterizedDelegate: misma firma "pinterface("
+        const auto base = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(p));
+        for (int i = 0; i < 10; ++i) {
+            const auto a = static_cast<uint32_t>(w32alias::lowFor(fns[i], "combase.dll!IRoSimpleMetaDataBuilder"));
+            std::memcpy(p + 0x100 + 4 * i, &a, 4);
+        }
+        const uint32_t vt = base + 0x100;
+        std::memcpy(p, &vt, 4);
+        s_builder = base;
+    });
+    return s_builder;
+}
+}  // namespace roiid
+
+int32_t RoGetParameterizedTypeInstanceIID(uint32_t count, void* names, void* locator, uint8_t* iid, void* extra) {
+    lowmem::storePtr(extra, uint64_t{0});
+    if (count == 0 || names == nullptr || locator == nullptr || iid == nullptr || roiid::builder() == 0) return kEInvalidArg;
+    const uint32_t prevLoc = roiid::t_locator;
+    roiid::t_locator = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(locator));
+    bool ok = true;
+    const std::string sig = roiid::parseList(count, names, ok);
+    roiid::t_locator = prevLoc;
+    if (!ok) {
+        LOGW("RoGetParameterizedTypeInstanceIID: no se pudo resolver '%s'", sig.c_str());
+        return static_cast<int32_t>(0x80004005u);
+    }
+    static const uint8_t kNs[16] = {0x11, 0xf4, 0x7a, 0xd5, 0x7b, 0x73, 0x42, 0xc0,
+                                    0xab, 0xae, 0x87, 0x8b, 0x1e, 0x16, 0xad, 0xee};
+    std::vector<uint8_t> buf(kNs, kNs + 16);
+    buf.insert(buf.end(), sig.begin(), sig.end());
+    uint8_t h[20];
+    roiid::sha1(buf.data(), buf.size(), h);
+    h[6] = static_cast<uint8_t>((h[6] & 0x0F) | 0x50);  // versión 5
+    h[8] = static_cast<uint8_t>((h[8] & 0x3F) | 0x80);  // variante RFC 4122
+    // Bytes big-endian -> GUID (Data1..3 en little-endian).
+    const uint32_t d1 = (uint32_t{h[0]} << 24) | (uint32_t{h[1]} << 16) | (uint32_t{h[2]} << 8) | h[3];
+    const uint16_t d2 = static_cast<uint16_t>((h[4] << 8) | h[5]), d3 = static_cast<uint16_t>((h[6] << 8) | h[7]);
+    std::memcpy(iid, &d1, 4);
+    std::memcpy(iid + 4, &d2, 2);
+    std::memcpy(iid + 6, &d3, 2);
+    std::memcpy(iid + 8, h + 8, 8);
+    static std::atomic<int> s_logs{0};
+    if (s_logs.fetch_add(1) < 20) LOGI("RoGetParameterizedTypeInstanceIID: %s -> %s", sig.c_str(), roiid::guidStrPtr(iid).c_str());
+    return 0;
+}
+int32_t RoParseTypeName(void*, uint32_t* count, void** parts) {
+    if (count != nullptr) *count = 0;
+    lowmem::storePtr(parts, uint64_t{0});
+    return kENotImpl;
+}
+
+// --- ole32: GUID en texto y COM sin servidores registrados. ---
+int32_t parseGuid(const char16_t* s, uint8_t* g) {
+    if (s == nullptr || g == nullptr) return kEInvalidArg;
+    std::string a;
+    for (; *s != 0; ++s) if (*s != u'{' && *s != u'}' && *s != u'-') a.push_back(static_cast<char>(*s));
+    if (a.size() != 32) return static_cast<int32_t>(0x800401F3u);  // CO_E_CLASSSTRING
+    auto hexv = [&](size_t at, size_t n) { return std::strtoull(a.substr(at, n).c_str(), nullptr, 16); };
+    const uint32_t d1 = static_cast<uint32_t>(hexv(0, 8));
+    const uint16_t d2 = static_cast<uint16_t>(hexv(8, 4)), d3 = static_cast<uint16_t>(hexv(12, 4));
+    std::memcpy(g, &d1, 4);
+    std::memcpy(g + 4, &d2, 2);
+    std::memcpy(g + 6, &d3, 2);
+    for (int i = 0; i < 8; ++i) g[8 + i] = static_cast<uint8_t>(hexv(16 + 2 * i, 2));
+    return 0;
+}
+int32_t CLSIDFromString(const char16_t* s, uint8_t* g) { return parseGuid(s, g); }
+int32_t CLSIDFromProgID(const char16_t*, uint8_t*) { return static_cast<int32_t>(0x800401F3u); }
+int32_t StringFromGUID2(const uint8_t* g, char16_t* out, int32_t cch) {
+    if (g == nullptr || out == nullptr || cch < 39) return 0;
+    uint32_t d1 = 0;
+    uint16_t d2 = 0, d3 = 0;
+    std::memcpy(&d1, g, 4);
+    std::memcpy(&d2, g + 4, 2);
+    std::memcpy(&d3, g + 6, 2);
+    char b[40];
+    std::snprintf(b, sizeof(b), "{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}", d1, d2, d3, g[8], g[9], g[10],
+                  g[11], g[12], g[13], g[14], g[15]);
+    for (int i = 0; i < 39; ++i) out[i] = static_cast<char16_t>(b[i]);
+    return 39;
+}
+int32_t CoCreateInstanceFromApp(const void*, void*, uint32_t, void*, uint32_t, void*) { return kClassNotReg; }
+int32_t CoGetClassObject(const void*, uint32_t, void*, const void*, void** ppv) {
+    lowmem::storePtr(ppv, uint64_t{0});
+    return kClassNotReg;
+}
+int32_t CoUnmarshalInterface(void*, const void*, void** ppv) {
+    lowmem::storePtr(ppv, uint64_t{0});
+    return kENotImpl;
+}
+int32_t CoMarshalInterface(void*, const void*, void*, uint32_t, void*, uint32_t) { return kENotImpl; }
+int32_t CoGetMarshalSizeMax(uint32_t* size, const void*, void*, uint32_t, void*, uint32_t) {
+    if (size != nullptr) *size = 0;
+    return kENotImpl;
+}
+int32_t CoReleaseMarshalData(void*) { return kENotImpl; }
+int32_t CoGetObjectContext(const void*, void** ppv) {
+    lowmem::storePtr(ppv, uint64_t{0});
+    return static_cast<int32_t>(0x800401F0u);  // CO_E_NOTINITIALIZED
+}
+int32_t CoRegisterInitializeSpy(void*, uint64_t* cookie) {
+    if (cookie != nullptr) *cookie = 1;
+    return 0;
+}
+int32_t CoRevokeInitializeSpy(int64_t) { return 0; }  // ULARGE_INTEGER por valor: 2 ranuras
+int32_t CoWaitForMultipleHandles(uint32_t flags, uint32_t ms, uint32_t count, void* const* handles, uint32_t* index) {
+    const uint32_t r = NativeDllInterceptor::win_WaitForMultipleObjects(count, handles, (flags & 1u) != 0 ? 1 : 0, ms);
+    if (r == 0x102u) return static_cast<int32_t>(0x80010115u);  // RPC_S_CALLPENDING (tiempo agotado)
+    if (r == 0xFFFFFFFFu) return static_cast<int32_t>(0x80004005u);
+    if (index != nullptr) *index = r;
+    return 0;
+}
+int32_t CreateStreamOnHGlobal(void*, int32_t, void** out) {
+    lowmem::storePtr(out, uint64_t{0});
+    return kENotImpl;
+}
+int32_t CoCreateFreeThreadedMarshaler(void*, void** out) {
+    lowmem::storePtr(out, uint64_t{0});
+    return kENotImpl;
+}
+int32_t CoRegisterClassObject(const void*, void*, uint32_t, uint32_t, uint32_t* cookie) {
+    if (cookie != nullptr) *cookie = 1;
+    return 0;
+}
+
+// --- Firma Authenticode, unidades de red, sesiones y Restart Manager: no disponibles. ---
+int32_t WinVerifyTrust(void*, const void*, void*) { return static_cast<int32_t>(0x800B0100u); }  // TRUST_E_NOSIGNATURE
+uint32_t WNetGetConnectionW(const char16_t*, char16_t*, uint32_t*) { return 2250; }               // ERROR_NOT_CONNECTED
+int32_t WTSEnumerateProcessesW(void*, uint32_t, uint32_t, void** info, uint32_t* count) {
+    lowmem::storePtr(info, uint64_t{0});
+    if (count != nullptr) *count = 0;
+    NativeDllInterceptor::win_SetLastError(50);
+    return 0;
+}
+void WTSFreeMemory(void*) {}
+uint32_t RmStartSession(uint32_t* handle, uint32_t, char16_t*) {
+    if (handle != nullptr) *handle = 0;
+    return 5;  // ERROR_ACCESS_DENIED: el llamador no sigue con RmRegisterResources/RmGetList
+}
+
+// --- Winsock (WSOCK32/WS2_32) sin red: arranca, pero toda operación de red falla con
+// WSAENETDOWN (los juegos offline lo toleran). Conversiones de bytes y direcciones reales. ---
+constexpr int32_t kSocketError = -1;
+constexpr uint32_t kWsaENetDown = 10050;
+thread_local uint32_t t_wsaError = 0;
+int32_t wsaFail() {
+    t_wsaError = kWsaENetDown;
+    return kSocketError;
+}
+int32_t WSAStartup(uint32_t ver, uint8_t* data) {
+    if (data != nullptr) {
+        std::memset(data, 0, 400);
+        const auto v = static_cast<uint16_t>(ver);
+        std::memcpy(data, &v, 2);      // wVersion
+        const uint16_t hi = 0x0202;
+        std::memcpy(data + 2, &hi, 2);  // wHighVersion
+        std::memcpy(data + 4, "WinSock 2.0", 12);
+        std::memcpy(data + 261, "Running", 8);
+    }
+    return 0;
+}
+int32_t WSACleanup() { return 0; }
+int32_t WSAGetLastError() { return static_cast<int32_t>(t_wsaError); }
+void WSASetLastError(int32_t e) { t_wsaError = static_cast<uint32_t>(e); }
+uint32_t SockInvalid3(int32_t, int32_t, int32_t) {
+    t_wsaError = kWsaENetDown;
+    return 0xFFFFFFFFu;  // INVALID_SOCKET
+}
+uint32_t SockAccept(uint32_t, void*, int32_t*) {
+    t_wsaError = kWsaENetDown;
+    return 0xFFFFFFFFu;
+}
+int32_t SockFail1(uint32_t) { return wsaFail(); }
+int32_t SockFail2(uint32_t, int32_t) { return wsaFail(); }
+int32_t SockFail3(uint32_t, const void*, int32_t) { return wsaFail(); }
+int32_t SockFail4(uint32_t, void*, int32_t, int32_t) { return wsaFail(); }
+int32_t SockFail5(uint32_t, int32_t, int32_t, void*, int32_t) { return wsaFail(); }
+int32_t SockFail6(uint32_t, void*, int32_t, int32_t, void*, void*) { return wsaFail(); }
+int32_t SockSelect(int32_t, void*, void*, void*, const void*) { return wsaFail(); }
+int32_t SockAsyncSelect(uint32_t, void*, uint32_t, int32_t) { return wsaFail(); }
+int32_t WSAFDIsSet(uint32_t, void*) { return 0; }
+int32_t CloseSocket(uint32_t) { return 0; }
+uint32_t Htonl(uint32_t v) { return __builtin_bswap32(v); }
+uint32_t Htons(uint32_t v) { return __builtin_bswap16(static_cast<uint16_t>(v)); }
+uint32_t InetAddr(const char* s) {
+    if (s == nullptr) return 0xFFFFFFFFu;
+    uint32_t parts[4] = {0, 0, 0, 0};
+    int n = 0;
+    for (const char* p = s; *p != 0 && n < 4; ++p) {
+        if (*p == '.') { ++n; continue; }
+        if (*p < '0' || *p > '9') return 0xFFFFFFFFu;  // INADDR_NONE
+        parts[n] = parts[n] * 10 + static_cast<uint32_t>(*p - '0');
+    }
+    if (n != 3) return 0xFFFFFFFFu;
+    return parts[0] | (parts[1] << 8) | (parts[2] << 16) | (parts[3] << 24);  // orden de red
+}
+// inet_ntoa devuelve un búfer por hilo; en 32 bits tiene que estar por debajo de 4 GB.
+char* InetNtoa(uint32_t addr) {
+    static thread_local char* buf = nullptr;
+    if (buf == nullptr) {
+        buf = static_cast<char*>(NativeDllInterceptor::win_HeapAlloc(NativeDllInterceptor::win_GetProcessHeap(), 0, 16));
+        if (buf == nullptr) return nullptr;
+    }
+    std::snprintf(buf, 16, "%u.%u.%u.%u", addr & 0xFF, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF, addr >> 24);
+    return buf;
+}
+void* GetHostByName(const char*) {
+    t_wsaError = 11001;  // WSAHOST_NOT_FOUND
+    return nullptr;
+}
+void* GetHostByAddr(const void*, int32_t, int32_t) {
+    t_wsaError = 11001;
+    return nullptr;
+}
+int32_t GetHostName(char* name, int32_t len) {
+    static const char kName[] = "ANDROID";
+    if (name == nullptr || len < static_cast<int32_t>(sizeof(kName))) return wsaFail();
+    std::memcpy(name, kName, sizeof(kName));
+    return 0;
+}
+int32_t GetNameInfo(const void*, int32_t, char*, uint32_t, char*, uint32_t, int32_t) { return 11003; }  // EAI_FAIL
+
+// --- Recursos PE (FindResource/LoadResource/SizeofResource/LockResource). HRSRC = puntero a la
+// IMAGE_RESOURCE_DATA_ENTRY; HGLOBAL = puntero a los datos (como Windows con imágenes cargadas). ---
+bool resModule(void* h, uint8_t*& base, const PeInfo*& info) {
+    if (s_activeImage == nullptr) return false;
+    base = static_cast<uint8_t*>(h != nullptr ? h : s_activeImage->baseAddress);
+    info = nullptr;
+    if (base == s_activeImage->baseAddress) info = &s_activeImage->peInfo;
+    else
+        for (const auto& kv : s_activeImage->localDlls)
+            if (kv.second.base == base) { info = &kv.second.peInfo; break; }
+    return info != nullptr && info->resourceRva != 0 && info->resourceSize >= 16;
+}
+uint32_t rdu32(const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v; }
+uint16_t rdu16(const uint8_t* p) { uint16_t v; std::memcpy(&v, p, 2); return v; }
+// Clave de búsqueda: id (MAKEINTRESOURCE o "#123") o nombre en mayúsculas.
+template <class C>
+bool resKey(const C* k, uint32_t& id, std::u16string& name) {
+    const auto v = reinterpret_cast<uintptr_t>(k);
+    if ((v >> 16) == 0) { id = static_cast<uint32_t>(v); return true; }
+    if (k[0] == '#') {
+        id = 0;
+        for (const C* p = k + 1; *p >= '0' && *p <= '9'; ++p) id = id * 10 + static_cast<uint32_t>(*p - '0');
+        return true;
+    }
+    name.clear();
+    for (const C* p = k; *p != 0; ++p) {
+        char16_t c = static_cast<char16_t>(*p);
+        if (c >= u'a' && c <= u'z') c = static_cast<char16_t>(c - 32);
+        name.push_back(c);
+    }
+    return true;
+}
+// Entrada del directorio en dirOff con esa clave (any: la primera). Devuelve el offset del hijo.
+bool resFind(const uint8_t* root, uint32_t size, uint32_t dirOff, bool any, uint32_t id, const std::u16string& name,
+             uint32_t& out) {
+    if (dirOff + 16 > size) return false;
+    const uint8_t* dir = root + dirOff;
+    const uint32_t named = rdu16(dir + 12), ids = rdu16(dir + 14);
+    for (uint32_t i = 0; i < named + ids; ++i) {
+        const uint32_t eOff = dirOff + 16 + i * 8;
+        if (eOff + 8 > size) return false;
+        const uint32_t nm = rdu32(root + eOff);
+        bool match = any;
+        if (!match && name.empty()) match = (nm & 0x80000000u) == 0 && nm == id;
+        if (!match && !name.empty() && (nm & 0x80000000u) != 0) {
+            const uint32_t sOff = nm & 0x7FFFFFFFu;
+            if (sOff + 2 <= size) {
+                const uint16_t len = rdu16(root + sOff);
+                if (len == name.size() && sOff + 2 + len * 2u <= size) {
+                    match = true;
+                    for (uint16_t j = 0; j < len && match; ++j) {
+                        char16_t c = static_cast<char16_t>(rdu16(root + sOff + 2 + j * 2));
+                        if (c >= u'a' && c <= u'z') c = static_cast<char16_t>(c - 32);
+                        match = c == name[j];
+                    }
+                }
+            }
+        }
+        if (match) { out = rdu32(root + eOff + 4); return true; }
+    }
+    return false;
+}
+template <class C>
+void* findResourceT(void* h, const C* nameKey, const C* typeKey, int32_t lang) {
+    uint8_t* base = nullptr;
+    const PeInfo* info = nullptr;
+    if (!resModule(h, base, info)) { NativeDllInterceptor::win_SetLastError(1812); return nullptr; }
+    const uint8_t* root = base + info->resourceRva;
+    const uint32_t size = info->resourceSize;
+    uint32_t tid = 0, nid = 0, e = 0;
+    std::u16string tname, nname;
+    resKey(typeKey, tid, tname);
+    resKey(nameKey, nid, nname);
+    if (!resFind(root, size, 0, false, tid, tname, e) || (e & 0x80000000u) == 0 ||
+        !resFind(root, size, e & 0x7FFFFFFFu, false, nid, nname, e) || (e & 0x80000000u) == 0) {
+        NativeDllInterceptor::win_SetLastError(1814);  // ERROR_RESOURCE_NAME_NOT_FOUND
+        return nullptr;
+    }
+    const uint32_t langDir = e & 0x7FFFFFFFu;
+    if (!(lang >= 0 && resFind(root, size, langDir, false, static_cast<uint32_t>(lang), u"", e)) &&
+        !resFind(root, size, langDir, true, 0, u"", e)) {
+        NativeDllInterceptor::win_SetLastError(1815);
+        return nullptr;
+    }
+    if ((e & 0x80000000u) != 0 || e + 16 > size) return nullptr;
+    return const_cast<uint8_t*>(root + e);
+}
+void* FindResourceW(void* h, const char16_t* name, const char16_t* type) { return findResourceT(h, name, type, -1); }
+void* FindResourceA(void* h, const char* name, const char* type) { return findResourceT(h, name, type, -1); }
+void* FindResourceExW(void* h, const char16_t* type, const char16_t* name, uint32_t lang) {
+    return findResourceT(h, name, type, lang == 0 ? -1 : static_cast<int32_t>(lang));
+}
+void* LoadResource(void* h, const uint8_t* res) {
+    uint8_t* base = nullptr;
+    const PeInfo* info = nullptr;
+    if (res == nullptr || !resModule(h, base, info)) return nullptr;
+    return base + rdu32(res);  // OffsetToData es una RVA
+}
+uint32_t SizeofResource(void*, const uint8_t* res) { return res != nullptr ? rdu32(res + 4) : 0u; }
+void* LockResource(void* data) { return data; }
+int32_t FreeResource(void*) { return 0; }
+int32_t HeapSetInformation(void*, uint32_t, void*, uint32_t) { return 1; }
+
+// --- D3DX9 (matemáticas) ---
+// D3DXMatrixInverse(out, det*, m): inversa 4x4 por cofactores; NULL si no es invertible.
+float* D3DXMatrixInverse(float* out, float* det, const float* m) {
+    if (out == nullptr || m == nullptr) return nullptr;
+    float inv[16];
+    inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+    inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+    inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+    inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+    inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+    inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+    inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+    inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+    inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+    inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+    inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+    inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+    inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+    inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+    inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+    inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+    const float d = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+    if (det != nullptr) *det = d;
+    if (d == 0.0f) return nullptr;
+    const float r = 1.0f / d;
+    for (int i = 0; i < 16; ++i) out[i] = inv[i] * r;
+    return out;
+}
+
+void* resolve(const std::string& dll, const std::string& fn) {
+    static const std::unordered_map<std::string, void*> kMap = {
+        {"D3DXMatrixInverse", w32arity::hpFn(&D3DXMatrixInverse)},
+        {"FindResourceW", w32arity::hpFn(&FindResourceW)}, {"FindResourceA", w32arity::hpFn(&FindResourceA)},
+        {"FindResourceExW", w32arity::hpFn(&FindResourceExW)}, {"LoadResource", w32arity::hpFn(&LoadResource)},
+        {"SizeofResource", w32arity::hpFn(&SizeofResource)}, {"LockResource", w32arity::hpFn(&LockResource)},
+        {"FreeResource", w32arity::hpFn(&FreeResource)}, {"HeapSetInformation", w32arity::hpFn(&HeapSetInformation)},
+        {"WSAStartup", w32arity::hpFn(&WSAStartup)}, {"WSACleanup", w32arity::hpFn(&WSACleanup)},
+        {"WSAGetLastError", w32arity::hpFn(&WSAGetLastError)}, {"WSASetLastError", w32arity::hpFn(&WSASetLastError)},
+        {"socket", w32arity::hpFn(&SockInvalid3)}, {"accept", w32arity::hpFn(&SockAccept)},
+        {"closesocket", w32arity::hpFn(&CloseSocket)}, {"bind", w32arity::hpFn(&SockFail3)},
+        {"connect", w32arity::hpFn(&SockFail3)}, {"getpeername", w32arity::hpFn(&SockFail3)},
+        {"getsockname", w32arity::hpFn(&SockFail3)}, {"ioctlsocket", w32arity::hpFn(&SockFail3)},
+        {"listen", w32arity::hpFn(&SockFail2)}, {"shutdown", w32arity::hpFn(&SockFail2)},
+        {"recv", w32arity::hpFn(&SockFail4)}, {"send", w32arity::hpFn(&SockFail4)},
+        {"getsockopt", w32arity::hpFn(&SockFail5)}, {"setsockopt", w32arity::hpFn(&SockFail5)},
+        {"recvfrom", w32arity::hpFn(&SockFail6)}, {"sendto", w32arity::hpFn(&SockFail6)},
+        {"select", w32arity::hpFn(&SockSelect)}, {"WSAAsyncSelect", w32arity::hpFn(&SockAsyncSelect)},
+        {"__WSAFDIsSet", w32arity::hpFn(&WSAFDIsSet)},
+        {"htonl", w32arity::hpFn(&Htonl)}, {"ntohl", w32arity::hpFn(&Htonl)},
+        {"htons", w32arity::hpFn(&Htons)}, {"ntohs", w32arity::hpFn(&Htons)},
+        {"inet_addr", w32arity::hpFn(&InetAddr)}, {"inet_ntoa", w32arity::hpFn(&InetNtoa)},
+        {"gethostbyname", w32arity::hpFn(&GetHostByName)}, {"gethostbyaddr", w32arity::hpFn(&GetHostByAddr)},
+        {"gethostname", w32arity::hpFn(&GetHostName)}, {"getnameinfo", w32arity::hpFn(&GetNameInfo)},
+        {"PathCreateFromUrlW", w32arity::hpFn(&PathCreateFromUrlW)}, {"PathAddBackslashW", w32arity::hpFn(&PathAddBackslashW)},
+        {"StrStrW", w32arity::hpFn(&StrStrW)}, {"StrRChrW", w32arity::hpFn(&StrRChrW)}, {"StrCmpNW", w32arity::hpFn(&StrCmpNW)},
+        {"PathRemoveExtensionW", w32arity::hpFn(&PathRemoveExtensionW)}, {"PathIsUNCW", w32arity::hpFn(&PathIsUNCW)},
+        {"UrlEscapeW", w32arity::hpFn(&UrlEscapeW)}, {"UrlCombineW", w32arity::hpFn(&UrlCombineW)},
+        {"UrlGetPartW", w32arity::hpFn(&UrlGetPartW)},
+        {"WindowsCreateString", w32arity::hpFn(&WindowsCreateString)},
+        {"WindowsCreateStringReference", w32arity::hpFn(&WindowsCreateStringReference)},
+        {"WindowsDeleteString", w32arity::hpFn(&WindowsDeleteString)}, {"WindowsGetStringLen", w32arity::hpFn(&WindowsGetStringLen)},
+        {"WindowsIsStringEmpty", w32arity::hpFn(&WindowsIsStringEmpty)},
+        {"WindowsGetStringRawBuffer", w32arity::hpFn(&WindowsGetStringRawBuffer)},
+        {"WindowsDuplicateString", w32arity::hpFn(&WindowsDuplicateString)},
+        {"WindowsCompareStringOrdinal", w32arity::hpFn(&WindowsCompareStringOrdinal)},
+        {"RoGetActivationFactory", w32arity::hpFn(&RoGetActivationFactory)},
+        {"RoGetParameterizedTypeInstanceIID", w32arity::hpFn(&RoGetParameterizedTypeInstanceIID)},
+        {"RoParseTypeName", w32arity::hpFn(&RoParseTypeName)},
+        {"CLSIDFromString", w32arity::hpFn(&CLSIDFromString)}, {"IIDFromString", w32arity::hpFn(&CLSIDFromString)},
+        {"CLSIDFromProgID", w32arity::hpFn(&CLSIDFromProgID)}, {"CLSIDFromProgIDEx", w32arity::hpFn(&CLSIDFromProgID)},
+        {"StringFromGUID2", w32arity::hpFn(&StringFromGUID2)},
+        {"CoCreateInstanceFromApp", w32arity::hpFn(&CoCreateInstanceFromApp)},
+        {"CoGetClassObject", w32arity::hpFn(&CoGetClassObject)}, {"CoUnmarshalInterface", w32arity::hpFn(&CoUnmarshalInterface)},
+        {"CoMarshalInterface", w32arity::hpFn(&CoMarshalInterface)}, {"CoGetMarshalSizeMax", w32arity::hpFn(&CoGetMarshalSizeMax)},
+        {"CoReleaseMarshalData", w32arity::hpFn(&CoReleaseMarshalData)}, {"CoGetObjectContext", w32arity::hpFn(&CoGetObjectContext)},
+        {"CoRegisterInitializeSpy", w32arity::hpFn(&CoRegisterInitializeSpy)},
+        {"CoRevokeInitializeSpy", w32arity::hpFn(&CoRevokeInitializeSpy)},
+        {"CoWaitForMultipleHandles", w32arity::hpFn(&CoWaitForMultipleHandles)},
+        {"CreateStreamOnHGlobal", w32arity::hpFn(&CreateStreamOnHGlobal)},
+        {"CoCreateFreeThreadedMarshaler", w32arity::hpFn(&CoCreateFreeThreadedMarshaler)},
+        {"CoRegisterClassObject", w32arity::hpFn(&CoRegisterClassObject)},
+        {"WinVerifyTrust", w32arity::hpFn(&WinVerifyTrust)}, {"WNetGetConnectionW", w32arity::hpFn(&WNetGetConnectionW)},
+        {"WTSEnumerateProcessesW", w32arity::hpFn(&WTSEnumerateProcessesW)}, {"WTSFreeMemory", w32arity::hpFn(&WTSFreeMemory)},
+        {"RmStartSession", w32arity::hpFn(&RmStartSession)},
+    };
+    (void)dll;
+    const auto it = kMap.find(fn);
+    return it == kMap.end() ? nullptr : it->second;
+}
+}  // namespace w32more
 
 static uint16_t hp_GetSystemDefaultLangID() { return 0x0409; }  // en-US
 static uint16_t hp_GetUserDefaultLangID() { return 0x0409; }
@@ -3656,6 +4530,42 @@ static int32_t hp_GetDateFormatW(uint32_t, uint32_t, const uint16_t* st, const c
 static int32_t hp_GetTimeFormatW(uint32_t, uint32_t, const uint16_t* st, const char16_t*, char16_t* out, int32_t cch) {
     return formatDateTimeW(st, out, cch, true);
 }
+
+// GetLongPathName / GetShortPathName: no hay nombres 8.3; la ruta es la misma. Devuelve los
+// caracteres copiados sin el NUL, o el tamaño necesario con el NUL si no cabe.
+template <class C>
+static uint32_t samePathT(const C* in, C* out, uint32_t cch) {
+    if (in == nullptr) { NativeDllInterceptor::win_SetLastError(87); return 0; }
+    uint32_t n = 0;
+    while (in[n] != 0) ++n;
+    if (out == nullptr || cch <= n) return n + 1;
+    if (out != in) std::memmove(out, in, n * sizeof(C));
+    out[n] = 0;
+    return n;
+}
+static uint32_t hp_GetLongPathNameW(const char16_t* in, char16_t* out, uint32_t cch) { return samePathT(in, out, cch); }
+
+// Contextos de activación (manifiestos SxS): no hay ninguno activo. ActivationContextBasicInformation
+// (1) = {hActCtx = NULL, dwFlags = 0}; el resto de consultas falla con ERROR_INVALID_PARAMETER.
+static int32_t hp_QueryActCtxW(uint32_t, void*, void*, uint32_t infoClass, void* buf, uint32_t cb, uint32_t* written) {
+    const uint32_t need = static_cast<uint32_t>(lowmem::guestPtrSize()) + 4;
+    if (infoClass == 1) {
+        if (written != nullptr) *written = need;
+        if (buf == nullptr || cb < need) { NativeDllInterceptor::win_SetLastError(122); return 0; }
+        std::memset(buf, 0, need);
+        return 1;
+    }
+    if (written != nullptr) *written = 0;
+    NativeDllInterceptor::win_SetLastError(87);
+    return 0;
+}
+
+// CoGetContextToken: COM sin inicializar en el hilo (CO_E_NOTINITIALIZED); el CLR lo tolera.
+static int32_t hp_CoGetContextToken(void* token) {
+    lowmem::storePtr(token, uint64_t{0});
+    return static_cast<int32_t>(0x800401F0u);
+}
+static uint32_t hp_GetLongPathNameA(const char* in, char* out, uint32_t cch) { return samePathT(in, out, cch); }
 
 // FindFirstFileW = FindFirstFileExW(FindExInfoStandard, FindExSearchNameMatch). WIN32_FIND_DATAW no
 // lleva punteros: misma forma en 32 y 64 bits.
@@ -3991,6 +4901,11 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "OpenFileMappingA") result = w32arity::hpFn(&win_OpenFileMappingA);
         else if (funcName == "FindFirstFileExW") result = w32arity::hpFn(&win_FindFirstFileExW);
         else if (funcName == "FindFirstFileW") result = w32arity::hpFn(&hp_FindFirstFileW);
+        else if (funcName == "QueryActCtxW") result = w32arity::hpFn(&hp_QueryActCtxW);
+        else if (funcName == "GetLongPathNameW" || funcName == "GetShortPathNameW")
+            result = w32arity::hpFn(&hp_GetLongPathNameW);
+        else if (funcName == "GetLongPathNameA" || funcName == "GetShortPathNameA")
+            result = w32arity::hpFn(&hp_GetLongPathNameA);
         else if (funcName == "GetSystemDefaultLangID") result = w32arity::hpFn(&hp_GetSystemDefaultLangID);
         else if (funcName == "GetUserDefaultLangID") result = w32arity::hpFn(&hp_GetUserDefaultLangID);
         else if (funcName == "GetDateFormatW") result = w32arity::hpFn(&hp_GetDateFormatW);
@@ -4488,6 +5403,9 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "ShellExecuteA") result = w32arity::hpFn(&win_ShellExecuteA);
     }
 
+    // 4a'. Resto de importaciones de clr.dll (solo 32 bits; los juegos de 64 bits siguen igual).
+    if (!result && s_activeImage != nullptr && s_activeImage->is32Bit) result = w32more::resolve(dll, funcName);
+
     // 4b. OLEAUT32: BSTR, VARIANT y IErrorInfo; el resto E_NOTIMPL con su aridad exacta (en 32 bits
     // stdcall: una aridad equivocada desbalancea la pila del invitado).
     if (!result && dll == "oleaut32.dll" && s_activeImage != nullptr && s_activeImage->is32Bit) {
@@ -4534,6 +5452,8 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         else if (funcName == "UrlIsW") result = w32arity::hpFn(&hp_UrlIsW);
         else if (funcName == "StrCmpW") result = w32arity::hpFn(&hp_lstrcmpW);
         else if (funcName == "PathIsURLW") result = w32arity::hpFn(&hp_PathIsURLW);
+        else if (funcName == "StrToIntW") result = w32arity::hpFn(&hp_StrToIntW);
+        else if (funcName == "StrToIntA") result = w32arity::hpFn(&hp_StrToIntA);
         else if (funcName == "PathRemoveBackslashW") result = w32arity::hpFn(&hp_PathRemoveBackslashW);
         else if (funcName == "StrChrW") result = w32arity::hpFn(&hp_StrChrW);
         else if (funcName == "UrlCanonicalizeW") result = w32arity::hpFn(&hp_UrlCanonicalizeW);
@@ -4562,6 +5482,7 @@ void* NativeDllInterceptor::resolveNativeSymbol(const std::string& dllName, cons
         if (funcName == "RoInitialize") result = w32arity::hpFn(&win_RoInitialize);
         else if (funcName == "CoInitialize") result = w32arity::hpFn(&win_CoInitialize);
         else if (funcName == "CoInitializeEx") result = w32arity::hpFn(&win_CoInitializeEx);
+        else if (funcName == "CoGetContextToken") result = w32arity::hpFn(&hp_CoGetContextToken);
         else if (funcName == "CoUninitialize") result = w32arity::hpFn(&win_CoUninitialize);
         else if (funcName == "CoCreateInstance") result = w32arity::hpFn(&win_CoCreateInstance);
         else if (funcName == "CoTaskMemAlloc") result = w32arity::hpFn(&win_CoTaskMemAlloc);
@@ -8987,7 +9908,10 @@ void NativeDllInterceptor::win_ExitProcess(uint32_t uExitCode) {
 int32_t NativeDllInterceptor::win_TerminateProcess(void* hProcess, uint32_t uExitCode) {
     s_kernel32Calls.fetch_add(1);
     LOGI("TerminateProcess invocado con código %u", uExitCode);
-    if (hProcess == nullptr || hProcess == reinterpret_cast<void*>(static_cast<uintptr_t>(-1LL))) {
+    // En 32 bits el pseudo-handle -1 llega como 0xFFFFFFFF (sin extender el signo).
+    const bool self = hProcess == nullptr || hProcess == reinterpret_cast<void*>(static_cast<uintptr_t>(-1LL)) ||
+                      (lowmem::enabled() && reinterpret_cast<uintptr_t>(hProcess) == 0xFFFFFFFFu);
+    if (self) {
         if (auto* b = OryonEmitterBackend::activeBackend(); b != nullptr) {
             b->stop();
         }
@@ -9734,12 +10658,41 @@ int32_t hp_Unhandled32(const uint8_t* rec, uint8_t* ctx) {
             return 0;
         }
     }
+    // Fallo de hardware (acceso inválido, instrucción ilegal, división por cero, pila agotada) sin
+    // manejar: Windows termina el proceso. Reanudar repetiría la misma instrucción para siempre.
+    if (code == 0xC0000005u || code == 0xC000001Du || code == 0xC0000094u || code == 0xC00000FDu) {
+        NativeDllInterceptor::win_ExitProcess(code);
+        return 0;
+    }
     return hp_NtContinue32(ctx, 0);
+}
+
+// Manejadores vectoriales (AddVectoredExceptionHandler), antes que los marcos, como en Windows.
+// EXCEPTION_POINTERS {rec, ctx} en el hueco de 16 bytes entre el registro y el CONTEXT. Si uno
+// devuelve EXCEPTION_CONTINUE_EXECUTION (-1) se reanuda en el CONTEXT (NtContinue); si no, 0.
+int32_t hp_Vectored32(uint8_t* rec, uint8_t* ctx) {
+    std::vector<std::pair<uintptr_t, uintptr_t>> handlers;
+    {
+        std::lock_guard<std::mutex> lk(s_vehMutex);
+        handlers = s_vehHandlers;
+    }
+    if (handlers.empty() || rec == nullptr || ctx == nullptr) return 0;
+    const auto recAddr = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(rec));
+    const uint32_t ptrs = recAddr + static_cast<uint32_t>(win32ctx::kExceptionRecordSize);
+    wr32(ptrs, recAddr);
+    wr32(ptrs + 4, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ctx)));
+    for (const auto& h : handlers) {
+        const uint64_t arg = ptrs;
+        const auto r = static_cast<int32_t>(sehimpl::callGuest(h.second, &arg, 1));
+        if (log()) LOGI("[SEH32] VEH 0x%llx -> %d", static_cast<unsigned long long>(h.second), r);
+        if (r == -1) return hp_NtContinue32(ctx, 0);
+    }
+    return 0;
 }
 
 // Código x86 del despachador (KiUserExceptionDispatcher + RtlDispatchException):
 //   [esp] = EXCEPTION_RECORD*, [esp+4] = CONTEXT*
-//   para cada marco de fs:[0]: eax = Handler(rec, marco, ctx, &dc) (cdecl)
+//   Vectored(rec, ctx); luego, para cada marco de fs:[0]: eax = Handler(rec, marco, ctx, &dc) (cdecl)
 //     0 -> NtContinue(ctx)   1 -> siguiente marco   fin de la cadena -> Unhandled(rec, ctx)
 uint32_t dispatcherStub() {
     static std::once_flag once;
@@ -9751,41 +10704,46 @@ uint32_t dispatcherStub() {
         const auto base = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(p));
         const auto contAlias = static_cast<uint32_t>(w32alias::lowFor(w32arity::hpFn(&hp_NtContinue32), "ntdll.dll!NtContinue"));
         const auto unhAlias = static_cast<uint32_t>(w32alias::lowFor(w32arity::hpFn(&hp_Unhandled32), "ntdll.dll!SehUnhandled32"));
+        const auto vehAlias = static_cast<uint32_t>(w32alias::lowFor(w32arity::hpFn(&hp_Vectored32), "ntdll.dll!SehVectored32"));
         const uint8_t code[] = {
             0x8B, 0x34, 0x24,                          // 00 mov esi, [esp]
             0x8B, 0x7C, 0x24, 0x04,                    // 03 mov edi, [esp+4]
-            0x64, 0x8B, 0x1D, 0x00, 0x00, 0x00, 0x00,  // 07 mov ebx, fs:[0]
-            0x83, 0xFB, 0xFF,                          // 0E loop: cmp ebx, -1
-            0x74, 0x22,                                // 11 je unhandled (35)
-            0x85, 0xDB,                                // 13 test ebx, ebx
-            0x74, 0x1E,                                // 15 je unhandled (35)
-            0x6A, 0x00,                                // 17 push 0 (DispatcherContext)
-            0x89, 0xE0,                                // 19 mov eax, esp
-            0x50,                                      // 1B push eax
-            0x57,                                      // 1C push edi
-            0x53,                                      // 1D push ebx
-            0x56,                                      // 1E push esi
-            0xFF, 0x53, 0x04,                          // 1F call [ebx+4]
-            0x83, 0xC4, 0x14,                          // 22 add esp, 0x14
-            0x85, 0xC0,                                // 25 test eax, eax
-            0x74, 0x04,                                // 27 je cont (2D)
-            0x8B, 0x1B,                                // 29 mov ebx, [ebx]
-            0xEB, 0xE1,                                // 2B jmp loop (0E)
-            0x6A, 0x00,                                // 2D cont: push 0 (TestAlert)
-            0x57,                                      // 2F push edi
-            0xE8, 0, 0, 0, 0,                          // 30 call NtContinue
-            0x57,                                      // 35 unhandled: push edi
-            0x56,                                      // 36 push esi
-            0xE8, 0, 0, 0, 0,                          // 37 call Unhandled
-            0xCC,                                      // 3C (no vuelve: reanuda vía contexto)
+            0x57,                                      // 07 push edi
+            0x56,                                      // 08 push esi
+            0xE8, 0, 0, 0, 0,                          // 09 call Vectored (stdcall; si maneja, no vuelve)
+            0x64, 0x8B, 0x1D, 0x00, 0x00, 0x00, 0x00,  // 0E mov ebx, fs:[0]
+            0x83, 0xFB, 0xFF,                          // 15 loop: cmp ebx, -1
+            0x74, 0x22,                                // 18 je unhandled (3C)
+            0x85, 0xDB,                                // 1A test ebx, ebx
+            0x74, 0x1E,                                // 1C je unhandled (3C)
+            0x6A, 0x00,                                // 1E push 0 (DispatcherContext)
+            0x89, 0xE0,                                // 20 mov eax, esp
+            0x50,                                      // 22 push eax
+            0x57,                                      // 23 push edi
+            0x53,                                      // 24 push ebx
+            0x56,                                      // 25 push esi
+            0xFF, 0x53, 0x04,                          // 26 call [ebx+4]
+            0x83, 0xC4, 0x14,                          // 29 add esp, 0x14
+            0x85, 0xC0,                                // 2C test eax, eax
+            0x74, 0x04,                                // 2E je cont (34)
+            0x8B, 0x1B,                                // 30 mov ebx, [ebx]
+            0xEB, 0xE1,                                // 32 jmp loop (15)
+            0x6A, 0x00,                                // 34 cont: push 0 (TestAlert)
+            0x57,                                      // 36 push edi
+            0xE8, 0, 0, 0, 0,                          // 37 call NtContinue
+            0x57,                                      // 3C unhandled: push edi
+            0x56,                                      // 3D push esi
+            0xE8, 0, 0, 0, 0,                          // 3E call Unhandled
+            0xCC,                                      // 43 (no vuelve: reanuda vía contexto)
         };
         std::memcpy(p, code, sizeof(code));
         auto rel = [&](size_t at, uint32_t target) {
             const uint32_t r = target - (base + static_cast<uint32_t>(at) + 5);
             std::memcpy(p + at + 1, &r, 4);
         };
-        rel(0x30, contAlias);
-        rel(0x37, unhAlias);
+        rel(0x09, vehAlias);
+        rel(0x37, contAlias);
+        rel(0x3E, unhAlias);
         mprotect(mem, 4096, PROT_READ);  // código del invitado: el JIT lo traduce, nadie lo escribe
         OryonEmitterBackend::addExecutableRangeAll(base, 4096);
         s_stub = base;
@@ -9822,6 +10780,20 @@ bool raise(uint32_t code, uint32_t flags, uint32_t n, const void* args) {
         const std::string type = cxxTypeName(rec);
         LOGI("[SEH32] RaiseException 0x%08x desde 0x%x%s%s; fs:[0]=0x%x", code, retEip, type.empty() ? "" : " tipo ",
              type.c_str(), rd32(tebOf(c)));
+        // Objeto C++ lanzado: en las excepciones del CLR el HRESULT está en los primeros campos.
+        uint32_t obj = n >= 2 ? win32ctx::get32(rec, 0x14 + 4) : 0u;
+        // ".PAV..." = se lanza un puntero: el objeto real está un nivel más abajo.
+        if (obj != 0 && type.rfind(".PAV", 0) == 0 && isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{obj}), 4))
+            obj = rd32(obj);
+        if (code == 0xE06D7363u && obj != 0 && isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{obj}), 64)) {
+            std::string words;
+            for (uint32_t k = 0; k < 64; k += 4) {
+                char w[12];
+                std::snprintf(w, sizeof(w), " %08x", rd32(obj + k));
+                words += w;
+            }
+            LOGI("[SEH32]   objeto 0x%x:%s", obj, words.c_str());
+        }
     }
     CpuContext d = c;
     d.gpr[4] = newEsp;
@@ -9872,6 +10844,37 @@ uint32_t hp_RtlUnwind32(uint32_t target, uint32_t, uint8_t* rec, uint32_t retVal
 }
 
 }  // namespace seh32
+
+bool NativeDllInterceptor::prepareGuestException32(CpuContext& ctx, uint32_t code, uint32_t address, uint32_t access) {
+    const uint32_t stub = seh32::dispatcherStub();
+    if (stub == 0) return false;
+    const auto eip = static_cast<uint32_t>(ctx.rip);
+    const auto esp = static_cast<uint32_t>(ctx.gpr[4]);
+    const uint32_t ctxAddr = (esp - 0x300u) & ~0xFu;
+    const uint32_t recAddr = ctxAddr - 0x60u;
+    const uint32_t newEsp = recAddr - 0x10u;
+    if (!isGuestRangeReadable(reinterpret_cast<const void*>(uintptr_t{newEsp}), esp - newEsp)) return false;
+    auto* cx = reinterpret_cast<uint8_t*>(uintptr_t{ctxAddr});
+    auto* rec = reinterpret_cast<uint8_t*>(uintptr_t{recAddr});
+    win32ctx::toContext(ctx, eip, esp, cx);
+    std::memset(rec, 0, win32ctx::kExceptionRecordSize);
+    win32ctx::put32(rec, 0x00, code);
+    win32ctx::put32(rec, 0x0C, eip);
+    if (code == 0xC0000005u) {  // EXCEPTION_ACCESS_VIOLATION: {0 lectura / 1 escritura / 8 ejecución, dirección}
+        win32ctx::put32(rec, 0x10, 2);
+        win32ctx::put32(rec, 0x14, access);
+        win32ctx::put32(rec, 0x18, address);
+    }
+    seh32::wr32(newEsp, recAddr);
+    seh32::wr32(newEsp + 4, ctxAddr);
+    static std::atomic<int> s_logs{0};
+    if (s_logs.fetch_add(1) < 40) {
+        LOGI("[SEH32] fallo hardware 0x%08x en EIP=0x%x dir=0x%x -> despachador", code, eip, address);
+    }
+    ctx.gpr[4] = newEsp;
+    ctx.rip = stub;
+    return true;
+}
 
 void NativeDllInterceptor::win_RaiseException(uint32_t dwExceptionCode, uint32_t dwExceptionFlags,
                                              uint32_t nNumberOfArguments, const void* lpArguments) {
@@ -10665,6 +11668,13 @@ uint32_t NativeDllInterceptor::win_WaitForMultipleObjects(uint32_t nCount, void*
                                                          int32_t bWaitAll, uint32_t dwMilliseconds) {
     s_kernel32Calls.fetch_add(1);
     if (nCount == 0 || lpHandles == nullptr || nCount > 64) return 0xFFFFFFFF; // WAIT_FAILED
+    // Invitado de 32 bits: el array es de HANDLE de 4 bytes.
+    std::array<void*, 64> handles32{};
+    if (lowmem::enabled()) {
+        const auto* src = reinterpret_cast<const uint32_t*>(lpHandles);
+        for (uint32_t i = 0; i < nCount; ++i) handles32[i] = reinterpret_cast<void*>(uintptr_t{src[i]});
+        lpHandles = handles32.data();
+    }
 
     auto tryAcquire = [](void* h) -> bool {
         if (!h) return false;
@@ -12189,8 +13199,7 @@ int32_t NativeDllInterceptor::win_LoadStringW(void* hInstance, uint32_t uID, cha
     const auto* str = reinterpret_cast<const char16_t*>(p + 2);
     if (len == 0 || p + 2 + static_cast<size_t>(len) * 2 > end) return 0;
     if (cchBufferMax == 0) {
-        const char16_t* ro = str;
-        std::memcpy(lpBuffer, &ro, sizeof(ro));
+        lowmem::storePtr(lpBuffer, str);  // puntero de solo lectura (4 bytes en 32 bits)
         return len;
     }
     const int32_t n = std::min(len, cchBufferMax - 1);
@@ -12314,9 +13323,24 @@ int32_t NativeDllInterceptor::win_GetFileInformationByHandle(void* hFile, void* 
             if (fstat(fd, &st) == 0) {
                 uint32_t* info = static_cast<uint32_t*>(lpFileInformation);
                 info[0] = S_ISDIR(st.st_mode) ? 0x10 /* FILE_ATTRIBUTE_DIRECTORY */ : 0x80 /* FILE_ATTRIBUTE_NORMAL */;
+                // Mismas fechas que GetFileAttributesExW (segundos enteros): .NET compara ambas
+                // para saber si el archivo cambió entre abrirlo y cargarlo.
+                auto ft = [&](time_t t, int idx) {
+                    const uint64_t v = (static_cast<uint64_t>(t) + 11644473600ULL) * 10000000ULL;
+                    info[idx] = static_cast<uint32_t>(v);
+                    info[idx + 1] = static_cast<uint32_t>(v >> 32);
+                };
+                ft(st.st_ctime, 1);   // ftCreationTime
+                ft(st.st_atime, 3);   // ftLastAccessTime
+                ft(st.st_mtime, 5);   // ftLastWriteTime
+                info[7] = static_cast<uint32_t>(st.st_dev) | 1u;  // dwVolumeSerialNumber (distinto de 0)
                 const uint64_t sz = static_cast<uint64_t>(st.st_size);
                 info[8] = static_cast<uint32_t>(sz >> 32);
                 info[9] = static_cast<uint32_t>(sz & 0xFFFFFFFF);
+                info[10] = static_cast<uint32_t>(st.st_nlink > 0 ? st.st_nlink : 1);  // nNumberOfLinks
+                const uint64_t ino = static_cast<uint64_t>(st.st_ino);
+                info[11] = static_cast<uint32_t>(ino >> 32);  // nFileIndexHigh
+                info[12] = static_cast<uint32_t>(ino);        // nFileIndexLow
             }
         }
     }

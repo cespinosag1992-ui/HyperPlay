@@ -2919,6 +2919,10 @@ static void probeLog(CpuContext* c, uint64_t rip) {
     LOGI("[Sonda]   rbx=%llx rsp=%llx rbp=%llx rsi=%llx rdi=%llx", static_cast<unsigned long long>(c->gpr[3]),
          static_cast<unsigned long long>(c->gpr[4]), static_cast<unsigned long long>(c->gpr[5]),
          static_cast<unsigned long long>(c->gpr[6]), static_cast<unsigned long long>(c->gpr[7]));
+    if (probeReadable(c->gpr[4], 16)) {  // 32 bits: dirección de retorno y primeros argumentos
+        const auto* s = reinterpret_cast<const uint32_t*>(c->gpr[4]);
+        LOGI("[Sonda]   [esp]=%08x %08x %08x %08x", s[0], s[1], s[2], s[3]);
+    }
     if (probeReadable(c->gpr[8], 32)) {
         const auto* q = reinterpret_cast<const uint64_t*>(c->gpr[8]);
         LOGI("[Sonda]   [r8]=%llx%s [r8+8]=%llx%s [r8+10]=%llx [r8+18]=%llx [r8+20]=%llx",
@@ -7212,7 +7216,13 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
 
     // --- PUSH/POP de registro -----------------------------------------------------
     if (op >= 0x50 && op <= 0x57) {
-        const uint8_t reg = static_cast<uint8_t>((op - 0x50) + (rexB ? 8 : 0));
+        uint8_t reg = static_cast<uint8_t>((op - 0x50) + (rexB ? 8 : 0));
+        if (reg == 4) {
+            // PUSH ESP/RSP guarda el valor ANTERIOR a la resta (el CLR de .NET pasa así punteros a
+            // estructuras en la pila: push ecx; push ecx; push esp; call).
+            emitMovReg(16, 4, true);
+            reg = 16;
+        }
         emitSubImm(4, 4, stackSize, true, false);
         if (stackSize == 8) {
             emitStrX(reg, 4, 0);
@@ -7271,6 +7281,43 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
         else emitStrW(16, 4, 0);
         return finish();
     }
+    // --- LAHF (9F): AH = SF ZF 0 AF 0 PF 1 CF.  SAHF (9E): SF ZF AF PF CF = AH (OF y DF no cambian).
+    // Los usa el código que genera el JIT de .NET Framework (comparaciones de coma flotante x87).
+    if (op == 0x9F) {
+        flagEvents_.push_back({FlagEventKind::Read, 0, 0});
+        emitLdrX(16, 19, static_cast<int32_t>(offsetof(CpuContext, rflags)));
+        emitLdrB(17, 19, static_cast<int32_t>(offsetof(CpuContext, pfByte)));
+        emitWord(0x4A000000u | (1u << 22) | (17u << 16) | (4u << 10) | (17u << 5) | 17u);  // EOR W17,W17,W17,LSR#4
+        emitWord(0x4A000000u | (1u << 22) | (17u << 16) | (2u << 10) | (17u << 5) | 17u);  // EOR W17,W17,W17,LSR#2
+        emitWord(0x4A000000u | (1u << 22) | (17u << 16) | (1u << 10) | (17u << 5) | 17u);  // EOR W17,W17,W17,LSR#1
+        emitMovImm64(20, 1);
+        emitAndReg(17, 17, 20, false, false);
+        emitEorReg(17, 17, 20, false);  // PF = par
+        emitMovImm64(20, 0xD1);         // SF ZF AF CF
+        emitAndReg(16, 16, 20, false, true);
+        emitBfi(16, 17, 2, 1);          // PF en el bit 2
+        emitMovImm64(20, 0x02);         // bit 1 siempre a 1
+        emitOrrReg(16, 16, 20, true);
+        emitBfi(0, 16, 8, 8);           // AH
+        return finish();
+    }
+    if (op == 0x9E) {
+        flagEvents_.push_back({FlagEventKind::Read, 0, 0});  // conserva OF/DF de escrituras anteriores
+        emitUbfx(16, 0, 8, 8);                                // AH
+        emitUbfx(17, 16, 2, 1);
+        emitMovImm64(20, 1);
+        emitEorReg(17, 17, 20, false);                        // pfByte = PF ? 0 : 1
+        emitStrB(17, 19, static_cast<int32_t>(offsetof(CpuContext, pfByte)));
+        emitMovImm64(20, 0xD5);
+        emitAndReg(16, 16, 20, false, true);                  // SF ZF AF PF CF de AH
+        emitLdrX(17, 19, static_cast<int32_t>(offsetof(CpuContext, rflags)));
+        emitMovImm64(20, ~static_cast<uint64_t>(0xD5));
+        emitAndReg(17, 17, 20, false, true);
+        emitOrrReg(17, 17, 16, true);
+        emitStrX(17, 19, static_cast<int32_t>(offsetof(CpuContext, rflags)));
+        return finish();
+    }
+
     if (op == 0x9D) {
         flagEvents_.push_back({FlagEventKind::Read, 0, 0});  // conserva las escrituras anteriores
         if (stackSize == 8) emitLdrX(16, 4, 0);
@@ -7292,7 +7339,8 @@ size_t OryonEmitterBackend::decodeAndEmitOne(CodeReader& reader, uintptr_t rip,
         } else {
             emitLdrW(reg, 4, 0);
         }
-        emitAddImm(4, 4, stackSize, true, false);
+        // POP ESP/RSP: el registro toma el valor leído (el incremento no se aplica encima).
+        if (reg != 4) emitAddImm(4, 4, stackSize, true, false);
         return finish();
     }
 
@@ -10731,7 +10779,7 @@ bool OryonEmitterBackend::resolveGuestFault(uintptr_t hostPc, uintptr_t& guestRi
 }
 
 bool OryonEmitterBackend::captureFault(int sig, siginfo_t* info, void* uctx) {
-    if (uctx == nullptr || faultJmp_ == nullptr || arena_ == nullptr || mode32_ || pendingFault_.valid) return false;
+    if (uctx == nullptr || faultJmp_ == nullptr || arena_ == nullptr || pendingFault_.valid) return false;
     if (sig != SIGSEGV && sig != SIGBUS && sig != SIGILL) return false;
     auto* uc = static_cast<ucontext_t*>(uctx);
     const auto pc = static_cast<uintptr_t>(uc->uc_mcontext.pc);
@@ -10795,6 +10843,14 @@ bool OryonEmitterBackend::deliverPendingFault() {
     std::memcpy(ctx_.gpr, f.gpr, sizeof(ctx_.gpr));
     std::memcpy(ctx_.simd, f.simd, sizeof(ctx_.simd));
     ctx_.rip = f.rip;
+
+    // 32 bits: SEH x86 (VEH + cadena fs:[0]) ejecutado como código del invitado desde un
+    // despachador; el hilo sigue en ese despachador. El camino de 64 bits de abajo no cambia.
+    if (mode32_) {
+        for (int i = 0; i < 16; ++i) ctx_.gpr[i] &= 0xFFFFFFFFull;
+        return NativeDllInterceptor::prepareGuestException32(ctx_, f.code, static_cast<uint32_t>(f.address),
+                                                            static_cast<uint32_t>(f.access));
+    }
 
     // CONTEXT + EXCEPTION_RECORD + EXCEPTION_POINTERS bajo RSP (red zone de 128 B, alineado a 16),
     // como hace KiUserExceptionDispatcher.

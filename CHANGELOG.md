@@ -10,6 +10,12 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### English
 
+- **DmC: the .NET runtime now starts completely and the Unreal engine runs** until Steam initialization.
+  Added: hardware exceptions for 32-bit games (vectored handlers + `fs:[0]` chain), WinRT IIDs
+  (`RoGetParameterizedTypeInstanceIID`), Winsock without network, XInput/Winsock/OLEAUT32 imports by
+  ordinal, PE resources (`FindResource`...), ordinal-only exports, `..` paths up to the game root,
+  file URLs (`UrlCanonicalizeW`), and the x86 instructions `SAHF`/`LAHF`. Fixed `PUSH ESP`/`POP ESP`,
+  `WaitForMultipleObjects` and `TerminateProcess` in 32-bit games.
 - **32-bit games (DmC): the .NET Framework 4 runtime now starts.** Windows x86 exception
   handling (the `fs:[0]` frame chain, `RtlUnwind`, `NtContinue`) is implemented, so C++ `catch`
   blocks work in 32-bit games. 32-bit memory (`VirtualAlloc`, `MapViewOfFile`) stays below 4 GB,
@@ -20,6 +26,13 @@ sección de la versión etiquetada en las notas de la Release de GitHub.
 
 ### Español
 
+- **DmC: el runtime de .NET ya arranca por completo y el motor Unreal se ejecuta** hasta iniciar
+  Steam. Añadido: excepciones de hardware en juegos de 32 bits (manejadores vectoriales + cadena
+  `fs:[0]`), IID de WinRT (`RoGetParameterizedTypeInstanceIID`), Winsock sin red, importaciones por
+  ordinal de XInput/Winsock/OLEAUT32, recursos PE (`FindResource`...), exportaciones solo por ordinal,
+  rutas con `..` hasta la raíz del juego, URL de archivo (`UrlCanonicalizeW`) y las instrucciones x86
+  `SAHF`/`LAHF`. Corregidos `PUSH ESP`/`POP ESP`, `WaitForMultipleObjects` y `TerminateProcess` en
+  juegos de 32 bits.
 - **Juegos de 32 bits (DmC): el runtime de .NET Framework 4 ya arranca.** Se implementa el manejo
   de excepciones de Windows x86 (cadena de marcos en `fs:[0]`, `RtlUnwind`, `NtContinue`): los
   `catch` de C++ funcionan en juegos de 32 bits. La memoria de 32 bits (`VirtualAlloc`,
