@@ -2,7 +2,7 @@
 
 <p align="center"><img src="docs/exedra64-logo.png" alt="Exedra64" width="220"></p>
 
-**[English](#english) · [Español](#español)**
+**[Inicio / Home](https://murdoc820.github.io/Exedra64/) · [English](#english) · [Español](#español) · [Download / Descargar](https://github.com/murdoc820/Exedra64/releases/latest) · [Report a problem / Reportar un problema](https://github.com/murdoc820/Exedra64/issues/new/choose) · [GitHub](https://github.com/murdoc820/Exedra64)**
 
 *Formerly HyperPlay. / Antes HyperPlay.*
 
@@ -53,7 +53,7 @@ works and is tested on a RedMagic 10S Pro (Android 15).
 ### Install
 
 1. Download `Exedra64-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk` from the latest
-   [Release](../../releases/latest). The name says the processor it is built for: 64-bit ARM
+   [Release](https://github.com/murdoc820/Exedra64/releases/latest). The name says the processor it is built for: 64-bit ARM
    (arm64-v8a), tuned for the Snapdragon 8 Elite.
 2. Install it (Android 12 or later, ARM64). The first time, Android asks you to allow apps from
    unknown sources.
@@ -89,7 +89,7 @@ UI text lives in `app/src/main/res/values/strings.xml` (English, default) and
 | `server/report-worker` | Cloudflare Worker that turns error reports into Issues |
 | `docs/` | Documentation and screenshots |
 
-More technical detail in [ARCHITECTURE.md](ARCHITECTURE.md).
+More technical detail in [ARCHITECTURE.md](https://github.com/murdoc820/Exedra64/blob/main/ARCHITECTURE.md).
 
 ### Error reports
 
@@ -97,14 +97,16 @@ If the user agrees, the app sends each crash, unexpected session end or game tha
 error to a Cloudflare Worker, which opens an Issue labeled `auto-report` in a private reports
 repository. Before sending, the app removes personal data (IP and MAC addresses, emails, user
 folder names, device identifiers, account names and tokens); the server removes it again. See
-[server/report-worker](server/report-worker/README.md). Sending starts with the next release.
+[server/report-worker](https://github.com/murdoc820/Exedra64/tree/main/server/report-worker). Sending starts with the next release.
 To save space on the phone, the app log is cleared once reports are sent, and only the last 20
 unsent reports and the last 5 game session logs are kept. To report a problem yourself, open an
-[Issue](../../issues/new/choose).
+[Issue](https://github.com/murdoc820/Exedra64/issues/new/choose).
 
 ### License
 
-[GPL-3.0](LICENSE). The Mesa patches in `third_party/mesa-patches` follow Mesa's MIT license.
+[GPL-3.0](https://github.com/murdoc820/Exedra64/blob/main/LICENSE). The Mesa patches in `third_party/mesa-patches` follow Mesa's MIT license.
+
+[↑ Back to top](#exedra64)
 
 ---
 
@@ -154,7 +156,7 @@ informes de errores) funciona y está probada en un RedMagic 10S Pro (Android 15
 ### Instalar
 
 1. Descarga el `Exedra64-vX.Y.Z-Snapdragon8Elite-arm64-v8a.apk` de la última
-   [Release](../../releases/latest). El nombre indica el procesador para el que está hecho: ARM de
+   [Release](https://github.com/murdoc820/Exedra64/releases/latest). El nombre indica el procesador para el que está hecho: ARM de
    64 bits (arm64-v8a), optimizado para el Snapdragon 8 Elite.
 2. Instálalo (Android 12 o superior, ARM64). La primera vez Android pedirá permitir apps de
    origen desconocido.
@@ -190,7 +192,7 @@ Los textos de la interfaz están en `app/src/main/res/values/strings.xml` (ingl�
 | `server/report-worker` | Cloudflare Worker que convierte los informes de errores en Issues |
 | `docs/` | Documentación y capturas |
 
-Más detalle técnico en [ARCHITECTURE.md](ARCHITECTURE.md).
+Más detalle técnico en [ARCHITECTURE.md](https://github.com/murdoc820/Exedra64/blob/main/ARCHITECTURE.md).
 
 ### Informes de errores
 
@@ -199,11 +201,13 @@ a un Worker de Cloudflare que abre un Issue con la etiqueta `auto-report` en un 
 privado de informes. Antes de enviar, la app quita los datos personales (direcciones IP y MAC,
 correos, nombres de carpetas de usuario, identificadores del dispositivo, cuentas y tokens); el
 servidor los vuelve a quitar. Ver
-[server/report-worker](server/report-worker/README.md). El envío empieza con la próxima versión.
+[server/report-worker](https://github.com/murdoc820/Exedra64/tree/main/server/report-worker). El envío empieza con la próxima versión.
 Para ahorrar espacio en el teléfono, el registro de la app se vacía al enviar los informes y solo
 se guardan los 20 últimos informes sin enviar y los 5 últimos logs de sesión. Para avisar de un
-fallo a mano, abre un [Issue](../../issues/new/choose).
+fallo a mano, abre un [Issue](https://github.com/murdoc820/Exedra64/issues/new/choose).
 
 ### Licencia
 
-[GPL-3.0](LICENSE). Los parches de Mesa de `third_party/mesa-patches` siguen la licencia MIT de Mesa.
+[GPL-3.0](https://github.com/murdoc820/Exedra64/blob/main/LICENSE). Los parches de Mesa de `third_party/mesa-patches` siguen la licencia MIT de Mesa.
+
+[↑ Volver al inicio](#exedra64)
